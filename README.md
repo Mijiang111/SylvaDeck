@@ -1,6 +1,6 @@
 # PPT Workbench Studio
 
-I’m open-sourcing this in alpha.
+I’m open-sourcing this in alpha, this is a vibe coding project from uni student.
 
 It already works, but it is still rough in places. Studio is a local-first AI presentation workbench for generating, refining, and authoring 16:9 HTML slide decks, and I’d really appreciate issues or feedback if you try it and hit something confusing.
 
