@@ -1,0 +1,1 @@
+export { ModuleAuthorWorkbenchPage } from "./authoring";

@@ -1,0 +1,39 @@
+{
+  "name": "ppt-workbench-studio",
+  "private": true,
+  "description": "Local-first AI presentation workbench for generating, refining, and authoring 16:9 HTML slide decks.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "keywords": [
+    "ai",
+    "presentation",
+    "ppt",
+    "slides",
+    "vite",
+    "react"
+  ],
+  "scripts": {
+    "dev": "node ./scripts/dev.mjs",
+    "dev:clean": "node ./scripts/dev.mjs --clean-only",
+    "dev:server": "corepack pnpm --dir server dev",
+    "dev:ui": "corepack pnpm --dir ui dev",
+    "build": "corepack pnpm --dir server build && corepack pnpm --dir ui build",
+    "typecheck": "corepack pnpm --dir server typecheck && corepack pnpm --dir ui typecheck",
+    "stop": "node ./scripts/dev.mjs --clean-only",
+    "test:stability:quick": "playwright test -c tests/stability/playwright.config.mjs --grep @quick",
+    "test:stability:full": "playwright test -c tests/stability/playwright.config.mjs",
+    "test:stability:canary": "STUDIO_STABILITY_LIVE=1 playwright test -c tests/stability/playwright.config.mjs --grep @canary",
+    "test:stability:record": "node ./tests/stability/record-fixtures.mjs",
+    "test:workspace:eval": "corepack pnpm --dir server exec tsx ../tests/workspace-eval/run.ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.59.1",
+    "concurrently": "^9.2.1",
+    "jszip": "3.10.1"
+  },
+  "packageManager": "pnpm@9.15.4"
+}
