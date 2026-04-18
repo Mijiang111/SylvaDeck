@@ -1,3 +1,8 @@
+
+
+
+
+
 # Claw Design
 
 I’m open-sourcing this in alpha, this is a vibe coding project from uni-student. 
@@ -24,6 +29,7 @@ https://github.com/user-attachments/assets/e75017d0-33bd-4315-bc36-0d8e36dd6906
    </td>
     <td>
 
+https://github.com/user-attachments/assets/f44fef6a-efa0-4c5d-b1f0-766061ff56c5
 https://github.com/user-attachments/assets/3ebb1c8d-479b-49b5-92ee-11fc5232a615
 
    </td>
