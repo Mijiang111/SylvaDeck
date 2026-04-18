@@ -1,5 +1,5 @@
 # Claw Design
-<img width="800" height="800" alt="Claw-design" src="https://github.com/user-attachments/assets/574733ac-3581-42f1-b2c0-c6f334492d08" />
+<img width="1362" height="760" alt="Claw-design" src="https://github.com/user-attachments/assets/574733ac-3581-42f1-b2c0-c6f334492d08" />
 
 I’m open-sourcing this in alpha, this is a vibe coding project from uni-student. 
 
