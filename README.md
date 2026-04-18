@@ -19,7 +19,7 @@ Studio combines three workflows in one repo:
   <tr>
     <td>
 
-https://github.com/user-attachments/assets/8e23be8b-eacd-4753-9fa6-65e1ee5f96ff
+https://github.com/user-attachments/assets/e75017d0-33bd-4315-bc36-0d8e36dd6906
 
    </td>
     <td>
@@ -50,10 +50,6 @@ https://github.com/user-attachments/assets/3ebb1c8d-479b-49b5-92ee-11fc5232a615
     <td><img src="docs/assets/picture2.png" alt="Demo picture 2"></td>
   </tr>
 </table>
-
-
-
-
 
 ## What It Does
 
