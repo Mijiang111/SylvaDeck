@@ -21,13 +21,9 @@ Studio combines three workflows in one repo:
 ![Demo picture 1](docs/assets/picture1.png)
 ![Demo picture 2](docs/assets/picture2.png)
 
-<video controls>
-  <source src="https://raw.githubusercontent.com/Mijiang111/claw-design/main/docs/assets/videos/video1.mp4" type="video/mp4">
-</video>
+[▶️ 观看 Demo Video 1](https://github.com/Mijiang111/claw-design/blob/main/docs/assets/videos/video1.mp4)
 
-<video controls>
-  <source src="https://raw.githubusercontent.com/Mijiang111/claw-design/main/docs/assets/videos/video2.mp4" type="video/mp4">
-</video>
+[▶️ 观看 Demo Video 2](https://github.com/Mijiang111/claw-design/blob/main/docs/assets/videos/video2.mp4)
 
 ## What It Does
 
