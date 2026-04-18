@@ -11,7 +11,11 @@ import type {
   ModuleChartKind,
   RepairMode,
   GenerationMode,
+  HtmlAnimationPage,
+  HtmlAnimationStructure,
+  HtmlPageAnimationManifest,
   ModuleUsageMode,
+  HtmlOutputMode,
   PageOverflowCause,
   PageCompositionFingerprint,
 } from "./schemas.js";
@@ -26,7 +30,11 @@ export type {
   ModuleChartKind,
   RepairMode,
   GenerationMode,
+  HtmlAnimationPage,
+  HtmlAnimationStructure,
+  HtmlPageAnimationManifest,
   ModuleUsageMode,
+  HtmlOutputMode,
   PageOverflowCause,
   PageCompositionFingerprint,
 } from "./schemas.js";
@@ -66,6 +74,7 @@ export type StudioEvalOverrides = {
   forceWorkloadLane?: StudioWorkloadLane;
   disableTaskGrammarPacks?: boolean;
   disableLayoutPlanningBlock?: boolean;
+  injectTaskGrammarPackIds?: StudioTaskGrammarPackId[];
 };
 
 export type StudioStageTraceEntry = {
@@ -87,6 +96,7 @@ export type StudioAiWorkspaceBlockId =
   | "working-hypothesis"
   | "unknowns-boundary"
   | "page-mission"
+  | "starter-pack"
   | "task-rigor-brief"
   | "renderer-brief"
   | "proof-plan"
@@ -105,6 +115,7 @@ export type StudioCapabilityCardId =
   | "chart"
   | "template"
   | "density-budget"
+  | "craft-direction"
   | "style-direction"
   | "composition-direction"
   | "explicit-3d"
@@ -163,6 +174,7 @@ export type StudioAiWorkspacePromptMeta = {
   preflightSubject?: string | null;
   preflightCoreTask?: string | null;
   preflightEvidenceTier?: StudioEvidenceTier | null;
+  preflightIncludes3dActivation?: boolean;
 };
 export type StudioGenerateStage =
   | "preflight"
@@ -219,6 +231,10 @@ export type StudioGenerateStreamEvent =
         html: string;
         pageCount: number;
         pageTitles: string[];
+        htmlOutputMode?: HtmlOutputMode;
+        animationStructure?: HtmlAnimationStructure;
+        styleProfileId?: string;
+        styleProfile?: GeneratedReportStyleProfile;
       };
     }
   | {
@@ -351,7 +367,9 @@ export type StudioTaskGrammarPackId =
   | "valuation-finance-grade"
   | "operator-product-teardown"
   | "technical-architecture-review"
-  | "research-result-synthesis";
+  | "research-result-synthesis"
+  | "unstructured-synthesis"
+  | "strict-style-enforcement";
 
 export type StudioTaskGrammarPack = {
   id: StudioTaskGrammarPackId;
@@ -493,7 +511,8 @@ export type DeckThinkingMode =
   | "neutral"
   | "strategy"
   | "case-study"
-  | "academic-research";
+  | "academic-research"
+  | "brain-to-deck";
 
 export type ThinkingModePlugin = {
   mode: DeckThinkingMode;
@@ -583,6 +602,8 @@ export type StudioPageMission = {
   supportPoints: string[];
   evidenceNotes: string[];
   preferredVisual: string | null;
+  missionScope: "page" | "deck";
+  structureCue: "matrix" | "quadrant" | "chart" | null;
 };
 
 export type StudioPreflightPlan = {
@@ -772,6 +793,12 @@ export type LongFormEvidenceBundle = {
   evidenceIds: string[];
   chartCandidate: ModuleChartKind | "none";
   pageClass: LongFormPageClass;
+};
+
+export type FileContext = {
+  name: string;
+  type: string;
+  content: string;
 };
 
 export type WorkspaceEvalScenarioClass =

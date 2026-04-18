@@ -5,8 +5,13 @@ import {
 import type {
   ChartSpec,
   GeneratedReportStyleProfile,
+  HtmlAnimationPage,
+  HtmlAnimationStructure,
+  HtmlPageAnimationManifest,
+  HtmlOutputMode,
   PageRecipe,
 } from "./contracts.js";
+import { htmlPageAnimationManifestSchema } from "./schemas.js";
 import {
   assessGeneratedTitleQuality,
   compactBoardTitle,
@@ -152,6 +157,343 @@ function extractVisibleTextForLeakCheck(html: string) {
     .trim();
 }
 
+const ALLOWED_ANIMATION_ATTRS = new Set([
+  "data-anim-anchor",
+  "data-anim-role",
+  "data-anim-enter",
+  "data-anim-delay",
+  "data-anim-duration",
+  "data-anim-order",
+]);
+
+const ALLOWED_ANIMATION_ROLES = new Set([
+  "hero",
+  "headline",
+  "chart",
+  "callout",
+  "label",
+  "quadrant",
+  "rail",
+  "surface",
+  "metric",
+  "annotation",
+]);
+
+const ALLOWED_ANIMATION_ENTERS = new Set([
+  "fade-up",
+  "fade-in",
+  "slide-right",
+  "slide-left",
+  "scale-in",
+  "chart-reveal",
+]);
+const ANIMATION_ANCHOR_ATTR = "data-anim-anchor";
+const ANIMATION_MANIFEST_ATTR = "data-studio-animation-manifest";
+const ANIMATION_ANCHOR_PATTERN = /^[a-z][a-z0-9-]{0,39}$/;
+
+function parseAnimationTimingMetadata(
+  attrName: "data-anim-delay" | "data-anim-duration" | "data-anim-order",
+  attrValue: string,
+) {
+  const normalized = attrValue.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+
+  if (attrName === "data-anim-order") {
+    if (!/^\d{1,2}$/.test(normalized)) {
+      return null;
+    }
+    const parsed = Number.parseInt(normalized, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  if (/^\d{1,4}$/.test(normalized)) {
+    const parsed = Number.parseInt(normalized, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  if (/^\d{1,4}ms$/.test(normalized)) {
+    const parsed = Number.parseInt(normalized.slice(0, -2), 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  if (/^\d(?:\.\d{1,2})?s$/.test(normalized)) {
+    const parsed = Math.round(Number.parseFloat(normalized.slice(0, -1)) * 1000);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+}
+
+function hasAnimationManifestContent(manifest: HtmlPageAnimationManifest | null | undefined) {
+  return Boolean((manifest?.entryTracks?.length ?? 0) > 0 || (manifest?.loopEffects?.length ?? 0) > 0);
+}
+
+function buildAnimationLoopEffectKey(
+  effect: NonNullable<HtmlPageAnimationManifest["loopEffects"]>[number],
+) {
+  return `${effect.kind}:${effect.anchor}`;
+}
+
+function mergeAnimationManifestPreservingPrevious(args: {
+  anchors: string[];
+  nextManifest: HtmlPageAnimationManifest | null;
+  previousAnimationPage?: HtmlAnimationPage | null;
+}) {
+  const anchorSet = new Set(args.anchors);
+  const nextManifest = args.nextManifest;
+  const previousManifest = args.previousAnimationPage?.manifest ?? null;
+  if (!previousManifest) {
+    return hasAnimationManifestContent(nextManifest) ? nextManifest : null;
+  }
+
+  const nextEntryTracks = nextManifest?.entryTracks ?? [];
+  const nextLoopEffects = nextManifest?.loopEffects ?? [];
+  const nextEntryTrackAnchors = new Set(nextEntryTracks.map((track) => track.anchor));
+  const nextLoopEffectKeys = new Set(nextLoopEffects.map((effect) => buildAnimationLoopEffectKey(effect)));
+
+  const preservedEntryTracks = (previousManifest.entryTracks ?? []).filter(
+    (track) => anchorSet.has(track.anchor) && !nextEntryTrackAnchors.has(track.anchor),
+  );
+  const preservedLoopEffects = (previousManifest.loopEffects ?? []).filter(
+    (effect) =>
+      anchorSet.has(effect.anchor) &&
+      !nextLoopEffectKeys.has(buildAnimationLoopEffectKey(effect)),
+  );
+
+  const mergedEntryTracks = [...nextEntryTracks, ...preservedEntryTracks].sort(
+    (left, right) => left.order - right.order,
+  );
+  const mergedLoopEffects = [...nextLoopEffects, ...preservedLoopEffects];
+  if (mergedEntryTracks.length === 0 && mergedLoopEffects.length === 0) {
+    return null;
+  }
+
+  return {
+    version: 1,
+    startMode: "entry-then-loop" as const,
+    ...(mergedEntryTracks.length > 0 ? { entryTracks: mergedEntryTracks } : {}),
+    ...(mergedLoopEffects.length > 0 ? { loopEffects: mergedLoopEffects } : {}),
+  } satisfies HtmlPageAnimationManifest;
+}
+
+function sanitizeAnimationStructurePages(
+  pages: Array<HtmlAnimationPage | null | undefined>,
+): HtmlAnimationStructure | undefined {
+  const resolvedPages = pages
+    .filter((page): page is HtmlAnimationPage => Boolean(page))
+    .sort((left, right) => left.pageNumber - right.pageNumber);
+  if (resolvedPages.length === 0) {
+    return undefined;
+  }
+
+  return {
+    pages: resolvedPages,
+  };
+}
+
+function resolveAnimationPage(
+  structure: HtmlAnimationStructure | null | undefined,
+  pageNumber: number,
+) {
+  return structure?.pages.find((page) => page.pageNumber === pageNumber) ?? null;
+}
+
+function sanitizeAnimationPageSection(args: {
+  sectionHtml: string;
+  htmlOutputMode: HtmlOutputMode;
+  pageNumber: number;
+  previousAnimationPage?: HtmlAnimationPage | null;
+}) {
+  const anchorMatches = Array.from(
+    args.sectionHtml.matchAll(/\sdata-anim-anchor=["']([^"']+)["']/gi),
+  );
+  const anchors = anchorMatches.map((match) => match[1]?.trim() ?? "").filter(Boolean);
+  const uniqueAnchors = Array.from(new Set(anchors));
+  const templateMatches = Array.from(args.sectionHtml.matchAll(/<template\b[^>]*>[\s\S]*?<\/template>/gi));
+  const manifestMatches = templateMatches.filter((match) =>
+    new RegExp(`\\s${ANIMATION_MANIFEST_ATTR}(?:[=\\s>])`, "i").test(match[0] ?? ""),
+  );
+  const hasUnexpectedTemplate = templateMatches.some(
+    (match) => !new RegExp(`\\s${ANIMATION_MANIFEST_ATTR}(?:[=\\s>])`, "i").test(match[0] ?? ""),
+  );
+
+  if (args.htmlOutputMode !== "animated-preview-js") {
+    if (uniqueAnchors.length > 0) {
+      throw new Error(
+        `Page ${args.pageNumber} used animation anchors outside animated preview mode.`,
+      );
+    }
+    if (templateMatches.length > 0) {
+      throw new Error(
+        `Page ${args.pageNumber} used animation manifests outside animated preview mode.`,
+      );
+    }
+    return {
+      sectionHtml: args.sectionHtml,
+      animationPage: null,
+    };
+  }
+
+  for (const anchor of uniqueAnchors) {
+    if (!ANIMATION_ANCHOR_PATTERN.test(anchor)) {
+      throw new Error(`Page ${args.pageNumber} used an invalid animation anchor: ${anchor}.`);
+    }
+  }
+
+  if (hasUnexpectedTemplate) {
+    throw new Error(
+      `Page ${args.pageNumber} used an unsupported template tag in animated preview mode.`,
+    );
+  }
+
+  if (manifestMatches.length > 1) {
+    throw new Error(
+      `Page ${args.pageNumber} used more than one animation manifest template.`,
+    );
+  }
+
+  let manifest: HtmlPageAnimationManifest | null = null;
+  if (manifestMatches[0]?.[0]) {
+    const templateHtml = manifestMatches[0][0];
+    const templateBody = templateHtml
+      .replace(/^<template\b[^>]*>/i, "")
+      .replace(/<\/template>\s*$/i, "")
+      .trim();
+    const manifestText = extractJsonDocument(templateBody) || templateBody;
+    if (!manifestText) {
+      throw new Error(`Page ${args.pageNumber} returned an empty animation manifest.`);
+    }
+
+    let parsedManifest: unknown;
+    try {
+      parsedManifest = JSON.parse(manifestText);
+    } catch {
+      throw new Error(`Page ${args.pageNumber} returned an invalid animation manifest JSON.`);
+    }
+
+    const parsedResult = htmlPageAnimationManifestSchema.safeParse(parsedManifest);
+    if (!parsedResult.success) {
+      throw new Error(`Page ${args.pageNumber} returned an invalid animation manifest shape.`);
+    }
+
+    const entryAnchors = new Set<string>();
+    for (const track of parsedResult.data.entryTracks ?? []) {
+      if (!uniqueAnchors.includes(track.anchor)) {
+        throw new Error(
+          `Page ${args.pageNumber} animation manifest referenced a missing anchor: ${track.anchor}.`,
+        );
+      }
+      if (entryAnchors.has(track.anchor)) {
+        throw new Error(
+          `Page ${args.pageNumber} animation manifest duplicated an entry track anchor: ${track.anchor}.`,
+        );
+      }
+      entryAnchors.add(track.anchor);
+    }
+
+    const loopEffectKeys = new Set<string>();
+    for (const effect of parsedResult.data.loopEffects ?? []) {
+      if (!uniqueAnchors.includes(effect.anchor)) {
+        throw new Error(
+          `Page ${args.pageNumber} animation manifest referenced a missing anchor: ${effect.anchor}.`,
+        );
+      }
+      const effectKey = buildAnimationLoopEffectKey(effect);
+      if (loopEffectKeys.has(effectKey)) {
+        throw new Error(
+          `Page ${args.pageNumber} animation manifest duplicated a loop effect for ${effectKey}.`,
+        );
+      }
+      loopEffectKeys.add(effectKey);
+    }
+
+    manifest = parsedResult.data;
+  }
+
+  const mergedManifest = mergeAnimationManifestPreservingPrevious({
+    anchors: uniqueAnchors,
+    nextManifest: manifest,
+    previousAnimationPage: args.previousAnimationPage,
+  });
+  const sectionHtml = manifestMatches.reduce(
+    (current, match) => current.replace(match[0], ""),
+    args.sectionHtml,
+  ).trim();
+
+  if (uniqueAnchors.length === 0 && !mergedManifest) {
+    return {
+      sectionHtml,
+      animationPage: null,
+    };
+  }
+
+  return {
+    sectionHtml,
+    animationPage: {
+      pageNumber: args.pageNumber,
+      anchors: uniqueAnchors,
+      manifest: mergedManifest,
+    } satisfies HtmlAnimationPage,
+  };
+}
+
+function validateAnimationMetadata(args: {
+  html: string;
+  htmlOutputMode: HtmlOutputMode;
+  pageNumber: number;
+}) {
+  const matches = Array.from(
+    args.html.matchAll(/\s(data-anim-[a-z-]+)=["']([^"']*)["']/gi),
+  );
+  if (matches.length === 0) {
+    return;
+  }
+
+  if (args.htmlOutputMode !== "animated-preview-js") {
+    throw new Error(
+      `Page ${args.pageNumber} used animation metadata outside animated preview mode.`,
+    );
+  }
+
+  for (const match of matches) {
+    const attrName = match[1]?.trim().toLowerCase() ?? "";
+    const attrValue = match[2]?.trim() ?? "";
+    if (!ALLOWED_ANIMATION_ATTRS.has(attrName)) {
+      throw new Error(
+        `Page ${args.pageNumber} used unsupported animation metadata: ${attrName}.`,
+      );
+    }
+
+    if (attrName === "data-anim-role" && !ALLOWED_ANIMATION_ROLES.has(attrValue)) {
+      throw new Error(
+        `Page ${args.pageNumber} used an unsupported animation role: ${attrValue}.`,
+      );
+    }
+
+    if (attrName === "data-anim-enter" && !ALLOWED_ANIMATION_ENTERS.has(attrValue)) {
+      throw new Error(
+        `Page ${args.pageNumber} used an unsupported animation preset: ${attrValue}.`,
+      );
+    }
+
+    if (
+      (attrName === "data-anim-delay" ||
+        attrName === "data-anim-duration" ||
+        attrName === "data-anim-order") &&
+      parseAnimationTimingMetadata(
+        attrName as "data-anim-delay" | "data-anim-duration" | "data-anim-order",
+        attrValue,
+      ) === null
+    ) {
+      throw new Error(
+        `Page ${args.pageNumber} used invalid animation timing metadata: ${attrName}.`,
+      );
+    }
+  }
+}
+
 export function detectPromptScaffoldLeak(text: string) {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (!normalized) {
@@ -274,6 +616,8 @@ export function validateGeneratedPageHtml(args: {
   html: string;
   expectedPageNumber: number;
   expectedPageTitle: string;
+  htmlOutputMode?: HtmlOutputMode;
+  previousAnimationPage?: HtmlAnimationPage | null;
 }) {
   const cleanedHtml = extractHtmlDocument(args.html);
   if (!cleanedHtml || !/<(?:!DOCTYPE html|html[\s>])/i.test(cleanedHtml)) {
@@ -296,7 +640,20 @@ export function validateGeneratedPageHtml(args: {
     throw new Error(`Page ${args.expectedPageNumber} introduced scrolling content.`);
   }
 
-  const sectionHtml = extractSinglePageSection(cleanedHtml);
+  const rawSectionHtml = extractSinglePageSection(cleanedHtml);
+  validateAnimationMetadata({
+    html: rawSectionHtml,
+    htmlOutputMode: args.htmlOutputMode ?? "static",
+    pageNumber: args.expectedPageNumber,
+  });
+  const sanitizedAnimation = sanitizeAnimationPageSection({
+    sectionHtml: rawSectionHtml,
+    htmlOutputMode: args.htmlOutputMode ?? "static",
+    pageNumber: args.expectedPageNumber,
+    previousAnimationPage: args.previousAnimationPage,
+  });
+  const sectionHtml = sanitizedAnimation.sectionHtml;
+  const pageHtml = cleanedHtml.replace(rawSectionHtml, sectionHtml);
   const pageTitleMatches = extractPageTitles(cleanedHtml);
   const pageTitle = pageTitleMatches[0]?.trim();
   if (!pageTitle) {
@@ -349,8 +706,9 @@ export function validateGeneratedPageHtml(args: {
 
   return {
     pageTitle,
-    pageHtml: cleanedHtml,
+    pageHtml,
     sectionHtml,
+    animationPage: sanitizedAnimation.animationPage,
   };
 }
 
@@ -358,6 +716,7 @@ export function composeDeckHtml(args: {
   title: string;
   sections: string[];
   styleProfile?: GeneratedReportStyleProfile;
+  htmlOutputMode?: HtmlOutputMode;
 }) {
   const bodyBackground = args.styleProfile?.pageBackground ?? "#efe7dc";
   return [
@@ -368,7 +727,7 @@ export function composeDeckHtml(args: {
     '<meta name="viewport" content="width=device-width, initial-scale=1" />',
     `<title>${escapeHtml(args.title)}</title>`,
     "</head>",
-    `<body style="margin:0;background:${escapeHtml(bodyBackground)};">`,
+    `<body data-html-output-mode="${escapeHtml(args.htmlOutputMode ?? "static")}" style="margin:0;background:${escapeHtml(bodyBackground)};">`,
     args.sections.join("\n"),
     "</body>",
     "</html>",
@@ -422,6 +781,8 @@ export function buildSanitizedFinalReport(args: {
   brief: string;
   fallbackTitle?: string;
   styleProfile?: GeneratedReportStyleProfile;
+  htmlOutputMode?: HtmlOutputMode;
+  animationStructure?: HtmlAnimationStructure;
 }) {
   const styledHtml = args.styleProfile
     ? decorateDeckHtmlWithStyleProfile(args.html, args.styleProfile)
@@ -440,6 +801,8 @@ export function buildSanitizedFinalReport(args: {
     html,
     pageCount: countPages(html),
     pageTitles: extractPageTitles(html),
+    htmlOutputMode: args.htmlOutputMode ?? "static",
+    animationStructure: sanitizeAnimationStructurePages(args.animationStructure?.pages ?? []),
     styleProfileId: args.styleProfile?.id,
     styleProfile: args.styleProfile,
   };
@@ -800,11 +1163,13 @@ export function composeSinglePageHtml(args: {
   title: string;
   sectionHtml: string;
   styleProfile?: GeneratedReportStyleProfile;
+  htmlOutputMode?: HtmlOutputMode;
 }) {
   return composeDeckHtml({
     title: args.title,
     sections: [args.sectionHtml],
     styleProfile: args.styleProfile,
+    htmlOutputMode: args.htmlOutputMode,
   });
 }
 

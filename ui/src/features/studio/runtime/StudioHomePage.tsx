@@ -22,16 +22,27 @@ import {
 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { detectImplicitLongFormClarification } from "@/features/studio/generation";
+import { storeModuleAuthoringHandoff } from "@/features/studio/module-authoring-handoff";
+import {
+  buildStarterDeckPages,
+  createStarterPackAuthoringHandoff,
+  getStarterPackTheme,
+  isStarterPackDeck,
+  isStarterPackLayout,
+  listStarterPackManifests,
+} from "@/features/studio/starter-packs";
 import { createProjectBundle } from "@/features/studio/state";
 import { loadAvailableModuleRegistry } from "@/features/studio/registry";
 import { Link, useNavigate } from "@/lib/router";
-import type { WorkbenchModuleUsageMode } from "@/features/studio/types";
+import type { WorkbenchAgentProvider } from "@/features/studio/ai-settings";
+import type { HtmlOutputMode, StarterPackManifest, WorkbenchModuleUsageMode } from "@/features/studio/types";
 import { createIntakeThread } from "./runtime-intake";
 import { formatProjectTimestamp } from "./runtime-presentational";
 import { LibraryReportCard } from "./homepage/LibraryReportCard";
 import type { LibraryCardRecord } from "./homepage/types";
 import { useStudioWorkspace } from "./studio/useStudioWorkspace";
 import {
+  useStudioBriefState,
   useStudioLibraryState,
   useStudioProjectActions,
   useStudioShellState,
@@ -60,6 +71,11 @@ const HOME_NAV_ITEMS = [
   { id: "ai", label: "AI Chat", icon: MessageSquareText },
   { id: "author", label: "Author Workspace", icon: Boxes },
 ] as const;
+
+const HTML_OUTPUT_MODE_OPTIONS: Array<{ value: HtmlOutputMode; label: string }> = [
+  { value: "static", label: "Static HTML" },
+  { value: "animated-preview-js", label: "Animated HTML" },
+];
 
 function deriveProjectNameFromPrompt(prompt: string) {
   const normalized = prompt
@@ -111,10 +127,12 @@ export function StudioHomePage() {
   const [isHistoryExpanded, setIsHistoryExpanded] = useState(true);
   const [aiPrompt, setAiPrompt] = useState("");
   const [moduleUsageMode, setModuleUsageMode] = useState<WorkbenchModuleUsageMode>("disabled");
+  const [htmlOutputMode, setHtmlOutputMode] = useState<HtmlOutputMode>("static");
   const [visibleCount, setVisibleCount] = useState(12);
 
   const shell = useStudioShellState();
   const library = useStudioLibraryState();
+  const brief = useStudioBriefState();
 
   const {
     createProject,
@@ -125,6 +143,7 @@ export function StudioHomePage() {
     setSelectedLibraryProjectId,
     setSelectedChatProjectId,
     setStatusLine,
+    setAiSettings,
   } = useStudioProjectActions();
 
   const deferredHomeSection = useDeferredValue(shell.homeSection);
@@ -197,6 +216,14 @@ export function StudioHomePage() {
 
   const recentModules = useMemo(
     () => loadAvailableModuleRegistry().slice(0, 4),
+    [],
+  );
+  const starterDecks = useMemo(
+    () => listStarterPackManifests("deck").slice(0, 4),
+    [],
+  );
+  const starterLayouts = useMemo(
+    () => listStarterPackManifests("layout").slice(0, 4),
     [],
   );
 
@@ -281,6 +308,66 @@ export function StudioHomePage() {
     navigate(`/projects/${record.id}/edit`);
   }
 
+  function handleStartDeckFromStarter(starter: StarterPackManifest) {
+    if (!isStarterPackDeck(starter)) {
+      return;
+    }
+
+    createProject(starter.label);
+    const state = useWorkbenchStudioStore.getState();
+    const project = state.document.project;
+    if (!project) {
+      setStatusLine("Studio could not open the selected starter pack.");
+      return;
+    }
+
+    replaceCurrentProject(
+      createProjectBundle({
+        ...project,
+        templateId: "blank",
+        starterPackId: starter.id,
+        starterApplicationMode: "deck",
+        projectName: starter.label,
+        sourceText: "",
+        briefMessages: [],
+        generationMode: "standard",
+        moduleUsageMode: "disabled",
+        htmlOutputMode: "static",
+        requestedPageCount: starter.pageCount ?? null,
+        pages: buildStarterDeckPages(starter),
+        generatedDraft: null,
+        workflowStage: "intake",
+        updatedAt: new Date().toISOString(),
+      }),
+      {
+        history: {
+          scope: "brief",
+          label: "Start from starter pack",
+          fields: ["starterPackId", "projectName", "sourceText", "requestedPageCount", "pages"],
+        },
+        mode: "editor",
+        resetSelection: true,
+        statusLine: `Opened ${starter.label} as a read-only starter pack. Add your brief and generate when ready.`,
+      },
+    );
+
+    navigate(`/projects/${project.id}/edit`);
+  }
+
+  function handleOpenStarterLayout(starter: StarterPackManifest) {
+    if (!isStarterPackLayout(starter)) {
+      return;
+    }
+    const handoff = createStarterPackAuthoringHandoff(starter.id);
+    if (!handoff) {
+      setStatusLine("Studio could not map this starter layout into the template workbench yet.");
+      return;
+    }
+    const token = storeModuleAuthoringHandoff(handoff);
+    setStatusLine(`${starter.label} starter copied into the template workbench.`);
+    navigate(`/templates/new?extract=${token}&stage=${handoff.preferredStage}`);
+  }
+
   function handleDeleteProject(args: {
     workspaceId: string;
     projectId: string;
@@ -327,6 +414,7 @@ export function StudioHomePage() {
         sourceText: nextPrompt,
         generationMode: "standard",
         moduleUsageMode,
+        htmlOutputMode,
         requestedPageCount: null,
         longFormClarification:
           clarificationSuggestion?.trigger === "explicit-8-9-pages"
@@ -353,6 +441,7 @@ export function StudioHomePage() {
             "sourceText",
             "generationMode",
             "moduleUsageMode",
+            "htmlOutputMode",
             "requestedPageCount",
             "briefMessages",
             "workflowStage",
@@ -688,6 +777,26 @@ export function StudioHomePage() {
                           </button>
                         ))}
                       </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--studio-muted)]">
+                          Output
+                        </div>
+                        {HTML_OUTPUT_MODE_OPTIONS.map((option) => (
+                          <button
+                            key={option.value}
+                            type="button"
+                            onClick={() => setHtmlOutputMode(option.value)}
+                            className={[
+                              "inline-flex items-center rounded-full border px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] transition",
+                              htmlOutputMode === option.value
+                                ? "border-[rgba(0,242,255,0.35)] bg-[rgba(0,242,255,0.1)] text-[var(--studio-ink)]"
+                                : "border-[var(--studio-line)] bg-[rgba(255,255,255,0.03)] text-[var(--studio-muted-strong)] hover:border-[rgba(0,242,255,0.2)] hover:text-[var(--studio-ink)]",
+                            ].join(" ")}
+                          >
+                            {option.label}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                     <button
                       type="button"
@@ -698,6 +807,102 @@ export function StudioHomePage() {
                       Generate
                       <Sparkles className="h-4 w-4 text-[var(--studio-accent)]" />
                     </button>
+                  </div>
+                </div>
+
+                <div className="mt-3 flex justify-end px-2">
+                  <label className="inline-flex items-center gap-1.5 text-[10px] text-[var(--studio-muted)] opacity-80 transition hover:opacity-100">
+                    <span>Agent</span>
+                    <select
+                      value={brief.aiSettings.provider}
+                      onChange={(e) => {
+                        const provider = e.target.value as WorkbenchAgentProvider;
+                        setAiSettings({ ...brief.aiSettings, provider });
+                      }}
+                      className="h-6 cursor-pointer rounded border-0 bg-transparent px-1 py-0 text-[10px] text-[var(--studio-muted-strong)] outline-none transition hover:text-[var(--studio-ink)] focus:text-[var(--studio-ink)]"
+                    >
+                      <option value="cursor">Cursor</option>
+                      <option value="codex">Codex</option>
+                      <option value="kimi">Kimi</option>
+                    </select>
+                  </label>
+                </div>
+
+                <div className="mt-8 rounded-[24px] border border-[var(--studio-line)] bg-[rgba(255,255,255,0.02)] px-5 py-5 text-left">
+                  <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+                    <div>
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.3em] text-[var(--studio-muted)]">
+                        Starter packs
+                      </div>
+                      <div className="mt-3 text-[1.02rem] font-semibold text-[var(--studio-ink)]">
+                        Start blank, or begin from a read-only visual starter.
+                      </div>
+                      <div className="mt-2 max-w-2xl text-[13px] leading-6 text-[var(--studio-muted-strong)]">
+                        Starter packs borrow theme and page rhythm from html-ppt-skill, but your brief and our renderer still stay in charge.
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          createProject("New report");
+                          const state = useWorkbenchStudioStore.getState();
+                          const project = state.document.project;
+                          if (!project) {
+                            setStatusLine("Studio could not open a blank project.");
+                            return;
+                          }
+                          navigate(`/projects/${project.id}/edit`);
+                        }}
+                        className="inline-flex items-center gap-2 rounded-full border border-[var(--studio-line)] bg-[rgba(255,255,255,0.03)] px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--studio-ink)] transition hover:border-[rgba(255,255,255,0.18)]"
+                      >
+                        Start blank
+                      </button>
+                      <Link
+                        to="/templates"
+                        className="inline-flex items-center gap-2 rounded-full border border-[rgba(0,242,255,0.28)] bg-[rgba(0,242,255,0.08)] px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--studio-ink)] transition hover:bg-[rgba(0,242,255,0.14)]"
+                      >
+                        Start from starter pack
+                        <ArrowRight className="h-4 w-4 text-[var(--studio-accent)]" />
+                      </Link>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                    {starterDecks.map((starter) => {
+                      const theme = getStarterPackTheme(starter.themeId);
+                      return (
+                        <button
+                          key={starter.id}
+                          type="button"
+                          onClick={() => handleStartDeckFromStarter(starter)}
+                          className={[
+                            "rounded-[20px] border px-4 py-4 text-left transition hover:-translate-y-0.5",
+                            starter.preview.tone === "dark"
+                              ? "border-[rgba(135,172,255,0.2)] bg-[linear-gradient(180deg,rgba(13,18,34,0.95)_0%,rgba(7,10,18,0.98)_100%)]"
+                              : "border-[rgba(255,255,255,0.08)] bg-[linear-gradient(180deg,rgba(255,255,255,0.06)_0%,rgba(255,255,255,0.02)_100%)]",
+                          ].join(" ")}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[var(--studio-muted)]">
+                              {starter.preview.eyebrow}
+                            </div>
+                            <div className="rounded-full border border-[rgba(255,255,255,0.12)] px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.18em] text-[var(--studio-muted)]">
+                              Read only
+                            </div>
+                          </div>
+                          <div className="mt-3 text-[1rem] font-semibold text-[var(--studio-ink)]">
+                            {starter.label}
+                          </div>
+                          <div className="mt-1 text-[11px] uppercase tracking-[0.18em] text-[var(--studio-muted)]">
+                            {theme?.label ?? starter.themeId} · {starter.pageCount} pages
+                          </div>
+                          <div className="mt-4 text-[13px] leading-6 text-[var(--studio-muted-strong)]">
+                            {starter.preview.body}
+                          </div>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               </div>
@@ -800,6 +1005,36 @@ export function StudioHomePage() {
                       </div>
                     </Link>
                   ))}
+                  {starterLayouts.map((starter) => {
+                    const theme = getStarterPackTheme(starter.themeId);
+                    return (
+                      <button
+                        key={starter.id}
+                        type="button"
+                        onClick={() => handleOpenStarterLayout(starter)}
+                        className="studio-terminal-panel group block px-5 py-5 text-left transition hover:-translate-y-0.5 hover:border-[rgba(0,242,255,0.24)]"
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[var(--studio-muted)]">
+                            Starter pack // {theme?.label ?? starter.themeId}
+                          </div>
+                          <div className="rounded-full border border-[rgba(255,255,255,0.12)] px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.18em] text-[var(--studio-muted)]">
+                            Read only
+                          </div>
+                        </div>
+                        <div className="mt-4 text-[1.08rem] font-semibold text-[var(--studio-ink)]">
+                          {starter.label}
+                        </div>
+                        <div className="mt-2 text-[13px] leading-6 text-[var(--studio-muted-strong)]">
+                          {starter.description}
+                        </div>
+                        <div className="mt-5 inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.2em] text-[var(--studio-accent)]">
+                          Open in workbench
+                          <ArrowRight className="h-4 w-4" />
+                        </div>
+                      </button>
+                    );
+                  })}
                 </div>
 
                 <div className="space-y-5">

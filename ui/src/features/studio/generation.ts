@@ -1,16 +1,19 @@
 import { API_BASE, ApiError, api } from "@/api/client";
 import { resolveGenerationAnalysisSkill } from "./analysis-skills";
-import type { WorkbenchAiSettings } from "./ai-settings";
+import { resolveAgentConfigFromAiSettings, type WorkbenchAiSettings } from "./ai-settings";
 import { DEFAULT_TEMPLATE_ID } from "./config";
 import {
   canReuseGeneratedDraft,
   createGeneratedDraftAsset,
   hydrateDraftAsset,
 } from "./generation-assets";
+import { applyShrinkToFitToReport } from "./html-report-fit";
+import { inferRequestedHtmlPageCount } from "./page-count";
 import {
   ensureHtmlEditableStructure,
   normalizeGeneratedHtmlReportTypography,
 } from "./html-report-structure";
+import { normalizeHtmlAnimationStructure } from "./html-report-animation";
 import {
   normalizeGeneratedHtmlReportCanvasOverrides,
   pruneGeneratedHtmlReportCanvasOverrides,
@@ -21,6 +24,13 @@ import {
   createPublishedModuleManifestSignature,
   loadPublishedModuleManifests,
 } from "./module-assets";
+import {
+  createStarterPackTransportManifest,
+  createStarterThemeTransportManifest,
+  getStarterPackManifest,
+  isStarterPackDeck,
+  isStarterPackLayout,
+} from "./starter-packs";
 import { buildFallbackPageScene } from "./slide-scene";
 import { buildReportSourceInput } from "./module-runtime-input";
 import { resolveGenerationPageArchetype } from "./page-archetypes";
@@ -43,6 +53,7 @@ import type {
   EditableField,
   EditableSlideSpec,
   GeneratedHtmlReport,
+  HtmlOutputMode,
   LayoutBlock,
   LayoutPage,
   MetricFact,
@@ -60,6 +71,8 @@ import type {
   WorkbenchDraft,
   PublishedModuleManifest,
 } from "./types";
+
+export { inferRequestedHtmlPageCount } from "./page-count";
 
 type SourceSection = {
   heading: string;
@@ -126,16 +139,34 @@ type HtmlReportRequest = {
   pageCount?: number;
   generationMode?: WorkbenchGenerationMode;
   moduleUsageMode?: WorkbenchModuleUsageMode;
-  agentConfig?: WorkbenchAiSettings["cursor"];
+  htmlOutputMode?: HtmlOutputMode;
+  agentConfig?: {
+    provider: string;
+    command: string;
+    model: string;
+    cwd: string;
+    apiKey: string;
+    baseUrl: string;
+  };
   publishedModules?: PublishedModuleManifest[];
   moduleManifestSignature?: string;
+  attachments?: Array<{ name: string; type: string; content: string }>;
 };
 
 export type GenerationRequestIntent = {
   generationMode?: WorkbenchGenerationMode;
   requestedPageCount?: number | null;
   moduleUsageMode?: WorkbenchModuleUsageMode;
+  htmlOutputMode?: HtmlOutputMode;
   suppressInferredPageCount?: boolean;
+  starterPackId?: string | null;
+  starterThemeId?: string | null;
+  starterApplicationMode?: "deck" | "theme" | "mixed";
+  starterBindings?: Array<{
+    pageId: string;
+    pageNumber: number;
+    starterId: string;
+  }>;
 };
 
 export type LongFormClarificationSuggestion = {
@@ -328,7 +359,12 @@ type StreamReviseHtmlReportOptions = {
   repairMode?: "standard" | "aggressive";
   generationMode?: WorkbenchGenerationMode;
   moduleUsageMode?: WorkbenchModuleUsageMode;
+  htmlOutputMode?: HtmlOutputMode;
   requestedPageCount?: number | null;
+  starterPackId?: string | null;
+  starterThemeId?: string | null;
+  starterApplicationMode?: "deck" | "theme" | "mixed";
+  starterBindings?: GenerationRequestIntent["starterBindings"];
 };
 
 export type OutlineGenerationResult = {
@@ -356,9 +392,10 @@ type ReviseHtmlReportRequest = {
   pageMeasurements: PageFitMeasurement[];
   repairMode?: "standard" | "aggressive";
   generationMode?: WorkbenchGenerationMode;
+  htmlOutputMode?: HtmlOutputMode;
   requestedPageCount?: number | null;
   moduleUsageMode?: WorkbenchModuleUsageMode;
-  agentConfig?: WorkbenchAiSettings["cursor"];
+  agentConfig?: HtmlReportRequest["agentConfig"];
   publishedModules?: PublishedModuleManifest[];
   moduleManifestSignature?: string;
 };
@@ -385,6 +422,7 @@ function summarizeHtmlReportRequest(payload: HtmlReportRequest) {
     pageCount: payload.pageCount ?? null,
     generationMode: payload.generationMode ?? "standard",
     moduleUsageMode: payload.moduleUsageMode ?? "disabled",
+    htmlOutputMode: payload.htmlOutputMode ?? "static",
     publishedModuleCount: payload.publishedModules?.length ?? 0,
   };
 }
@@ -393,17 +431,24 @@ export function resolveGenerationIntent(
   briefText: string,
   intent?: GenerationRequestIntent,
 ) {
-  const inferredPageCount = intent?.suppressInferredPageCount
+  const explicitRequestedPageCount = intent?.suppressInferredPageCount
     ? undefined
     : inferRequestedHtmlPageCount(briefText);
+  const hasExplicitRequestedPageCount =
+    Number.isInteger(explicitRequestedPageCount) &&
+    (explicitRequestedPageCount ?? 0) >= 1;
   const requestedPageCount =
-    Number.isInteger(inferredPageCount) && (inferredPageCount ?? 0) >= 1
-      ? inferredPageCount ?? null
+    hasExplicitRequestedPageCount
+      ? explicitRequestedPageCount ?? null
       : Number.isInteger(intent?.requestedPageCount) && (intent?.requestedPageCount ?? 0) >= 1
         ? intent?.requestedPageCount ?? null
         : null;
   const generationMode: WorkbenchGenerationMode =
-    requestedPageCount !== null && requestedPageCount >= 10
+    hasExplicitRequestedPageCount
+      ? (explicitRequestedPageCount ?? 0) >= 10
+        ? "long-form"
+        : "standard"
+      : requestedPageCount !== null && requestedPageCount >= 10
       ? "long-form"
       : requestedPageCount !== null && requestedPageCount <= 5
         ? "standard"
@@ -412,12 +457,17 @@ export function resolveGenerationIntent(
   return {
     generationMode,
     moduleUsageMode: intent?.moduleUsageMode ?? "disabled",
+    htmlOutputMode: intent?.htmlOutputMode ?? "static",
     requestedPageCount:
       generationMode === "long-form"
         ? requestedPageCount && requestedPageCount >= 10
           ? Math.min(requestedPageCount, 12)
           : 10
         : requestedPageCount,
+    starterPackId: intent?.starterPackId ?? null,
+    starterThemeId: intent?.starterThemeId ?? null,
+    starterApplicationMode: intent?.starterApplicationMode ?? "deck",
+    starterBindings: intent?.starterBindings ?? [],
   };
 }
 
@@ -429,23 +479,53 @@ function resolvePublishedModulesForUsageMode(moduleUsageMode: WorkbenchModuleUsa
   return loadPublishedModuleManifests();
 }
 
+function resolveStarterTransportManifests(intent?: GenerationRequestIntent) {
+  const manifests: PublishedModuleManifest[] = [];
+  const starter = getStarterPackManifest(intent?.starterPackId ?? null);
+  if (isStarterPackDeck(starter) && (intent?.starterApplicationMode ?? "deck") !== "theme") {
+    manifests.push(createStarterPackTransportManifest(starter, { application: "deck" }));
+  }
+
+  const themeManifest = createStarterThemeTransportManifest(intent?.starterThemeId ?? "");
+  if (themeManifest) {
+    manifests.push(themeManifest);
+  }
+
+  (intent?.starterBindings ?? []).forEach((binding) => {
+    const boundStarter = getStarterPackManifest(binding.starterId);
+    if (isStarterPackLayout(boundStarter)) {
+      manifests.push(
+        createStarterPackTransportManifest(boundStarter, {
+          application: "page",
+          pageNumber: binding.pageNumber,
+        }),
+      );
+    }
+  });
+
+  return manifests;
+}
+
 function createGenerationRequestPayload(
   briefText: string,
   aiSettings?: WorkbenchAiSettings,
   intent?: GenerationRequestIntent,
 ): HtmlReportRequest {
-  const { generationMode, moduleUsageMode, requestedPageCount } = resolveGenerationIntent(
-    briefText,
-    intent,
-  );
-  const publishedModules = resolvePublishedModulesForUsageMode(moduleUsageMode);
+  const { generationMode, moduleUsageMode, htmlOutputMode, requestedPageCount } =
+    resolveGenerationIntent(briefText, intent);
+  const starterManifests = resolveStarterTransportManifests(intent);
+  const publishedModules = [
+    ...resolvePublishedModulesForUsageMode(moduleUsageMode),
+    ...starterManifests,
+  ];
 
   return {
     brief: briefText,
     pageCount: requestedPageCount ?? undefined,
     generationMode,
     moduleUsageMode,
-    agentConfig: aiSettings?.cursor,
+    htmlOutputMode,
+    agentConfig: aiSettings ? resolveAgentConfigFromAiSettings(aiSettings) : undefined,
     publishedModules,
     moduleManifestSignature: createPublishedModuleManifestSignature(publishedModules),
   };
@@ -460,7 +540,11 @@ function createRevisionRequestPayload(
   intent?: GenerationRequestIntent,
 ): ReviseHtmlReportRequest {
   const moduleUsageMode = intent?.moduleUsageMode ?? "disabled";
-  const publishedModules = resolvePublishedModulesForUsageMode(moduleUsageMode);
+  const starterManifests = resolveStarterTransportManifests(intent);
+  const publishedModules = [
+    ...resolvePublishedModulesForUsageMode(moduleUsageMode),
+    ...starterManifests,
+  ];
 
   return {
     brief: briefText,
@@ -468,9 +552,10 @@ function createRevisionRequestPayload(
     pageMeasurements,
     repairMode,
     generationMode: intent?.generationMode,
+    htmlOutputMode: report.htmlOutputMode ?? intent?.htmlOutputMode ?? "static",
     requestedPageCount: intent?.requestedPageCount ?? null,
     moduleUsageMode,
-    agentConfig: aiSettings?.cursor,
+    agentConfig: aiSettings ? resolveAgentConfigFromAiSettings(aiSettings) : undefined,
     publishedModules,
     moduleManifestSignature: createPublishedModuleManifestSignature(publishedModules),
   };
@@ -627,92 +712,12 @@ function countPromptParagraphs(sourceText: string) {
     .filter(Boolean).length;
 }
 
-export function inferRequestedHtmlPageCount(sourceText: string) {
-  const normalized = sourceText.trim().toLowerCase();
-  if (!normalized) {
-    return undefined;
-  }
-
-  const numericTotalPatterns = [
-    /\b(\d{1,2})\s*[- ]?(?:page|pages|slide|slides|ppt)\b/gi,
-  ];
-  for (const pattern of numericTotalPatterns) {
-    let lastParsed: number | undefined;
-    for (const match of normalized.matchAll(pattern)) {
-      const parsed = Number.parseInt(match[1] ?? "", 10);
-      if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 12) {
-        lastParsed = parsed;
-      }
-    }
-    if (lastParsed !== undefined) {
-      return lastParsed;
-    }
-  }
-
-  const wordToCount: Record<string, number> = {
-    one: 1,
-    two: 2,
-    three: 3,
-    four: 4,
-    five: 5,
-    six: 6,
-    seven: 7,
-    eight: 8,
-    nine: 9,
-    ten: 10,
-    eleven: 11,
-    twelve: 12,
-  };
-  const wordMatches = Array.from(
-    normalized.matchAll(
-      /\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s*[- ]?(?:page|pages|slide|slides|ppt)\b/gi,
-    ),
-  );
-  if (wordMatches.length > 0) {
-    const latestMatch = wordMatches[wordMatches.length - 1];
-    const parsed = wordToCount[(latestMatch?.[1] ?? "").toLowerCase()];
-    if (parsed >= 1 && parsed <= 12) {
-      return parsed;
-    }
-  }
-
-  const referencedPages = Array.from(
-    normalized.matchAll(/\b(?:page|pages|slide|slides)\s*(\d{1,2})\b/gi),
-    (match) => Number.parseInt(match[1] ?? "", 10),
-  ).filter((value) => Number.isInteger(value) && value >= 1 && value <= 12);
-  const uniqueReferencedPages = Array.from(new Set(referencedPages)).sort((a, b) => a - b);
-  if (
-    uniqueReferencedPages.length >= 2 &&
-    uniqueReferencedPages[0] === 1 &&
-    uniqueReferencedPages.every((value, index) => value === index + 1)
-  ) {
-    return uniqueReferencedPages[uniqueReferencedPages.length - 1];
-  }
-
-  if (
-    /\b(one[ -]?page|one[ -]?pager|single[ -]?page|single slide|single-page|one slide|一页|单页)\b/i.test(
-      normalized,
-    )
-  ) {
-    return 1;
-  }
-
-  return undefined;
-}
-
 export function detectImplicitLongFormClarification(
   briefText: string,
   intent?: GenerationRequestIntent,
 ): LongFormClarificationSuggestion | null {
   const normalized = briefText.trim();
   if (!normalized) {
-    return null;
-  }
-
-  if (
-    intent?.generationMode === "long-form" ||
-    (intent?.requestedPageCount ?? 0) >= 10
-  ) {
     return null;
   }
 
@@ -725,6 +730,13 @@ export function detectImplicitLongFormClarification(
   }
 
   if (Number.isInteger(inferredPageCount) && (inferredPageCount ?? 0) >= 1) {
+    return null;
+  }
+
+  if (
+    intent?.generationMode === "long-form" ||
+    (intent?.requestedPageCount ?? 0) >= 10
+  ) {
     return null;
   }
 
@@ -1147,6 +1159,10 @@ function normalizeRemoteHtmlReport(report: GeneratedHtmlReport): GeneratedHtmlRe
 
   const normalizedReport = {
     ...report,
+    htmlOutputMode: report.htmlOutputMode ?? "static",
+    animationStructure: normalizeHtmlAnimationStructure(report.animationStructure, {
+      pageCount: report.pageCount,
+    }),
     html: normalizedTypography.html,
     structure: normalizedTypography.structure,
   };
@@ -1313,6 +1329,17 @@ export async function streamGenerateHtmlReport(
     pageCount: finalReport.pageCount,
   });
 
+  const shrinkResult = await applyShrinkToFitToReport(finalReport.html);
+  if (shrinkResult.changed) {
+    finalReport.html = shrinkResult.html;
+    workbenchDebugLog("html_report_shrink_to_fit_applied", {
+      pageCount: finalReport.pageCount,
+      changedPages: shrinkResult.pages.filter((p) => p.success && p.scaleRatio < 1).length,
+      failedPages: shrinkResult.pages.filter((p) => !p.success).length,
+      notes: shrinkResult.pages.map((p) => `Page ${p.pageNumber}: ${p.notes.join("; ")}`),
+    });
+  }
+
   return buildHtmlReportGenerationResultFromReport({
     report: finalReport,
     briefText,
@@ -1398,7 +1425,12 @@ export async function streamReviseHtmlReport(
     {
       generationMode: options?.generationMode,
       moduleUsageMode: options?.moduleUsageMode ?? "disabled",
+      htmlOutputMode: options?.htmlOutputMode ?? report.htmlOutputMode ?? "static",
       requestedPageCount: options?.requestedPageCount ?? null,
+      starterPackId: options?.starterPackId ?? null,
+      starterThemeId: options?.starterThemeId ?? null,
+      starterApplicationMode: options?.starterApplicationMode ?? "deck",
+      starterBindings: options?.starterBindings ?? [],
     },
   );
 
@@ -1448,6 +1480,17 @@ export async function streamReviseHtmlReport(
     pageCount: finalReport.pageCount,
     model,
   });
+
+  const shrinkResult = await applyShrinkToFitToReport(finalReport.html);
+  if (shrinkResult.changed) {
+    finalReport.html = shrinkResult.html;
+    workbenchDebugLog("html_report_revise_shrink_to_fit_applied", {
+      pageCount: finalReport.pageCount,
+      changedPages: shrinkResult.pages.filter((p) => p.success && p.scaleRatio < 1).length,
+      failedPages: shrinkResult.pages.filter((p) => !p.success).length,
+      notes: shrinkResult.pages.map((p) => `Page ${p.pageNumber}: ${p.notes.join("; ")}`),
+    });
+  }
 
   return buildHtmlReportGenerationResultFromReport({
     report: finalReport,

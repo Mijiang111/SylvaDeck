@@ -26,6 +26,7 @@ import type {
   GeneratedReportStyleProfile,
   GenerationFallbackReason,
   GenerateStudioReportRequest,
+  HtmlAnimationPage,
   DeckHeroArtDirection,
   HeroAnnotationMode,
   HeroCompositionFamily,
@@ -52,6 +53,7 @@ import type {
   StudioBriefSynthesis,
   StudioEvalOverrides,
   StudioGenerateStreamEvent,
+  StudioPageMission,
   StudioPreflightPlan,
   StudioStageTraceEntry,
   StudioWorkingMemory,
@@ -63,6 +65,7 @@ import type {
 import { deckPlanSchema, pageRecipePlanSchema } from "./schemas.js";
 import type {
   GenerationMode,
+  HtmlOutputMode,
   ModuleChartKind,
   ModuleUsageMode,
   PageFitMeasurement,
@@ -133,6 +136,7 @@ import {
   createStudioCapabilityCard,
   createThinkingModeCapabilityCard,
   getStudioAiWorkspacePromptMeta,
+  isStudioStarterPackManifest,
   rememberStudioAiWorkspacePromptMeta,
   renderStudioAiWorkspace,
   selectStudioTemplateWorkspaceManifests,
@@ -238,11 +242,9 @@ function applyPreflightToDeckPlan(args: {
   pages: Array<{ pageNumber: number; pageTitle: string; goal: string; story: string }>;
   preflight: StudioPreflightPlan;
 }) {
-  return args.pages.map((page, index) => {
+  return args.pages.map((page) => {
     const mission =
-      args.preflight.pageMissions.find((entry) => entry.pageNumber === page.pageNumber) ??
-      args.preflight.pageMissions[index] ??
-      null;
+      args.preflight.pageMissions.find((entry) => entry.pageNumber === page.pageNumber) ?? null;
     if (!mission) {
       return page;
     }
@@ -259,11 +261,9 @@ function applyPreflightToRecipePlan(args: {
   pages: PageRecipePlan["pages"];
   preflight: StudioPreflightPlan;
 }) {
-  return args.pages.map((page, index) => {
+  return args.pages.map((page) => {
     const mission =
-      args.preflight.pageMissions.find((entry) => entry.pageNumber === page.pageNumber) ??
-      args.preflight.pageMissions[index] ??
-      null;
+      args.preflight.pageMissions.find((entry) => entry.pageNumber === page.pageNumber) ?? null;
     if (!mission) {
       return page;
     }
@@ -277,6 +277,66 @@ function applyPreflightToRecipePlan(args: {
         : page.compositionHint,
     };
   });
+}
+
+function fingerprintAllocatedPageMission(mission: Pick<StudioPageMission, "title" | "mission" | "headlineClaim">) {
+  return normalizeStudioText([mission.title, mission.mission, mission.headlineClaim].join(" "))
+    .toLowerCase()
+    .replace(/\b(?:page|slide|deck|presentation|ppt|overall|storyboard|flow)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function assertAllocatedPageMissions(args: {
+  preflight: StudioPreflightPlan;
+  pageCount: number;
+}) {
+  if (args.pageCount <= 1) {
+    return;
+  }
+
+  const missingPages: number[] = [];
+  const duplicateFingerprints = new Set<string>();
+  const seenFingerprints = new Set<string>();
+  const deckScopedPages: number[] = [];
+
+  for (let pageNumber = 1; pageNumber <= args.pageCount; pageNumber += 1) {
+    const mission = args.preflight.pageMissions.find((entry) => entry.pageNumber === pageNumber) ?? null;
+    if (!mission) {
+      missingPages.push(pageNumber);
+      continue;
+    }
+
+    if (mission.missionScope !== "page") {
+      deckScopedPages.push(pageNumber);
+    }
+
+    const fingerprint = fingerprintAllocatedPageMission(mission);
+    if (!fingerprint) {
+      continue;
+    }
+    if (seenFingerprints.has(fingerprint)) {
+      duplicateFingerprints.add(fingerprint);
+      continue;
+    }
+    seenFingerprints.add(fingerprint);
+  }
+
+  if (missingPages.length > 0) {
+    throw new Error(
+      `Page mission allocation failed: missing page-scoped missions for page ${missingPages.join(", ")}.`,
+    );
+  }
+
+  if (deckScopedPages.length > 0) {
+    throw new Error(
+      `Page mission allocation failed: deck-scoped missions remained on page ${deckScopedPages.join(", ")}.`,
+    );
+  }
+
+  if (duplicateFingerprints.size > 0) {
+    throw new Error("Page mission allocation failed: duplicate page missions remained after normalization.");
+  }
 }
 
 export function buildSkillBackedPlanningPrompt(args: {
@@ -503,6 +563,7 @@ export function buildPagePrompt(args: {
   freeformLayoutPlan?: FreeformLayoutPlan | null;
   evalOverrides?: StudioEvalOverrides | null;
   preflight?: StudioPreflightPlan | null;
+  htmlOutputMode?: HtmlOutputMode;
   pageArgument?: {
     pageQuestion: string;
     headlineClaim: string;
@@ -547,6 +608,24 @@ export function buildPagePrompt(args: {
   });
   const supportCount = args.pageArgument?.supportBullets?.length ?? 0;
   const evidenceCount = args.pageArgument?.evidenceCallouts?.length ?? 0;
+  const isWowPage = resolveWowPage({
+    brief: args.brief,
+    taskIntentText: args.thinkingContext.inputs.taskIntentText,
+    heroModelIntent: args.heroModelIntent,
+    chartPageIntent: args.chartPageIntent,
+    templateOptions,
+    pageCount: args.allPages.length,
+    pageNumber: args.page.pageNumber,
+    supportCount,
+    evidenceCount,
+    pageSignals: [
+      args.page.pageTitle,
+      args.page.goal,
+      args.page.story,
+      args.pageArgument?.pageQuestion,
+      args.pageArgument?.headlineClaim,
+    ],
+  });
   const layoutPlanningDisabled = args.evalOverrides?.disableLayoutPlanningBlock === true;
   const freeformLayoutPlan =
     layoutPlanningDisabled
@@ -582,21 +661,35 @@ export function buildPagePrompt(args: {
           "Avoid repeating one of those families again unless the evidence absolutely demands it.",
         ]
       : [];
-  const visualOperatorLines = buildPageVisualOperatorLines({
-    templateOptions,
-    chartPageIntent: args.chartPageIntent,
-    heroModelIntent: args.heroModelIntent,
-    freeformLayoutPlan,
-  });
   const pageMission = findStudioPageMission({
     preflight,
     pageNumber: args.page.pageNumber,
     fallbackTitle: args.page.pageTitle,
     fallbackMission: args.pageArgument?.pageQuestion ?? args.page.goal,
   });
+  const visualOperatorLines = buildPageVisualOperatorLines({
+    templateOptions,
+    chartPageIntent: args.chartPageIntent,
+    heroModelIntent: args.heroModelIntent,
+    structureCue: pageMission.structureCue,
+    freeformLayoutPlan,
+  });
   const capabilityCards = buildPreflightCapabilityCards({
     preflight,
+    forceKinds: args.heroModelIntent?.enabled ? ["3d"] : undefined,
     baseCards: [
+    ...(isWowPage
+      ? [
+          createStudioCapabilityCard({
+            id: "craft-direction",
+            title: "Craft direction",
+            lines: buildWowCraftDirectionLines({
+              heroModelIntent: args.heroModelIntent,
+            }),
+            maxLines: 5,
+          }),
+        ]
+      : []),
     createStudioCapabilityCard({
       id: "style-direction",
       title: "Style direction",
@@ -636,14 +729,8 @@ export function buildPagePrompt(args: {
           createStudioCapabilityCard({
             id: "explicit-3d",
             title: "Explicit 3D",
-            body: args.heroSkill.body,
-            fallbackLines: [
-              ...(args.heroReferenceLines ?? []),
-              ...(args.heroArtDirection
-                ? buildHeroModelContractLines(args.heroModelIntent, args.heroArtDirection)
-                : []),
-            ],
-            maxLines: 4,
+            lines: buildCompactHeroCapabilityLines(args.heroModelIntent, args.heroArtDirection),
+            maxLines: 5,
           }),
         ]
       : []),
@@ -672,6 +759,9 @@ export function buildPagePrompt(args: {
       visualOperatorLines,
       freeformLayoutPlan,
       preferredVisual: pageMission.preferredVisual,
+      structureCue: pageMission.structureCue,
+      heroModelIntent: args.heroModelIntent,
+      wowPage: isWowPage,
     }),
     specializedArtifact: args.briefSynthesis?.specializedArtifact ?? complexityProfile.specializedArtifact,
     outputRules: [
@@ -683,9 +773,15 @@ export function buildPagePrompt(args: {
       "The data-page-title must be audience-facing, specific, and grounded in the user brief or page claim; never use internal placeholders like Core thesis, Opening thesis, or Page 1.",
       "No internal scrolling, no cut-off content, and no placeholder language.",
       "Use Visual thinking privately before writing HTML. Do not output the reasoning or scaffold.",
+      ...(isWowPage
+        ? buildWowOutputRuleLines({
+            heroModelIntent: args.heroModelIntent,
+          })
+        : []),
+      ...buildAnimatedPreviewOutputRuleLines(args.htmlOutputMode ?? "static"),
       "If no template is active, do not default to a generic left/right split.",
       "If content is sparse, preserve negative space and scale the main claim rather than inventing filler cards.",
-      "Keep the page light, restrained, and professional.",
+      ...(isWowPage ? [] : ["Keep the page light, restrained, and professional."]),
       "Design a fresh, coherent light-theme visual system for this deck and keep it consistent with the supplied tone direction.",
       "Let the raw brief and current page mission choose the composition instead of defaulting to a safe template.",
       ...(preflight.evidencePolicy.tier === "source-backed"
@@ -1105,9 +1201,56 @@ function describeCompositionFreedom(pageClass: LongFormPageClass) {
 }
 
 function isChartDrivenPageIntent(text: string) {
-  return /\b(trend|trajectory|shift|compare|comparison|gap|mix|distribution|breakdown|pattern|delta|movement|evidence|performance|change|allocation|adoption|decline|increase|decrease)\b/i.test(
+  return /\b(trend|trajectory|shift|compare|comparison|gap|mix|distribution|breakdown|pattern|delta|movement|evidence|performance|change|allocation|adoption|decline|increase|decrease|matrix|quadrant|portfolio|2x2|bcg)\b/i.test(
     text,
-  );
+  ) || /(?:矩阵|矩陣|四象限|波士顿矩阵|波士頓矩陣|二维矩阵|二維矩陣)/i.test(text);
+}
+
+function hasMatrixLikeSignal(text: string) {
+  return /\b(matrix|quadrant|2x2|2 x 2|bcg|portfolio map)\b/i.test(text) ||
+    /(?:矩阵|矩陣|四象限|波士顿矩阵|波士頓矩陣|BCG矩阵|BCG矩陣|二维矩阵|二維矩陣)/i.test(text);
+}
+
+function parseExplicitPageReferenceNumber(value: string | null | undefined) {
+  const normalized = normalizeStudioText(value ?? "").toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+
+  const numericValue = Number.parseInt(normalized, 10);
+  if (Number.isInteger(numericValue) && numericValue >= 1 && numericValue <= 12) {
+    return numericValue;
+  }
+
+  switch (normalized) {
+    case "一":
+      return 1;
+    case "二":
+    case "两":
+      return 2;
+    case "三":
+      return 3;
+    case "四":
+      return 4;
+    case "五":
+      return 5;
+    case "六":
+      return 6;
+    case "七":
+      return 7;
+    case "八":
+      return 8;
+    case "九":
+      return 9;
+    case "十":
+      return 10;
+    case "十一":
+      return 11;
+    case "十二":
+      return 12;
+    default:
+      return null;
+  }
 }
 
 function extractExplicitChartRequestPages(brief: string) {
@@ -1123,16 +1266,17 @@ function extractExplicitChartRequestPages(brief: string) {
       return;
     }
 
-    const pageMatch = entry.match(/\bpage\s+(\d{1,2})\b/i);
+    const pageMatch = entry.match(/\bpage\s+(\d{1,2})\b|第\s*(\d{1,2}|[一二两三四五六七八九十]{1,3})\s*(?:页|頁|张|張)/i);
     if (pageMatch) {
-      const pageNumber = Number.parseInt(pageMatch[1] ?? "", 10);
-      if (Number.isFinite(pageNumber)) {
+      const pageNumber = parseExplicitPageReferenceNumber(pageMatch[1] ?? pageMatch[2] ?? "");
+      if (pageNumber !== null) {
         lastReferencedPage = pageNumber;
       }
     }
 
     const mentionsChart =
       /\b(chart|graph|figure|visual)\b/i.test(entry) ||
+      hasMatrixLikeSignal(entry) ||
       /\b(hero|dominant object|main evidence page|primary proof)\b/i.test(entry);
 
     if (!mentionsChart) {
@@ -1165,6 +1309,11 @@ function resolvePageChartPriority(args: {
     args.page.desiredChartKind !== "none" ||
     args.page.layout === "chart-insight" ||
     /\b(chart|graph|figure|visual|primary proof)\b/i.test(
+      [args.page.pageTitle, args.page.objective, args.page.insight, args.page.compositionHint]
+        .filter(Boolean)
+        .join(" "),
+    ) ||
+    hasMatrixLikeSignal(
       [args.page.pageTitle, args.page.objective, args.page.insight, args.page.compositionHint]
         .filter(Boolean)
         .join(" "),
@@ -1224,6 +1373,11 @@ function isChartPageEligible(
     Boolean(page.chartSpec) ||
     page.layout === "chart-insight" ||
     /\b(chart|graph|figure|visual|primary proof)\b/i.test(
+      [page.pageIntent, page.objective, page.insight, page.pageTitle, page.compositionHint]
+        .filter(Boolean)
+        .join(" "),
+    ) ||
+    hasMatrixLikeSignal(
       [page.pageIntent, page.objective, page.insight, page.pageTitle, page.compositionHint]
         .filter(Boolean)
         .join(" "),
@@ -2247,8 +2401,11 @@ function buildModuleManifestIndex(
     phase?: "render" | "repair";
   },
 ) {
+  const starterManifests = payload.publishedModules.filter((manifest) =>
+    isStudioStarterPackManifest(manifest),
+  );
   if (payload.moduleUsageMode === "disabled") {
-    return [] as PublishedModuleManifest[];
+    return starterManifests;
   }
 
   const signature =
@@ -2261,6 +2418,7 @@ function buildModuleManifestIndex(
   }
 
   const manifests = payload.publishedModules
+    .filter((manifest) => !isStudioStarterPackManifest(manifest))
     .filter((manifest) => manifest.status === "stable")
     .filter((manifest) => manifest.hasPassingEvidence)
     .filter((manifest) => manifest.trustScore >= 0.6)
@@ -2276,8 +2434,77 @@ function buildModuleManifestIndex(
         left.label.localeCompare(right.label),
     );
 
-  publishedModuleManifestCache.set(signature, manifests);
-  return manifests;
+  const merged = [...starterManifests, ...manifests];
+  publishedModuleManifestCache.set(signature, merged);
+  return merged;
+}
+
+function parseStarterPromptHint(promptHint: string) {
+  if (!promptHint.startsWith("starter-pack::")) {
+    return null;
+  }
+
+  const record = Object.fromEntries(
+    promptHint
+      .slice("starter-pack::".length)
+      .split(";")
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .map((item) => {
+        const [key, value] = item.split("=");
+        return [key?.trim() ?? "", value?.trim() ?? ""] as const;
+      }),
+  );
+  const pageNumber = Number.parseInt(record["page-number"] ?? "", 10);
+  return {
+    application: record.application || "deck",
+    pageNumber: Number.isInteger(pageNumber) && pageNumber >= 1 ? pageNumber : null,
+  };
+}
+
+function resolveSelectedStarterPackManifests(
+  manifests: PublishedModuleManifest[],
+  options?: { pageNumber?: number | null },
+) {
+  return manifests.filter((manifest) => {
+    if (!isStudioStarterPackManifest(manifest)) {
+      return false;
+    }
+    const parsed = parseStarterPromptHint(manifest.promptHint);
+    if (parsed?.application === "page" && options?.pageNumber) {
+      return parsed.pageNumber === options.pageNumber;
+    }
+    return parsed?.application !== "page" || !options?.pageNumber;
+  });
+}
+
+function buildStarterVisualOperatorLines(
+  manifests: PublishedModuleManifest[],
+  pageNumber: number,
+) {
+  const pageStarter = resolveSelectedStarterPackManifests(manifests, { pageNumber }).find((manifest) => {
+    const parsed = parseStarterPromptHint(manifest.promptHint);
+    return parsed?.application === "page";
+  });
+  if (!pageStarter?.template?.promptContract?.length) {
+    return [];
+  }
+
+  const contractLines = pageStarter.template.promptContract;
+  const operatorLine = contractLines.find((line) => /^Starter operator /i.test(line));
+  const dominantGeometryLine = contractLines.find((line) => /^Starter dominant geometry /i.test(line));
+  const copyDensityLine = contractLines.find((line) => /^Starter copy density /i.test(line));
+  const avoidLines = contractLines.filter((line) => /^Starter avoid /i.test(line)).slice(0, 2);
+
+  return [
+    ...(operatorLine ? [operatorLine.replace(/^Starter operator /i, "Starter operator: ")] : []),
+    ...(dominantGeometryLine
+      ? [dominantGeometryLine.replace(/^Starter dominant geometry /i, "Starter dominant geometry: ")]
+      : []),
+    ...(copyDensityLine ? [copyDensityLine.replace(/^Starter copy density /i, "Copy density: ")] : []),
+    ...avoidLines.map((line) => line.replace(/^Starter avoid /i, "Avoid pattern: ")),
+    "Preserve the starter silhouette before simplifying secondary regions.",
+  ];
 }
 
 function summarizeEvidenceGraphForPrompt(graph: EvidenceGraph) {
@@ -2544,6 +2771,21 @@ function parseRecipePlan(summary: string, requestedPageCount?: number) {
   } satisfies PageRecipePlan;
 }
 
+const MAX_STANDARD_HEURISTIC_RECIPE_PAGES = 9;
+
+export function resolveStandardHeuristicRecipePageCount(args: {
+  requestedPageCount?: number | null;
+  defaultPageCount: number;
+}) {
+  return Math.max(
+    1,
+    Math.min(
+      args.requestedPageCount ?? args.defaultPageCount,
+      MAX_STANDARD_HEURISTIC_RECIPE_PAGES,
+    ),
+  );
+}
+
 function buildStandardHeuristicRecipePlan(args: {
   payload: GenerateStudioReportRequest;
   evidenceGraph: EvidenceGraph;
@@ -2583,7 +2825,10 @@ function buildStandardHeuristicRecipePlan(args: {
     brief: args.payload.brief,
     evidenceGraph: args.evidenceGraph,
   });
-  const pageCount = Math.max(1, Math.min(args.payload.pageCount ?? defaultPageCount, 5));
+  const pageCount = resolveStandardHeuristicRecipePageCount({
+    requestedPageCount: args.payload.pageCount,
+    defaultPageCount,
+  });
   const pages: PageRecipePlan["pages"] = [];
   const reserveDecisionPage = pageCount > 1;
   const canAddEvidencePage = () => pages.length < pageCount - (reserveDecisionPage ? 1 : 0);
@@ -3336,12 +3581,20 @@ function buildPageVisualOperatorLines(args: {
   templateOptions: PublishedModuleManifest[];
   chartPageIntent?: ChartPageIntent;
   heroModelIntent?: HeroModelIntent;
+  structureCue?: StudioPageMission["structureCue"];
   freeformLayoutPlan?: FreeformLayoutPlan | null;
 }) {
   if (args.heroModelIntent?.enabled) {
     return [
-      "Visual operator: explicit 3D hero page with one dominant object and compact annotations.",
-      "Keep the hero object primary; do not flatten it into a generic two-column explainer.",
+      `Visual operator: explicit 3D hero page using ${summarizeHeroCompositionFamily(args.heroModelIntent.recommendedCompositionFamily)} around one ${summarizeHeroFamilyLabel(args.heroModelIntent.objectFamily)}.`,
+      "Treat the page as one fabricated object with compact annotations, never a flat explainer, UI panel collage, or card wall.",
+    ];
+  }
+
+  if (args.structureCue === "matrix" || args.structureCue === "quadrant") {
+    return [
+      "Visual operator: matrix-first page with one dominant 2x2 frame and only a compact supporting takeaway.",
+      "Keep the matrix visible as the primary proof surface instead of collapsing back into an opener or generic summary card.",
     ];
   }
 
@@ -3492,6 +3745,139 @@ function buildHeroModelContractLines(intent: HeroModelIntent, artDirection: Deck
   ];
 }
 
+function buildCompactHeroCapabilityLines(intent: HeroModelIntent, artDirection?: DeckHeroArtDirection | null) {
+  if (!intent.enabled) {
+    return [];
+  }
+
+  return [
+    `Build one fabricated pseudo-3D hero object as the explanatory center using ${summarizeHeroCompositionFamily(intent.recommendedCompositionFamily)} around one ${summarizeHeroFamilyLabel(intent.objectFamily)}.`,
+    "Show real spatial cues: perspective, visible thickness, overlap or occlusion, and cutaway or exploded internal layers.",
+    "Let the object dominate the page; keep headline and annotations compact and peripheral.",
+    "Preserve at least three clear depth cues so the object feels built, layered, and intentional.",
+    artDirection
+      ? `Never resolve it as flat cards, glass panels, dashboard tiles, or a generic explainer. Material direction: ${artDirection.materialDirection}`
+      : "Never resolve it as flat cards, glass panels, dashboard tiles, or a generic explainer.",
+  ];
+}
+
+function hasWowPageCue(text: string | null | undefined) {
+  const normalized = normalizeStudioText(text ?? "");
+  if (!normalized) {
+    return false;
+  }
+
+  return /\b(visually striking|striking|premium|cinematic|concept board|concept-board|product vision|design-forward|design forward|unforgettable|beautiful|showpiece|hero visual|hero page|vision reveal|concept page|sexy)\b/i.test(
+    normalized,
+  );
+}
+
+function stripFencedSourceText(text: string | null | undefined) {
+  return (text ?? "").replace(/```[\s\S]*?```/g, " ").trim();
+}
+
+function resolveWowPage(args: {
+  brief: string;
+  taskIntentText?: string | null;
+  heroModelIntent?: HeroModelIntent | null;
+  chartPageIntent?: ChartPageIntent | null;
+  templateOptions?: PublishedModuleManifest[];
+  pageCount: number;
+  pageNumber?: number;
+  supportCount: number;
+  evidenceCount: number;
+  pageClass?: LongFormPageClass | null;
+  pageSignals?: Array<string | null | undefined>;
+}) {
+  if (args.chartPageIntent?.enabled) {
+    return false;
+  }
+
+  if (args.heroModelIntent?.enabled) {
+    return true;
+  }
+
+  const taskIntentText = stripFencedSourceText(args.taskIntentText).trim();
+  if (hasWowPageCue(taskIntentText)) {
+    return true;
+  }
+
+  const pageSignalText = (args.pageSignals ?? []).filter(Boolean).join("\n");
+  const sparseOpening =
+    (args.pageClass === "opening-core" || (!args.pageClass && args.pageNumber === 1)) &&
+    args.pageCount <= 2 &&
+    args.supportCount <= 2 &&
+    args.evidenceCount <= 1;
+
+  if ((args.templateOptions?.length ?? 0) > 0 && !sparseOpening) {
+    return false;
+  }
+
+  if (hasWowPageCue(pageSignalText)) {
+    return true;
+  }
+
+  return sparseOpening && /\b(hero|visual|vision|concept|reveal|premium|cinematic|product-grade|showpiece|opening image|opening visual)\b/i.test(pageSignalText);
+}
+
+function buildWowCraftDirectionLines(args: {
+  heroModelIntent?: HeroModelIntent | null;
+}) {
+  return [
+    "Make this page feel unmistakably crafted and premium, like a product-vision reveal rather than a safe explainer.",
+    "Let one visual gesture feel memorable and inevitable; reduce everything else until the hierarchy feels calm and intentional.",
+    "Use negative space, typography tension, and surface or material contrast as deliberate compositional tools.",
+    args.heroModelIntent?.enabled
+      ? "Refine the hero object's surfaces, highlights, shadow falloff, and elegant callouts until it reads like a designed artifact."
+      : "Refine spacing, shadow discipline, and compact annotations until the page feels designed instead of merely arranged.",
+    "Aim for product-grade composition: confident asymmetry, one dominant anchor, and compact secondary support.",
+  ];
+}
+
+function buildWowOutputRuleLines(args: { heroModelIntent?: HeroModelIntent | null }) {
+  return [
+    "Make the page feel crafted, premium, and visually intentional rather than merely safe.",
+    "Use negative space, typography hierarchy, and material contrast as deliberate tools.",
+    args.heroModelIntent?.enabled
+      ? "Let the hero object carry the spectacle and keep annotations elegant, compact, and secondary."
+      : "Let one visual gesture carry the page and keep supporting copy compact, elegant, and subordinate.",
+  ];
+}
+
+export function buildAnimatedPreviewOutputRuleLines(htmlOutputMode: HtmlOutputMode) {
+  if (htmlOutputMode !== "animated-preview-js") {
+    return [];
+  }
+
+  return [
+    "Animated preview mode is enabled for this project.",
+    "Do not output <script>, external libraries, or freeform runtime code.",
+    "Mark only key semantic elements with Studio-owned animation metadata using data-anim-role, data-anim-enter, data-anim-delay, data-anim-duration, data-anim-order, and optional data-anim-anchor.",
+    "Use only supported animation roles: hero, headline, chart, callout, label, quadrant, rail, surface, metric, annotation.",
+    "Use only supported animation presets: fade-up, fade-in, slide-right, slide-left, scale-in, chart-reveal.",
+    "For data-anim-delay and data-anim-duration, prefer plain integer millisecond values with no unit, such as 80 or 640.",
+    "Use data-anim-order as a small integer like 0, 1, 2, 3 to control stagger order.",
+    "If you need looping preview motion, include at most one <template data-studio-animation-manifest>...</template> inside the page section, and make the template body pure JSON only with no comments or prose.",
+    'Use only this manifest shape: {"version":1,"startMode":"entry-then-loop","entryTracks":[{"anchor":"slug","preset":"fade-up","delayMs":0,"durationMs":640,"order":0}],"loopEffects":[...]}',
+    "Each loop effect must be exactly one of: rotate {kind, anchor, durationMs, optional direction, optional angleDeg}; ticker {kind, anchor, items, stepMs}; typewriter {kind, anchor, items, typeMs, holdMs, deleteMs}; pulse {kind, anchor, durationMs, optional scaleFrom, optional scaleTo, optional opacityFrom, optional opacityTo}; orbit {kind, anchor, durationMs, radiusPx, optional axis}.",
+    "Every manifest anchor must match a real data-anim-anchor on the same page and should use a short lowercase slug like recorder-wheel or signal-word.",
+    "Animate a small number of important elements, not the entire page.",
+  ];
+}
+
+export function buildAnimatedPreviewRepairRuleLines(htmlOutputMode: HtmlOutputMode) {
+  if (htmlOutputMode !== "animated-preview-js") {
+    return [];
+  }
+
+  return [
+    "Preserve valid data-anim-* attributes, data-anim-anchor markers, and a valid animation manifest template when the corresponding semantic elements survive the repair.",
+    "If animation metadata disappears after a restructure, re-add a small set of valid data-anim-* attributes and, when looping motion is still appropriate, re-add one valid <template data-studio-animation-manifest>...</template> with pure JSON only.",
+    'Keep the manifest on the exact shape {"version":1,"startMode":"entry-then-loop","entryTracks":[...],"loopEffects":[...]}; do not invent alternate keys, comments, trailing commas, stringified numbers, or freeform animation DSL.',
+    "Only reference anchors that actually exist on the repaired page via data-anim-anchor.",
+  ];
+}
+
 export function buildSkillBackedPagePrompt(args: {
   brief: string;
   deckTitle: string;
@@ -3514,6 +3900,7 @@ export function buildSkillBackedPagePrompt(args: {
   freeformLayoutPlan?: FreeformLayoutPlan | null;
   evalOverrides?: StudioEvalOverrides | null;
   preflight?: StudioPreflightPlan | null;
+  htmlOutputMode?: HtmlOutputMode;
 }) {
   const complexityProfile =
     args.complexityProfile ??
@@ -3552,6 +3939,26 @@ export function buildSkillBackedPagePrompt(args: {
     moduleOptions: args.moduleOptions,
     heroModelIntent: args.heroModelIntent,
     chartKind: args.page.chartSpec?.kind ?? null,
+  });
+  const isWowPage = resolveWowPage({
+    brief: args.brief,
+    taskIntentText: args.thinkingContext.inputs.taskIntentText,
+    heroModelIntent: args.heroModelIntent,
+    chartPageIntent: args.chartPageIntent,
+    templateOptions,
+    pageCount: args.allPages.length,
+    pageNumber: args.page.pageNumber,
+    supportCount: args.page.supportBullets.length,
+    evidenceCount: args.page.evidenceBullets.length,
+    pageClass: args.page.pageClass,
+    pageSignals: [
+      args.page.pageTitle,
+      args.page.pageIntent,
+      args.page.objective,
+      args.page.insight,
+      args.page.heroClaim,
+      args.page.takeaway,
+    ],
   });
   const layoutPlanningDisabled = args.evalOverrides?.disableLayoutPlanningBlock === true;
   const freeformLayoutPlan =
@@ -3600,7 +4007,20 @@ export function buildSkillBackedPagePrompt(args: {
   });
   const capabilityCards = buildPreflightCapabilityCards({
     preflight,
+    forceKinds: args.heroModelIntent.enabled ? ["3d"] : undefined,
     baseCards: [
+    ...(isWowPage
+      ? [
+          createStudioCapabilityCard({
+            id: "craft-direction",
+            title: "Craft direction",
+            lines: buildWowCraftDirectionLines({
+              heroModelIntent: args.heroModelIntent,
+            }),
+            maxLines: 5,
+          }),
+        ]
+      : []),
       createStudioCapabilityCard({
       id: "density-budget",
       title: "Density budget",
@@ -3647,12 +4067,8 @@ export function buildSkillBackedPagePrompt(args: {
           createStudioCapabilityCard({
             id: "explicit-3d",
             title: "Explicit 3D",
-            body: args.heroSkill.body,
-            fallbackLines: [
-              ...args.heroReferenceLines,
-              ...buildHeroModelContractLines(args.heroModelIntent, args.heroArtDirection),
-            ],
-            maxLines: 4,
+            lines: buildCompactHeroCapabilityLines(args.heroModelIntent, args.heroArtDirection),
+            maxLines: 5,
           }),
         ]
       : []),
@@ -3662,6 +4078,7 @@ export function buildSkillBackedPagePrompt(args: {
     templateOptions,
     chartPageIntent: args.chartPageIntent,
     heroModelIntent: args.heroModelIntent,
+    structureCue: pageMission.structureCue,
     freeformLayoutPlan,
   });
   const workspace = buildStudioAiWorkspace({
@@ -3687,6 +4104,9 @@ export function buildSkillBackedPagePrompt(args: {
       visualOperatorLines,
       freeformLayoutPlan,
       preferredVisual: pageMission.preferredVisual,
+      structureCue: pageMission.structureCue,
+      heroModelIntent: args.heroModelIntent,
+      wowPage: isWowPage,
     }),
     specializedArtifact: args.briefSynthesis?.specializedArtifact ?? complexityProfile.specializedArtifact,
     outputRules: [
@@ -3698,9 +4118,15 @@ export function buildSkillBackedPagePrompt(args: {
       "The data-page-title must be audience-facing, specific, and grounded in the user brief or page claim; never use internal placeholders like Core thesis, Opening thesis, or Page 1.",
       "No internal scrolling, no cut-off content, and no placeholder language.",
       "Use Visual thinking privately before writing HTML. Do not output the reasoning or scaffold.",
+      ...(isWowPage
+        ? buildWowOutputRuleLines({
+            heroModelIntent: args.heroModelIntent,
+          })
+        : []),
+      ...buildAnimatedPreviewOutputRuleLines(args.htmlOutputMode ?? "static"),
       "If no template is active, do not default to a generic left/right split.",
       "If content is sparse, preserve negative space and scale the main claim rather than inventing filler cards.",
-      "Keep the page light, restrained, and professional.",
+      ...(isWowPage ? [] : ["Keep the page light, restrained, and professional."]),
       "Design a fresh, coherent light-theme visual system for this deck and keep it consistent across pages.",
       `Page class: ${args.page.pageClass}.`,
       ...(preflight.evidencePolicy.tier === "source-backed"
@@ -4186,6 +4612,7 @@ function buildLayoutRepairPrompt(args: {
   heroReferenceLines: string[];
   evalOverrides?: StudioEvalOverrides | null;
   preflight?: StudioPreflightPlan | null;
+  htmlOutputMode?: HtmlOutputMode;
 }) {
   const complexityProfile =
     args.complexityProfile ??
@@ -4209,6 +4636,24 @@ function buildLayoutRepairPrompt(args: {
     moduleOptions: args.moduleOptions,
     heroModelIntent: args.heroModelIntent,
     chartKind: null,
+  });
+  const isWowPage = resolveWowPage({
+    brief: args.brief,
+    taskIntentText: args.thinkingContext.inputs.taskIntentText,
+    heroModelIntent: args.heroModelIntent,
+    chartPageIntent: args.chartPageIntent,
+    templateOptions,
+    pageCount: args.deckPageMap.length,
+    pageNumber: args.pageNumber,
+    supportCount: 0,
+    evidenceCount: 0,
+    pageClass: args.repairProfile.pageClass,
+    pageSignals: [
+      args.pageTitle,
+      args.repairProfile.pageClass,
+      args.measurement.compositionFingerprint.family,
+      args.measurement.compositionFingerprint.hasHero ? "hero composition" : null,
+    ],
   });
   const layoutPlanningDisabled = args.evalOverrides?.disableLayoutPlanningBlock === true;
   const repairModeGuidance =
@@ -4262,7 +4707,23 @@ function buildLayoutRepairPrompt(args: {
     });
   const capabilityCards = buildPreflightCapabilityCards({
     preflight,
+    forceKinds: args.heroModelIntent.enabled ? ["3d"] : undefined,
     baseCards: [
+    ...(isWowPage
+      ? [
+          createStudioCapabilityCard({
+            id: "craft-direction",
+            title: "Craft direction",
+            lines: [
+              ...buildWowCraftDirectionLines({
+                heroModelIntent: args.heroModelIntent,
+              }),
+              "Preserve the page's crafted feel while fixing density or leakage issues.",
+            ],
+            maxLines: 5,
+          }),
+        ]
+      : []),
     createStudioCapabilityCard({
       id: "layout-repair",
       title: "Layout repair",
@@ -4317,10 +4778,9 @@ function buildLayoutRepairPrompt(args: {
           createStudioCapabilityCard({
             id: "explicit-3d",
             title: "Explicit 3D repair",
-            body: args.heroSkill.body,
-            fallbackLines: [
-              ...heroRepairBlock.filter((line) => line && !line.startsWith("##")),
-              ...args.heroReferenceLines,
+            lines: [
+              ...buildCompactHeroCapabilityLines(args.heroModelIntent),
+              "During repair, preserve the hero object before compressing annotations, footer copy, or ornament.",
             ],
             maxLines: 5,
           }),
@@ -4385,6 +4845,9 @@ function buildLayoutRepairPrompt(args: {
         ...(args.heroModelIntent.enabled ? ["Repair around the dominant 3D object instead of flattening the page."] : []),
       ],
       preferredVisual: pageMission.preferredVisual,
+      structureCue: pageMission.structureCue,
+      heroModelIntent: args.heroModelIntent,
+      wowPage: isWowPage,
     }),
     outputRules: [
       "First, write one short sentence describing the repair strategy.",
@@ -4399,6 +4862,10 @@ function buildLayoutRepairPrompt(args: {
       "No internal scrolling, no cut-off content, no placeholder language.",
       "Preserve the existing deck's visual system instead of reverting to a generic palette.",
       "Preserve the page's current composition family and dominant spatial organization whenever possible.",
+      ...buildAnimatedPreviewRepairRuleLines(args.htmlOutputMode ?? "static"),
+      ...(isWowPage
+        ? ["Keep the page feeling crafted and premium; remove clutter before sanding away the main visual gesture."]
+        : []),
       "Do not output workspace labels, repair scaffolding, or internal reasoning.",
       ...(preflight.evidencePolicy.tier === "source-backed"
         ? ["Do not invent hard evidence that is not already supported by the raw brief."]
@@ -4577,6 +5044,10 @@ export async function runStudioGenerationV2(args: {
       preflight,
     }),
   };
+  assertAllocatedPageMissions({
+    preflight,
+    pageCount: alignedRecipePlan.pages.length,
+  });
   const deckCompositionBrief = buildDeckCompositionBrief({
     deckTitle: alignedRecipePlan.title,
     pageCount: alignedRecipePlan.pages.length,
@@ -4712,6 +5183,7 @@ export async function runStudioGenerationV2(args: {
       briefSynthesis,
       complexityProfile,
       preflight,
+      htmlOutputMode: args.payload.htmlOutputMode,
       evalOverrides: args.evalOverrides,
     });
     const primaryWorkspaceMeta = getStudioAiWorkspacePromptMeta(primaryPrompt);
@@ -4779,6 +5251,7 @@ export async function runStudioGenerationV2(args: {
         html: pageResult.summary,
         expectedPageNumber: recipe.pageNumber,
         expectedPageTitle: recipe.pageTitle,
+        htmlOutputMode: args.payload.htmlOutputMode,
       });
     } catch (error) {
       const fallbackPrompt = buildPagePrompt({
@@ -4809,6 +5282,7 @@ export async function runStudioGenerationV2(args: {
         briefSynthesis,
         complexityProfile,
         preflight,
+        htmlOutputMode: args.payload.htmlOutputMode,
         evalOverrides: args.evalOverrides,
         pageArgument: {
           pageQuestion: recipe.objective,
@@ -4880,6 +5354,7 @@ export async function runStudioGenerationV2(args: {
         html: fallbackResult.summary,
         expectedPageNumber: recipe.pageNumber,
         expectedPageTitle: recipe.pageTitle,
+        htmlOutputMode: args.payload.htmlOutputMode,
       });
     }
 
@@ -4920,6 +5395,7 @@ export async function runStudioGenerationV2(args: {
       pageNumber: recipe.pageNumber,
       sectionHtml: validatedPage.sectionHtml,
       model: pageModel,
+      animationPage: validatedPage.animationPage ?? null,
     };
   };
 
@@ -4927,6 +5403,7 @@ export async function runStudioGenerationV2(args: {
     pageNumber: number;
     sectionHtml: string;
     model: string | null;
+    animationPage: HtmlAnimationPage | null;
   }> = [];
 
   if (isLongForm) {
@@ -4982,11 +5459,15 @@ export async function runStudioGenerationV2(args: {
   }
 
   const pageSections: string[] = [];
+  const pageAnimationPages: HtmlAnimationPage[] = [];
   let resolvedModel: string | null = null;
   pageResults
     .sort((left, right) => left.pageNumber - right.pageNumber)
     .forEach((result) => {
       pageSections.push(result.sectionHtml);
+      if (result.animationPage) {
+        pageAnimationPages.push(result.animationPage);
+      }
       resolvedModel = resolvedModel ?? result.model;
     });
 
@@ -5002,10 +5483,13 @@ export async function runStudioGenerationV2(args: {
       title: alignedRecipePlan.title,
       sections: pageSections,
       styleProfile: reportStyleProfile,
+      htmlOutputMode: args.payload.htmlOutputMode,
     }),
     brief: args.payload.brief,
     fallbackTitle: alignedRecipePlan.title,
     styleProfile: reportStyleProfile,
+    htmlOutputMode: args.payload.htmlOutputMode,
+    animationStructure: { pages: pageAnimationPages },
   });
 
   await emit({
@@ -5149,6 +5633,10 @@ export async function runStudioGenerationV1(args: {
       preflight,
     }),
   };
+  assertAllocatedPageMissions({
+    preflight,
+    pageCount: alignedDeckPlan.pages.length,
+  });
   const deckCompositionBrief = buildDeckCompositionBrief({
     deckTitle: alignedDeckPlan.title,
     pageCount: alignedDeckPlan.pages.length,
@@ -5189,6 +5677,7 @@ export async function runStudioGenerationV1(args: {
   });
 
   const pageSections: string[] = [];
+  const pageAnimationPages: HtmlAnimationPage[] = [];
   let resolvedModel: string | null = planning.model;
 
   for (const page of alignedDeckPlan.pages) {
@@ -5238,6 +5727,7 @@ export async function runStudioGenerationV1(args: {
       briefSynthesis,
       complexityProfile,
       preflight,
+      htmlOutputMode: args.payload.htmlOutputMode,
       evalOverrides: args.evalOverrides,
       pageArgument: {
         pageQuestion: page.goal,
@@ -5301,8 +5791,12 @@ export async function runStudioGenerationV1(args: {
       html: pageResult.summary,
       expectedPageNumber: page.pageNumber,
       expectedPageTitle: page.pageTitle,
+      htmlOutputMode: args.payload.htmlOutputMode,
     });
     pageSections.push(validatedPage.sectionHtml);
+    if (validatedPage.animationPage) {
+      pageAnimationPages.push(validatedPage.animationPage);
+    }
 
     await emit({
       type: "page_ready",
@@ -5325,10 +5819,13 @@ export async function runStudioGenerationV1(args: {
       title: alignedDeckPlan.title,
       sections: pageSections,
       styleProfile: reportStyleProfile,
+      htmlOutputMode: args.payload.htmlOutputMode,
     }),
     brief: args.payload.brief,
     fallbackTitle: alignedDeckPlan.title,
     styleProfile: reportStyleProfile,
+    htmlOutputMode: args.payload.htmlOutputMode,
+    animationStructure: { pages: pageAnimationPages },
   });
 
   await emit({
@@ -5459,6 +5956,9 @@ export async function runStudioRevision(args: {
   });
   const reportStyleProfile = toGeneratedReportStyleProfile(styleProfile);
   const deckSections = extractDeckSections(args.payload.report.html);
+  const existingAnimationPages = new Map<number, HtmlAnimationPage>(
+    (args.payload.report.animationStructure?.pages ?? []).map((page) => [page.pageNumber, page]),
+  );
   const deckTitle = extractDocumentTitle(args.payload.report.html);
   const isLongForm = isLongFormRevisionPayload(args.payload);
   const reviewBudget = isLongForm ? LONG_FORM_REVIEW_BUDGET : null;
@@ -5523,6 +6023,8 @@ export async function runStudioRevision(args: {
       brief: args.payload.brief,
       fallbackTitle: args.payload.report.title,
       styleProfile: reportStyleProfile,
+      htmlOutputMode: args.payload.report.htmlOutputMode ?? "static",
+      animationStructure: args.payload.report.animationStructure,
     });
     await emit({
       type: "final_report",
@@ -5627,6 +6129,7 @@ export async function runStudioRevision(args: {
           title: deckTitle,
           sectionHtml: shrunkSectionHtml,
           styleProfile: reportStyleProfile,
+          htmlOutputMode: args.payload.report.htmlOutputMode ?? "static",
         }),
         expectedPageNumber: measurement.pageNumber,
         expectedPageTitle: sanitizeRepairTitle({
@@ -5635,6 +6138,8 @@ export async function runStudioRevision(args: {
           pageClass: repairProfile.pageClass,
           fallbackSeed: currentSection.sectionHtml,
         }),
+        htmlOutputMode: args.payload.report.htmlOutputMode ?? "static",
+        previousAnimationPage: existingAnimationPages.get(measurement.pageNumber) ?? null,
       });
 
       await emit({
@@ -5649,6 +6154,7 @@ export async function runStudioRevision(args: {
         pageNumber: measurement.pageNumber,
         sectionHtml: deterministicPage.sectionHtml,
         model: args.agentConfig.model,
+        animationPage: deterministicPage.animationPage ?? null,
       };
     }
 
@@ -5678,6 +6184,7 @@ export async function runStudioRevision(args: {
       heroReferenceLines: heroReferenceContext.lines,
       evalOverrides: args.evalOverrides,
       preflight,
+      htmlOutputMode: args.payload.report.htmlOutputMode ?? "static",
     });
     const repairWorkspaceMeta = getStudioAiWorkspacePromptMeta(prompt);
 
@@ -5737,6 +6244,8 @@ export async function runStudioRevision(args: {
       html: repairResult.summary,
       expectedPageNumber: measurement.pageNumber,
       expectedPageTitle: currentSection.pageTitle,
+      htmlOutputMode: args.payload.report.htmlOutputMode ?? "static",
+      previousAnimationPage: existingAnimationPages.get(measurement.pageNumber) ?? null,
     });
 
     await emit({
@@ -5751,6 +6260,7 @@ export async function runStudioRevision(args: {
       pageNumber: measurement.pageNumber,
       sectionHtml: validatedPage.sectionHtml,
       model: repairResult.model,
+      animationPage: validatedPage.animationPage ?? null,
     };
   };
 
@@ -5763,7 +6273,11 @@ export async function runStudioRevision(args: {
     async (measurement) => repairSinglePage(measurement),
   );
 
-  const repairedSections = new Map<number, { sectionHtml: string; model: string | null }>();
+  const repairedSections = new Map<number, {
+    sectionHtml: string;
+    model: string | null;
+    animationPage: HtmlAnimationPage | null;
+  }>();
   [firstRepairResult, ...remainingRepairResults].forEach((result) => {
     if (!result) {
       return;
@@ -5771,6 +6285,7 @@ export async function runStudioRevision(args: {
     repairedSections.set(result.pageNumber, {
       sectionHtml: result.sectionHtml,
       model: result.model,
+      animationPage: result.animationPage,
     });
   });
 
@@ -5788,10 +6303,23 @@ export async function runStudioRevision(args: {
         .sort((left, right) => left.pageNumber - right.pageNumber)
         .map((section) => repairedSections.get(section.pageNumber)?.sectionHtml ?? section.sectionHtml),
       styleProfile: reportStyleProfile,
+      htmlOutputMode: args.payload.report.htmlOutputMode ?? "static",
     }),
     brief: args.payload.brief,
     fallbackTitle: deckTitle,
     styleProfile: reportStyleProfile,
+    htmlOutputMode: args.payload.report.htmlOutputMode ?? "static",
+    animationStructure: {
+      pages: deckSections
+        .sort((left, right) => left.pageNumber - right.pageNumber)
+        .map(
+          (section) =>
+            repairedSections.get(section.pageNumber)?.animationPage ??
+            existingAnimationPages.get(section.pageNumber) ??
+            null,
+        )
+        .filter((page): page is HtmlAnimationPage => Boolean(page)),
+    },
   });
 
   await emit({

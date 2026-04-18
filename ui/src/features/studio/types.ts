@@ -8,6 +8,12 @@ export type BlockKind =
   | "phases";
 export type BlockTone = "teal" | "navy" | "amber";
 export type TemplateId = "blank";
+export type StarterPackId = string;
+export type StarterPackSource = "html-ppt-skill";
+export type StarterPackKind = "layout" | "deck";
+export type StarterPackUsageMode = "deck" | "page" | "theme";
+export type StarterApplicationMode = "deck" | "theme" | "mixed";
+export type StarterPackMappingStatus = "shell-only" | "manual-workbench" | "compiled-template";
 export type ConversationMessageRole = "assistant" | "user";
 export type ModuleRegistryCategory =
   | "evidence"
@@ -116,6 +122,7 @@ export type WorkbenchLongFormClarificationState = {
 
 export type WorkbenchDeckOptimizationState = {
   autoOptimizedReportKey: string | null;
+  autoOptimizedVersion: number | null;
 };
 
 export type LayoutBlock = {
@@ -662,6 +669,7 @@ export type LayoutPage = {
   title: string;
   note: string;
   instruction?: string;
+  starterLayoutId?: StarterPackId | null;
   storyPagePlan?: StoryPagePlan;
   blocks: LayoutBlock[];
 };
@@ -1017,6 +1025,8 @@ export type HtmlVisualNodeKind =
   | "rail"
   | "chart-frame";
 
+export type HtmlFitParticipation = "content" | "decorative";
+
 export type HtmlVisualNodeStyle = {
   background?: string;
   border?: string;
@@ -1033,6 +1043,7 @@ export type HtmlVisualNodeStyle = {
 export type HtmlVisualNode = {
   id: string;
   kind: HtmlVisualNodeKind;
+  fitParticipation: HtmlFitParticipation;
   pageNumber: number;
   sourceTag: string;
   sourceIndex: number;
@@ -1134,11 +1145,97 @@ export type GeneratedHtmlReportStyleProfile = {
   chartPalette: string[];
 };
 
+export type HtmlOutputMode = "static" | "animated-preview-js";
+export type HtmlAnimationEntryPreset =
+  | "fade-up"
+  | "fade-in"
+  | "slide-right"
+  | "slide-left"
+  | "scale-in"
+  | "chart-reveal";
+export type HtmlPageAnimationStartMode = "entry-then-loop";
+
+export type HtmlEntryTrack = {
+  anchor: string;
+  preset: HtmlAnimationEntryPreset;
+  delayMs: number;
+  durationMs: number;
+  order: number;
+};
+
+export type HtmlRotateLoopEffect = {
+  kind: "rotate";
+  anchor: string;
+  durationMs: number;
+  direction?: "clockwise" | "counterclockwise";
+  angleDeg?: number;
+};
+
+export type HtmlTickerLoopEffect = {
+  kind: "ticker";
+  anchor: string;
+  items: string[];
+  stepMs: number;
+};
+
+export type HtmlTypewriterLoopEffect = {
+  kind: "typewriter";
+  anchor: string;
+  items: string[];
+  typeMs: number;
+  holdMs: number;
+  deleteMs: number;
+};
+
+export type HtmlPulseLoopEffect = {
+  kind: "pulse";
+  anchor: string;
+  durationMs: number;
+  scaleFrom?: number;
+  scaleTo?: number;
+  opacityFrom?: number;
+  opacityTo?: number;
+};
+
+export type HtmlOrbitLoopEffect = {
+  kind: "orbit";
+  anchor: string;
+  durationMs: number;
+  radiusPx: number;
+  axis?: "x" | "y" | "xy";
+};
+
+export type HtmlLoopEffect =
+  | HtmlRotateLoopEffect
+  | HtmlTickerLoopEffect
+  | HtmlTypewriterLoopEffect
+  | HtmlPulseLoopEffect
+  | HtmlOrbitLoopEffect;
+
+export type HtmlPageAnimationManifest = {
+  version: 1;
+  startMode: HtmlPageAnimationStartMode;
+  entryTracks?: HtmlEntryTrack[];
+  loopEffects?: HtmlLoopEffect[];
+};
+
+export type HtmlAnimationPage = {
+  pageNumber: number;
+  anchors: string[];
+  manifest: HtmlPageAnimationManifest | null;
+};
+
+export type HtmlAnimationStructure = {
+  pages: HtmlAnimationPage[];
+};
+
 export type GeneratedHtmlReport = {
   title: string;
   html: string;
   pageCount: number;
   pageTitles: string[];
+  htmlOutputMode?: HtmlOutputMode;
+  animationStructure?: HtmlAnimationStructure;
   styleProfileId?: string;
   styleProfile?: GeneratedHtmlReportStyleProfile;
   structure?: HtmlEditableStructure;
@@ -1162,6 +1259,11 @@ export type GeneratedDraftAsset = {
 export type WorkbenchProjectSnapshot = {
   version: ProjectSnapshotVersion;
   templateId: TemplateId;
+  starterPackId: StarterPackId | null;
+  starterThemeId: string | null;
+  starterBindings: Record<string, StarterPackId>;
+  starterApplicationMode: StarterApplicationMode;
+  htmlOutputMode: HtmlOutputMode;
   projectName: string;
   sourceText: string;
   generationMode: WorkbenchGenerationMode;
@@ -1258,6 +1360,11 @@ export type WorkbenchProject = {
   id: string;
   version: number;
   templateId: TemplateId;
+  starterPackId: StarterPackId | null;
+  starterThemeId: string | null;
+  starterBindings: Record<string, StarterPackId>;
+  starterApplicationMode: StarterApplicationMode;
+  htmlOutputMode: HtmlOutputMode;
   projectName: string;
   sourceText: string;
   generationMode: WorkbenchGenerationMode;
@@ -1280,6 +1387,8 @@ export type WorkbenchProjectSummary = {
   workspaceId: string;
   workspaceName: string;
   templateId: TemplateId;
+  starterPackId: StarterPackId | null;
+  starterThemeId?: string | null;
   projectName: string;
   updatedAt: string;
   chatUpdatedAt: string;
@@ -1336,6 +1445,86 @@ export type TemplateMetadata = {
   name: string;
   description: string;
   industry: string;
+};
+
+export type StarterPackPreview = {
+  eyebrow: string;
+  title: string;
+  body: string;
+  tone: "light" | "dark";
+};
+
+export type StarterPageContract = {
+  preferredVisualOperator: string;
+  dominantGeometry: string;
+  allowedSecondaryZones: string[];
+  copyDensityBudget: string;
+  noGoPatterns: string[];
+};
+
+export type StarterPackTheme = {
+  id: string;
+  source: StarterPackSource;
+  label: string;
+  description: string;
+  vendoredPath: string;
+};
+
+export type StarterPackLayout = {
+  id: StarterPackId;
+  source: StarterPackSource;
+  kind: "layout";
+  usageModes: StarterPackUsageMode[];
+  mappingStatus: StarterPackMappingStatus;
+  label: string;
+  description: string;
+  themeId: string;
+  pageFamily: string;
+  vendoredPath: string;
+  visualRules: string[];
+  suggestedLayoutFamilies: string[];
+  pageContract?: StarterPageContract;
+  preview: StarterPackPreview;
+};
+
+export type StarterPackDeck = {
+  id: StarterPackId;
+  source: StarterPackSource;
+  kind: "deck";
+  usageModes: StarterPackUsageMode[];
+  mappingStatus: StarterPackMappingStatus;
+  label: string;
+  description: string;
+  themeId: string;
+  pageFamily: string;
+  vendoredPath: string;
+  pageCount: number;
+  pageTitles: string[];
+  pageArchetypes?: string[];
+  visualRules: string[];
+  suggestedLayoutFamilies: string[];
+  preview: StarterPackPreview;
+};
+
+export type StarterPackManifest = {
+  id: StarterPackId;
+  source: StarterPackSource;
+  kind: StarterPackKind;
+  usageModes: StarterPackUsageMode[];
+  mappingStatus: StarterPackMappingStatus;
+  label: string;
+  description: string;
+  themeId: string;
+  pageFamily: string;
+  vendoredPath: string;
+  readOnly: true;
+  visualRules: string[];
+  suggestedLayoutFamilies: string[];
+  pageContract?: StarterPageContract;
+  preview: StarterPackPreview;
+  pageCount?: number;
+  pageTitles?: string[];
+  pageArchetypes?: string[];
 };
 
 export type WorkbenchTemplate = {

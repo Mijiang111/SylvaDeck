@@ -1,9 +1,12 @@
 import { z } from "zod";
 
 export const agentConfigSchema = z.object({
+  provider: z.enum(["cursor", "codex", "kimi"]).optional().default("codex"),
   command: z.string().max(240).optional().default(""),
   model: z.string().max(240).optional().default(""),
   cwd: z.string().max(600).optional().default(""),
+  apiKey: z.string().max(500).optional().default(""),
+  baseUrl: z.string().max(500).optional().default(""),
 });
 
 export const blockKindSchema = z.enum([
@@ -20,6 +23,82 @@ export const moduleChartKindSchema = z.enum(["bar", "stacked", "line", "waterfal
 export const repairModeSchema = z.enum(["standard", "aggressive"]);
 export const generationModeSchema = z.enum(["standard", "long-form"]);
 export const moduleUsageModeSchema = z.enum(["disabled", "fallback", "chart-only"]);
+export const htmlOutputModeSchema = z.enum(["static", "animated-preview-js"]);
+export const htmlAnimationEntryPresetSchema = z.enum([
+  "fade-up",
+  "fade-in",
+  "slide-right",
+  "slide-left",
+  "scale-in",
+  "chart-reveal",
+]);
+export const htmlPageAnimationStartModeSchema = z.enum(["entry-then-loop"]);
+export const htmlAnimationAnchorSchema = z.string().regex(/^[a-z][a-z0-9-]{0,39}$/);
+export const htmlEntryTrackSchema = z.object({
+  anchor: htmlAnimationAnchorSchema,
+  preset: htmlAnimationEntryPresetSchema,
+  delayMs: z.number().int().min(0).max(4000),
+  durationMs: z.number().int().min(160).max(10_000),
+  order: z.number().int().min(0).max(40),
+});
+const htmlRotateLoopEffectSchema = z.object({
+  kind: z.literal("rotate"),
+  anchor: htmlAnimationAnchorSchema,
+  durationMs: z.number().int().min(160).max(10_000),
+  direction: z.enum(["clockwise", "counterclockwise"]).optional(),
+  angleDeg: z.number().min(30).max(1440).optional(),
+});
+const htmlTickerLoopEffectSchema = z.object({
+  kind: z.literal("ticker"),
+  anchor: htmlAnimationAnchorSchema,
+  items: z.array(z.string().min(1).max(80)).min(1).max(12),
+  stepMs: z.number().int().min(160).max(10_000),
+});
+const htmlTypewriterLoopEffectSchema = z.object({
+  kind: z.literal("typewriter"),
+  anchor: htmlAnimationAnchorSchema,
+  items: z.array(z.string().min(1).max(80)).min(1).max(12),
+  typeMs: z.number().int().min(16).max(2000),
+  holdMs: z.number().int().min(80).max(10_000),
+  deleteMs: z.number().int().min(16).max(2000),
+});
+const htmlPulseLoopEffectSchema = z.object({
+  kind: z.literal("pulse"),
+  anchor: htmlAnimationAnchorSchema,
+  durationMs: z.number().int().min(160).max(10_000),
+  scaleFrom: z.number().min(0.5).max(1.5).optional(),
+  scaleTo: z.number().min(0.5).max(1.6).optional(),
+  opacityFrom: z.number().min(0.05).max(1).optional(),
+  opacityTo: z.number().min(0.05).max(1).optional(),
+});
+const htmlOrbitLoopEffectSchema = z.object({
+  kind: z.literal("orbit"),
+  anchor: htmlAnimationAnchorSchema,
+  durationMs: z.number().int().min(160).max(10_000),
+  radiusPx: z.number().int().min(2).max(240),
+  axis: z.enum(["x", "y", "xy"]).optional(),
+});
+export const htmlLoopEffectSchema = z.discriminatedUnion("kind", [
+  htmlRotateLoopEffectSchema,
+  htmlTickerLoopEffectSchema,
+  htmlTypewriterLoopEffectSchema,
+  htmlPulseLoopEffectSchema,
+  htmlOrbitLoopEffectSchema,
+]);
+export const htmlPageAnimationManifestSchema = z.object({
+  version: z.literal(1),
+  startMode: htmlPageAnimationStartModeSchema,
+  entryTracks: z.array(htmlEntryTrackSchema).max(6).optional(),
+  loopEffects: z.array(htmlLoopEffectSchema).max(4).optional(),
+});
+export const htmlAnimationPageSchema = z.object({
+  pageNumber: z.number().int().min(1).max(12),
+  anchors: z.array(htmlAnimationAnchorSchema).max(32),
+  manifest: htmlPageAnimationManifestSchema.nullable().optional().default(null),
+});
+export const htmlAnimationStructureSchema = z.object({
+  pages: z.array(htmlAnimationPageSchema).max(12),
+});
 export const pageOverflowCauseSchema = z.enum([
   "title",
   "hero-copy",
@@ -101,7 +180,7 @@ const publishedTemplateManifestSchema = z.object({
   copyBudget: z.array(z.string().max(220)).max(8).optional().default([]),
   allowedAdaptations: z.array(z.string().max(220)).max(8).optional().default([]),
   fitRules: z.array(z.string().max(220)).max(8).optional().default([]),
-  promptContract: z.array(z.string().max(260)).max(8).optional().default([]),
+  promptContract: z.array(z.string().max(260)).max(16).optional().default([]),
 });
 
 export const publishedModuleManifestSchema = z.object({
@@ -142,15 +221,23 @@ export const publishedModuleManifestSchema = z.object({
   template: publishedTemplateManifestSchema.optional(),
 });
 
+const fileContextSchema = z.object({
+  name: z.string().max(240),
+  type: z.string().max(120),
+  content: z.string().max(200_000),
+});
+
 export const generateStudioReportRequestSchema = z
   .object({
     brief: z.string().min(1).max(120_000),
     pageCount: z.number().int().min(1).max(12).optional(),
     generationMode: generationModeSchema.optional().default("standard"),
     moduleUsageMode: moduleUsageModeSchema.optional().default("disabled"),
+    htmlOutputMode: htmlOutputModeSchema.optional().default("static"),
     agentConfig: agentConfigSchema.optional().default({}),
     publishedModules: z.array(publishedModuleManifestSchema).max(200).optional().default([]),
     moduleManifestSignature: z.string().max(10_000).optional().default(""),
+    attachments: z.array(fileContextSchema).max(20).optional().default([]),
   })
   .superRefine((payload, ctx) => {
     if (
@@ -302,6 +389,8 @@ export const reviseStudioReportRequestSchema = z.object({
       html: z.string().min(1).max(800_000),
       pageCount: z.number().int().min(1).max(12),
       pageTitles: z.array(z.string().max(240)).max(12).optional().default([]),
+      htmlOutputMode: htmlOutputModeSchema.optional(),
+      animationStructure: htmlAnimationStructureSchema.optional(),
     })
     .passthrough(),
   pageMeasurements: z.array(pageFitMeasurementSchema).min(1).max(12),
@@ -372,5 +461,13 @@ export type ModuleChartKind = z.infer<typeof moduleChartKindSchema>;
 export type RepairMode = z.infer<typeof repairModeSchema>;
 export type GenerationMode = z.infer<typeof generationModeSchema>;
 export type ModuleUsageMode = z.infer<typeof moduleUsageModeSchema>;
+export type HtmlOutputMode = z.infer<typeof htmlOutputModeSchema>;
+export type HtmlAnimationEntryPreset = z.infer<typeof htmlAnimationEntryPresetSchema>;
+export type HtmlPageAnimationStartMode = z.infer<typeof htmlPageAnimationStartModeSchema>;
+export type HtmlEntryTrack = z.infer<typeof htmlEntryTrackSchema>;
+export type HtmlLoopEffect = z.infer<typeof htmlLoopEffectSchema>;
+export type HtmlPageAnimationManifest = z.infer<typeof htmlPageAnimationManifestSchema>;
+export type HtmlAnimationPage = z.infer<typeof htmlAnimationPageSchema>;
+export type HtmlAnimationStructure = z.infer<typeof htmlAnimationStructureSchema>;
 export type PageOverflowCause = z.infer<typeof pageOverflowCauseSchema>;
 export type PageCompositionFingerprint = z.infer<typeof pageCompositionFingerprintSchema>;

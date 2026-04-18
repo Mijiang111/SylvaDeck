@@ -3,9 +3,12 @@ import {
   HTML_REPORT_PAGE_HEIGHT,
   HTML_REPORT_PAGE_WIDTH,
 } from "@/features/studio/html-report-canvas";
+import { findHtmlAnimationPage } from "@/features/studio/html-report-animation";
 import { collectHtmlLayoutCandidates } from "@/features/studio/html-report-layout";
 import { collectHtmlEditableCandidates } from "@/features/studio/html-report-structure";
+import { HTML_FIT_ROLE_ATTRIBUTE } from "@/features/studio/html-fit-role";
 import {
+  annotateHtmlFitRolesOnPage,
   collectHtmlVisualCandidates,
   extractHtmlPageVisualStyle,
 } from "@/features/studio/html-report-visuals";
@@ -26,6 +29,15 @@ export type HtmlReportPagePreview = {
   visualPage: HtmlVisualPage | null;
   layoutPage: HtmlLayoutPage | null;
 };
+
+const ANIMATED_PREVIEW_OUTPUT_MODE = "animated-preview-js";
+
+function serializeInlineScriptValue(value: unknown) {
+  return JSON.stringify(value ?? null)
+    .replace(/</g, "\\u003c")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+}
 
 function cloneElementAttributes(source: Element, target: Element) {
   Array.from(source.attributes).forEach((attribute) => {
@@ -176,6 +188,72 @@ function annotatePreviewLayoutZones(pageElement: Element, layoutPage: HtmlLayout
   });
 }
 
+function setPreviewAnimationAttrs(args: {
+  element: Element | null | undefined;
+  role: string;
+  enter: string;
+  delayMs: number;
+  durationMs?: number;
+  order: number;
+  seen: Set<HTMLElement>;
+}) {
+  if (!(args.element instanceof HTMLElement) || args.seen.has(args.element)) {
+    return;
+  }
+
+  args.seen.add(args.element);
+  if (!args.element.getAttribute("data-anim-role")) {
+    args.element.setAttribute("data-anim-role", args.role);
+  }
+  if (!args.element.getAttribute("data-anim-enter")) {
+    args.element.setAttribute("data-anim-enter", args.enter);
+  }
+  if (!args.element.getAttribute("data-anim-delay")) {
+    args.element.setAttribute("data-anim-delay", String(Math.max(0, Math.round(args.delayMs))));
+  }
+  if (!args.element.getAttribute("data-anim-duration")) {
+    args.element.setAttribute(
+      "data-anim-duration",
+      String(Math.max(160, Math.round(args.durationMs ?? 640))),
+    );
+  }
+  if (!args.element.getAttribute("data-anim-order")) {
+    args.element.setAttribute("data-anim-order", String(args.order));
+  }
+}
+
+function annotatePreviewAnimationNodes(pageElement: Element) {
+  const pageRoot = pageElement as HTMLElement;
+  const animatedNodes = Array.from(pageRoot.querySelectorAll("[data-anim-role]")).filter(
+    (element): element is HTMLElement => element instanceof HTMLElement,
+  );
+  if (animatedNodes.length === 0) {
+    return;
+  }
+
+  const seen = new Set<HTMLElement>();
+  animatedNodes.forEach((element, index) => {
+    const role = (element.getAttribute("data-anim-role") || "").trim();
+    if (!role) {
+      return;
+    }
+
+    const parsedDelay = Number.parseInt(element.getAttribute("data-anim-delay") || "", 10);
+    const parsedDuration = Number.parseInt(element.getAttribute("data-anim-duration") || "", 10);
+    const parsedOrder = Number.parseInt(element.getAttribute("data-anim-order") || "", 10);
+
+    setPreviewAnimationAttrs({
+      element,
+      role,
+      enter: (element.getAttribute("data-anim-enter") || "fade-up").trim() || "fade-up",
+      delayMs: Number.isFinite(parsedDelay) ? parsedDelay : index * 80,
+      durationMs: Number.isFinite(parsedDuration) ? parsedDuration : 640,
+      order: Number.isFinite(parsedOrder) ? parsedOrder : index,
+      seen,
+    });
+  });
+}
+
 function buildStandaloneHtmlReportPageDocument(
   sourceDocument: Document,
   pageElement: Element,
@@ -186,6 +264,7 @@ function buildStandaloneHtmlReportPageDocument(
   pageStyle: HtmlPageVisualStyle,
   pageNumber: number,
 ) {
+  const animationPreviewEnabled = report.htmlOutputMode === ANIMATED_PREVIEW_OUTPUT_MODE;
   const previewDocument = document.implementation.createHTMLDocument(sourceDocument.title || "Report page");
   previewDocument.head.innerHTML = sourceDocument.head.innerHTML;
   previewDocument.body.innerHTML = "";
@@ -216,6 +295,10 @@ function buildStandaloneHtmlReportPageDocument(
     pageStyle,
   });
   annotatePreviewLayoutZones(pageClone, layoutPage);
+  annotateHtmlFitRolesOnPage(pageClone);
+  if (animationPreviewEnabled) {
+    annotatePreviewAnimationNodes(pageClone);
+  }
   applyGeneratedHtmlReportCanvasOverridesToPage({
     pageElement: pageClone as HTMLElement,
     pageNumber,
@@ -231,7 +314,7 @@ function buildStandaloneHtmlReportPageDocument(
       padding: 0;
       width: ${HTML_REPORT_PAGE_WIDTH}px;
       min-width: ${HTML_REPORT_PAGE_WIDTH}px;
-      background: #ece7df;
+      background: transparent;
       overflow: hidden;
     }
 
@@ -305,14 +388,606 @@ function buildStandaloneHtmlReportPageDocument(
   `;
   previewDocument.head.appendChild(previewStyle);
 
+  const serializedAnimationPage = serializeInlineScriptValue(
+    animationPreviewEnabled ? findHtmlAnimationPage(report.animationStructure, pageNumber) : null,
+  );
   const previewScript = previewDocument.createElement("script");
   previewScript.textContent = `
     (() => {
       const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim();
       let activeTransformPreview = null;
+      const animationModeEnabled = ${animationPreviewEnabled ? "true" : "false"};
+      const previewAnimationPage = ${serializedAnimationPage};
+      const previewAnimationManifest = previewAnimationPage?.manifest ?? null;
+      let previewViewportVisible = false;
+      let animationPlaybackActive = false;
+      let currentAnimationToken = 0;
+      let activeEntryAnimations = [];
+      let activeEntryTimeoutId = 0;
+      let activeLoopRuntime = null;
+      const supportedAnimationRoles = new Set([
+        "hero",
+        "headline",
+        "chart",
+        "callout",
+        "label",
+        "quadrant",
+        "rail",
+        "surface",
+        "metric",
+        "annotation",
+      ]);
+      const supportedAnimationEnters = new Set([
+        "fade-up",
+        "fade-in",
+        "slide-right",
+        "slide-left",
+        "scale-in",
+        "chart-reveal",
+      ]);
 
       function getPageRoot() {
         return document.querySelector("section.page");
+      }
+
+      function safeAnimationNumber(value, fallback, min, max) {
+        const normalized = (value || "").trim().toLowerCase();
+        let parsed = Number.NaN;
+        if (/^\d+$/.test(normalized)) {
+          parsed = Number.parseInt(normalized, 10);
+        } else if (/^\d+ms$/.test(normalized)) {
+          parsed = Number.parseInt(normalized.slice(0, -2), 10);
+        } else if (/^\d+(?:\.\d+)?s$/.test(normalized)) {
+          parsed = Math.round(Number.parseFloat(normalized.slice(0, -1)) * 1000);
+        }
+        if (!Number.isFinite(parsed)) {
+          return fallback;
+        }
+        return Math.max(min, Math.min(max, parsed));
+      }
+
+      function combineTransforms(baseTransform, effectTransform) {
+        if (!baseTransform || baseTransform === "none") {
+          return effectTransform;
+        }
+        return baseTransform + " " + effectTransform;
+      }
+
+      function buildAnimationCue(element, index) {
+        if (!(element instanceof HTMLElement)) {
+          return null;
+        }
+
+        const role = (element.getAttribute("data-anim-role") || "").trim();
+        if (!supportedAnimationRoles.has(role)) {
+          return null;
+        }
+
+        const enter = (element.getAttribute("data-anim-enter") || "fade-up").trim();
+        if (!supportedAnimationEnters.has(enter)) {
+          return null;
+        }
+
+        const order = safeAnimationNumber(element.getAttribute("data-anim-order"), index, 0, 40);
+        return {
+          role,
+          enter,
+          delay: safeAnimationNumber(element.getAttribute("data-anim-delay"), order * 80, 0, 4000),
+          duration: safeAnimationNumber(element.getAttribute("data-anim-duration"), 640, 160, 2400),
+          baseTransform: window.getComputedStyle(element).transform,
+        };
+      }
+
+      function buildAnimationKeyframes(cue) {
+        if (!cue) {
+          return null;
+        }
+
+        if (cue.enter === "fade-in") {
+          return [
+            { opacity: 0.001 },
+            { opacity: 1 },
+          ];
+        }
+
+        if (cue.enter === "slide-right") {
+          return [
+            {
+              opacity: 0.001,
+              transform: combineTransforms(cue.baseTransform, "translate3d(-28px,0,0)"),
+            },
+            {
+              opacity: 1,
+              transform: cue.baseTransform === "none" ? "none" : cue.baseTransform,
+            },
+          ];
+        }
+
+        if (cue.enter === "slide-left") {
+          return [
+            {
+              opacity: 0.001,
+              transform: combineTransforms(cue.baseTransform, "translate3d(28px,0,0)"),
+            },
+            {
+              opacity: 1,
+              transform: cue.baseTransform === "none" ? "none" : cue.baseTransform,
+            },
+          ];
+        }
+
+        if (cue.enter === "scale-in" || cue.enter === "chart-reveal") {
+          return [
+            {
+              opacity: 0.001,
+              transform: combineTransforms(
+                cue.baseTransform,
+                cue.enter === "chart-reveal" ? "scale3d(0.92,0.98,1)" : "scale3d(0.94,0.94,1)",
+              ),
+            },
+            {
+              opacity: 1,
+              transform: cue.baseTransform === "none" ? "none" : cue.baseTransform,
+            },
+          ];
+        }
+
+        return [
+          {
+            opacity: 0.001,
+            transform: combineTransforms(cue.baseTransform, "translate3d(0,22px,0)"),
+          },
+          {
+            opacity: 1,
+            transform: cue.baseTransform === "none" ? "none" : cue.baseTransform,
+          },
+        ];
+      }
+
+      function isPreviewAnimationTarget(element) {
+        return (
+          element instanceof HTMLElement &&
+          element.getAttribute("data-html-canvas-placeholder") !== "true" &&
+          element.getAttribute("data-html-transform-preview-placeholder") !== "true" &&
+          element.getAttribute("data-html-transform-preview") !== "true"
+        );
+      }
+
+      function resolveAnimationAnchorElement(anchor) {
+        if (!anchor) {
+          return null;
+        }
+
+        const candidates = Array.from(
+          document.querySelectorAll('[data-anim-anchor="' + anchor + '"]'),
+        ).filter((element) => isPreviewAnimationTarget(element));
+        return candidates[0] instanceof HTMLElement ? candidates[0] : null;
+      }
+
+      function buildEntryTrackCue(track) {
+        if (!(track?.element instanceof HTMLElement)) {
+          return null;
+        }
+
+        return {
+          enter: track.preset,
+          delay: track.delayMs,
+          duration: track.durationMs,
+          baseTransform: window.getComputedStyle(track.element).transform,
+        };
+      }
+
+      function buildLegacyEntryTracks() {
+        return Array.from(document.querySelectorAll("[data-anim-role]"))
+          .filter((element) => isPreviewAnimationTarget(element))
+          .sort((left, right) => {
+            const leftOrder = safeAnimationNumber(left.getAttribute("data-anim-order"), 0, 0, 40);
+            const rightOrder = safeAnimationNumber(right.getAttribute("data-anim-order"), 0, 0, 40);
+            return leftOrder - rightOrder;
+          })
+          .map((element, index) => {
+            const cue = buildAnimationCue(element, index);
+            if (!cue || !(element instanceof HTMLElement)) {
+              return null;
+            }
+
+            return {
+              element,
+              preset: cue.enter,
+              delayMs: cue.delay,
+              durationMs: cue.duration,
+              order: safeAnimationNumber(element.getAttribute("data-anim-order"), index, 0, 40),
+            };
+          })
+          .filter(Boolean);
+      }
+
+      function buildManifestEntryTracks() {
+        return (previewAnimationManifest?.entryTracks ?? [])
+          .map((track) => {
+            const element = resolveAnimationAnchorElement(track.anchor);
+            if (!(element instanceof HTMLElement)) {
+              return null;
+            }
+
+            return {
+              element,
+              preset: track.preset,
+              delayMs: track.delayMs,
+              durationMs: track.durationMs,
+              order: track.order,
+            };
+          })
+          .filter(Boolean)
+          .sort((left, right) => left.order - right.order);
+      }
+
+      function buildPreviewEntryTracks() {
+        const manifestTracks = buildManifestEntryTracks();
+        return manifestTracks.length > 0 ? manifestTracks : buildLegacyEntryTracks();
+      }
+
+      function clearEntryAnimations() {
+        if (activeEntryTimeoutId) {
+          window.clearTimeout(activeEntryTimeoutId);
+          activeEntryTimeoutId = 0;
+        }
+
+        activeEntryAnimations.forEach((animation) => {
+          try {
+            animation.cancel();
+          } catch {
+            // Ignore preview animation teardown failures.
+          }
+        });
+        activeEntryAnimations = [];
+      }
+
+      function restoreLoopController(controller) {
+        if (!controller?.element) {
+          return;
+        }
+
+        controller.element.style.transform = controller.originalInlineTransform;
+        controller.element.style.opacity = controller.originalInlineOpacity;
+        controller.element.style.willChange = controller.originalInlineWillChange;
+        controller.element.style.transformOrigin = controller.originalInlineTransformOrigin;
+      }
+
+      function clearLoopRuntime() {
+        if (!activeLoopRuntime) {
+          return;
+        }
+
+        if (activeLoopRuntime.rafId) {
+          window.cancelAnimationFrame(activeLoopRuntime.rafId);
+        }
+        activeLoopRuntime.timerIds.forEach((timerId) => {
+          window.clearTimeout(timerId);
+          window.clearInterval(timerId);
+        });
+        activeLoopRuntime.cleanups.forEach((cleanup) => {
+          try {
+            cleanup();
+          } catch {
+            // Ignore loop cleanup failures so the preview can stay interactive.
+          }
+        });
+        activeLoopRuntime.controllers.forEach((controller) => {
+          restoreLoopController(controller);
+        });
+        activeLoopRuntime = null;
+      }
+
+      function stopAnimationSession() {
+        currentAnimationToken += 1;
+        clearEntryAnimations();
+        clearLoopRuntime();
+      }
+
+      function getLoopController(runtime, element) {
+        const existing = runtime.controllers.get(element);
+        if (existing) {
+          return existing;
+        }
+
+        const computed = window.getComputedStyle(element);
+        const controller = {
+          element,
+          baseTransform: computed.transform === "none" ? "" : computed.transform,
+          baseOpacity: Number.parseFloat(computed.opacity || "") || 1,
+          originalInlineTransform: element.style.transform || "",
+          originalInlineOpacity: element.style.opacity || "",
+          originalInlineWillChange: element.style.willChange || "",
+          originalInlineTransformOrigin: element.style.transformOrigin || "",
+          rotateTransform: "",
+          orbitTransform: "",
+          pulseTransform: "",
+          pulseOpacity: null,
+        };
+        runtime.controllers.set(element, controller);
+        element.style.willChange = [controller.originalInlineWillChange, "transform", "opacity"]
+          .filter(Boolean)
+          .join(", ");
+        return controller;
+      }
+
+      function applyLoopController(controller) {
+        if (!controller?.element) {
+          return;
+        }
+
+        const transforms = [
+          controller.baseTransform,
+          controller.orbitTransform,
+          controller.rotateTransform,
+          controller.pulseTransform,
+        ].filter(Boolean);
+        controller.element.style.transform =
+          transforms.length > 0
+            ? transforms.join(" ")
+            : controller.originalInlineTransform;
+
+        if (controller.pulseOpacity === null) {
+          controller.element.style.opacity = controller.originalInlineOpacity;
+          return;
+        }
+
+        controller.element.style.opacity = String(controller.pulseOpacity);
+      }
+
+      function trackLoopTimer(runtime, timerId) {
+        runtime.timerIds.push(timerId);
+        return timerId;
+      }
+
+      function scheduleLoopTimeout(runtime, callback, delayMs) {
+        return trackLoopTimer(
+          runtime,
+          window.setTimeout(() => {
+            if (activeLoopRuntime !== runtime || runtime.token !== currentAnimationToken) {
+              return;
+            }
+            callback();
+          }, delayMs),
+        );
+      }
+
+      function registerLoopEffect(runtime, effect) {
+        const element = resolveAnimationAnchorElement(effect.anchor);
+        if (!(element instanceof HTMLElement)) {
+          return;
+        }
+
+        if (effect.kind === "ticker") {
+          const originalHtml = element.innerHTML;
+          runtime.cleanups.push(() => {
+            element.innerHTML = originalHtml;
+          });
+          let itemIndex = 0;
+          const applyItem = () => {
+            element.textContent = effect.items[itemIndex % effect.items.length] || "";
+            itemIndex += 1;
+          };
+          applyItem();
+          trackLoopTimer(runtime, window.setInterval(applyItem, effect.stepMs));
+          return;
+        }
+
+        if (effect.kind === "typewriter") {
+          const originalHtml = element.innerHTML;
+          runtime.cleanups.push(() => {
+            element.innerHTML = originalHtml;
+          });
+          let itemIndex = 0;
+          let charIndex = 0;
+          let phase = "type";
+
+          const step = () => {
+            const item = effect.items[itemIndex % effect.items.length] || "";
+            if (phase === "type") {
+              charIndex += 1;
+              element.textContent = item.slice(0, charIndex);
+              if (charIndex < item.length) {
+                scheduleLoopTimeout(runtime, step, effect.typeMs);
+                return;
+              }
+              phase = "hold";
+              scheduleLoopTimeout(runtime, step, effect.holdMs);
+              return;
+            }
+
+            if (phase === "hold") {
+              phase = "delete";
+              scheduleLoopTimeout(runtime, step, effect.deleteMs);
+              return;
+            }
+
+            charIndex = Math.max(0, charIndex - 1);
+            element.textContent = item.slice(0, charIndex);
+            if (charIndex > 0) {
+              scheduleLoopTimeout(runtime, step, effect.deleteMs);
+              return;
+            }
+
+            phase = "type";
+            itemIndex = (itemIndex + 1) % effect.items.length;
+            scheduleLoopTimeout(runtime, step, effect.typeMs);
+          };
+
+          element.textContent = "";
+          scheduleLoopTimeout(runtime, step, effect.typeMs);
+          return;
+        }
+
+        const controller = getLoopController(runtime, element);
+        if (!controller.originalInlineTransformOrigin) {
+          controller.element.style.transformOrigin = "center center";
+        }
+        runtime.effects.push({
+          ...effect,
+          startedAt: performance.now(),
+          controller,
+        });
+      }
+
+      function updateLoopRuntime(runtime, now) {
+        runtime.effects.forEach((effect) => {
+          const elapsed = Math.max(0, now - effect.startedAt);
+          const controller = effect.controller;
+          if (!controller) {
+            return;
+          }
+
+          if (effect.kind === "rotate") {
+            const progress = (elapsed % effect.durationMs) / effect.durationMs;
+            const direction = effect.direction === "counterclockwise" ? -1 : 1;
+            const angle = direction * (effect.angleDeg ?? 360) * progress;
+            controller.rotateTransform = "rotate(" + angle.toFixed(2) + "deg)";
+            applyLoopController(controller);
+            return;
+          }
+
+          if (effect.kind === "pulse") {
+            const progress = (elapsed % effect.durationMs) / effect.durationMs;
+            const wave = 0.5 - Math.cos(progress * Math.PI * 2) / 2;
+            const scaleFrom = effect.scaleFrom ?? 1;
+            const scaleTo = effect.scaleTo ?? 1.08;
+            const opacityFrom = effect.opacityFrom ?? controller.baseOpacity;
+            const opacityTo = effect.opacityTo ?? controller.baseOpacity;
+            const scale = scaleFrom + (scaleTo - scaleFrom) * wave;
+            controller.pulseTransform = "scale(" + scale.toFixed(4) + ")";
+            controller.pulseOpacity = opacityFrom + (opacityTo - opacityFrom) * wave;
+            applyLoopController(controller);
+            return;
+          }
+
+          const progress = (elapsed % effect.durationMs) / effect.durationMs;
+          const radians = progress * Math.PI * 2;
+          const radius = effect.radiusPx;
+          const x = effect.axis === "y" ? 0 : Math.cos(radians) * radius;
+          const y = effect.axis === "x" ? 0 : Math.sin(radians) * radius;
+          controller.orbitTransform =
+            "translate3d(" + x.toFixed(2) + "px," + y.toFixed(2) + "px,0)";
+          applyLoopController(controller);
+        });
+      }
+
+      function startLoopRuntime(token) {
+        if (token !== currentAnimationToken) {
+          return;
+        }
+
+        const loopEffects = previewAnimationManifest?.loopEffects ?? [];
+        if (loopEffects.length === 0) {
+          return;
+        }
+
+        const runtime = {
+          token,
+          effects: [],
+          controllers: new Map(),
+          timerIds: [],
+          cleanups: [],
+          rafId: 0,
+        };
+        activeLoopRuntime = runtime;
+
+        loopEffects.forEach((effect) => {
+          try {
+            registerLoopEffect(runtime, effect);
+          } catch {
+            // Ignore a single loop effect failure and keep the rest of the page interactive.
+          }
+        });
+
+        if (runtime.effects.length === 0) {
+          return;
+        }
+
+        const tick = (now) => {
+          if (activeLoopRuntime !== runtime || runtime.token !== currentAnimationToken) {
+            return;
+          }
+
+          try {
+            updateLoopRuntime(runtime, now);
+            runtime.rafId = window.requestAnimationFrame(tick);
+          } catch {
+            clearLoopRuntime();
+          }
+        };
+
+        runtime.rafId = window.requestAnimationFrame(tick);
+      }
+
+      function startAnimationSession() {
+        if (!animationModeEnabled) {
+          return;
+        }
+
+        stopAnimationSession();
+        const token = currentAnimationToken;
+        const entryTracks = buildPreviewEntryTracks();
+        if (entryTracks.length === 0 || typeof HTMLElement.prototype.animate !== "function") {
+          startLoopRuntime(token);
+          return;
+        }
+
+        let maxEndMs = 0;
+        entryTracks.forEach((track) => {
+          const cue = buildEntryTrackCue(track);
+          const keyframes = buildAnimationKeyframes(cue);
+          if (!cue || !keyframes) {
+            return;
+          }
+
+          if (cue.enter === "chart-reveal") {
+            track.element.style.transformOrigin = "left center";
+          }
+
+          const animation = track.element.animate(keyframes, {
+            duration: cue.duration,
+            delay: cue.delay,
+            easing: cue.enter === "chart-reveal"
+              ? "cubic-bezier(0.16, 1, 0.3, 1)"
+              : "cubic-bezier(0.22, 1, 0.36, 1)",
+            fill: "both",
+          });
+          activeEntryAnimations.push(animation);
+          maxEndMs = Math.max(maxEndMs, cue.delay + cue.duration);
+        });
+
+        activeEntryTimeoutId = window.setTimeout(() => {
+          if (token !== currentAnimationToken) {
+            return;
+          }
+          clearEntryAnimations();
+          startLoopRuntime(token);
+        }, maxEndMs + 40);
+      }
+
+      function syncAnimationPlaybackState() {
+        const shouldRun =
+          animationModeEnabled &&
+          previewViewportVisible &&
+          document.visibilityState !== "hidden" &&
+          document.body.isConnected;
+        if (shouldRun === animationPlaybackActive) {
+          return;
+        }
+
+        animationPlaybackActive = shouldRun;
+        if (shouldRun) {
+          try {
+            startAnimationSession();
+          } catch {
+            stopAnimationSession();
+          }
+          return;
+        }
+
+        stopAnimationSession();
       }
 
       function ensureTransformPreviewRoot(pageRoot) {
@@ -859,6 +1534,12 @@ function buildStandaloneHtmlReportPageDocument(
           return;
         }
 
+        if (event.data.action === "preview-runtime-visibility") {
+          previewViewportVisible = event.data.active === true;
+          syncAnimationPlaybackState();
+          return;
+        }
+
         if (event.data.action === "layout-preview") {
           const layoutZoneId = event.data.zoneId;
           const splitPercent = Number(event.data.splitPercent);
@@ -965,12 +1646,17 @@ function buildStandaloneHtmlReportPageDocument(
 
         function summarizeElement(element) {
           const rect = element.getBoundingClientRect();
+          const pageRect = pageRoot.getBoundingClientRect();
           const top = Math.max(0, Math.round(rect.top));
           const left = Math.max(0, Math.round(rect.left));
           const width = Math.max(0, Math.round(rect.width));
           const height = Math.max(0, Math.round(rect.height));
           const right = Math.max(0, Math.round(rect.right));
           const bottom = Math.max(0, Math.round(rect.bottom));
+          const relativeTop = Math.max(0, Math.round(rect.top - pageRect.top));
+          const relativeLeft = Math.max(0, Math.round(rect.left - pageRect.left));
+          const relativeRight = Math.max(0, Math.round(rect.right - pageRect.left));
+          const relativeBottom = Math.max(0, Math.round(rect.bottom - pageRect.top));
           const label = (
             element.getAttribute("data-html-block-id") ||
             element.getAttribute("data-html-visual-kind") ||
@@ -998,29 +1684,46 @@ function buildStandaloneHtmlReportPageDocument(
             visualKind,
             selector,
             textPreview,
-            top,
-            left,
+            fitRole: element.getAttribute("${HTML_FIT_ROLE_ATTRIBUTE}") || "",
+            top: relativeTop,
+            left: relativeLeft,
             width,
             height,
-            right,
-            bottom,
-            overflowX: right > pageWidth + 2,
-            overflowY: bottom > pageHeight + 2,
+            right: relativeRight,
+            bottom: relativeBottom,
+            overflowX: relativeRight > pageWidth + 2,
+            overflowY: relativeBottom > pageHeight + 2,
           };
         }
 
-        function collectTopLevelRegions() {
-          return Array.from(pageRoot.children)
-            .slice(0, 16)
-            .map((element) => summarizeElement(element));
+        function collectFitContentElements() {
+          return Array.from(
+            pageRoot.querySelectorAll("[${HTML_FIT_ROLE_ATTRIBUTE}='content']"),
+          ).filter((element) => {
+            if (!(element instanceof HTMLElement)) {
+              return false;
+            }
+
+            const isPlaceholder =
+              element.getAttribute("data-html-canvas-placeholder") === "true" ||
+              element.getAttribute("data-html-transform-preview-placeholder") === "true";
+            if (isPlaceholder) {
+              return false;
+            }
+
+            const rect = element.getBoundingClientRect();
+            return rect.width > 0 || rect.height > 0;
+          });
         }
 
-        function collectSuspectElements() {
-          const semanticNodes = Array.from(
-            pageRoot.querySelectorAll("[data-html-visual-kind], [data-html-block-id], [data-html-layout-id]"),
-          );
-          const semanticSuspects = semanticNodes
-            .map((element) => summarizeElement(element))
+        function collectContentRegions(contentSummaries) {
+          return [...contentSummaries]
+            .sort((left, right) => left.top - right.top || left.left - right.left)
+            .slice(0, 16);
+        }
+
+        function collectSuspectElements(contentSummaries) {
+          const semanticSuspects = contentSummaries
             .filter((element) => element.overflowX || element.overflowY)
             .slice(0, 16);
 
@@ -1028,8 +1731,7 @@ function buildStandaloneHtmlReportPageDocument(
             return semanticSuspects;
           }
 
-          const likelyOffenders = semanticNodes
-            .map((element) => summarizeElement(element))
+          const likelyOffenders = [...contentSummaries]
             .sort((left, right) => {
               const rightScore = right.height + Math.max(0, right.bottom - pageHeight);
               const leftScore = left.height + Math.max(0, left.bottom - pageHeight);
@@ -1041,21 +1743,51 @@ function buildStandaloneHtmlReportPageDocument(
             return likelyOffenders;
           }
 
-          return collectTopLevelRegions()
-            .filter((element) => element.overflowX || element.overflowY)
-            .slice(0, 8);
+          return [];
         }
 
-        const semanticNodeElements = Array.from(
-          pageRoot.querySelectorAll("[data-html-visual-kind], [data-html-block-id], [data-html-layout-id]"),
-        );
+        function measureContentBounds(contentSummaries) {
+          if (contentSummaries.length === 0) {
+            return {
+              right: 0,
+              bottom: 0,
+            };
+          }
+
+          return contentSummaries.reduce(
+            (current, element) => ({
+              right: Math.max(current.right, element.right),
+              bottom: Math.max(current.bottom, element.bottom),
+            }),
+            {
+              right: 0,
+              bottom: 0,
+            },
+          );
+        }
+
+        const semanticNodeElements = collectFitContentElements();
         const semanticSummaries = semanticNodeElements.map((element) => summarizeElement(element));
-        const topLevelRegions = collectTopLevelRegions();
-        const suspectElements = collectSuspectElements();
-        const chartRegionCount = pageRoot.querySelectorAll('[data-html-visual-kind="chart-frame"]').length;
-        const textCharacterCount = pageRoot.innerText.replace(/\s+/g, " ").trim().length;
-        const promptScaffoldLeak = detectPromptScaffoldLeak(pageRoot.innerText || "");
-        const semanticModuleCount = semanticSummaries.length;
+        const topLevelRegions = collectContentRegions(semanticSummaries);
+        const suspectElements = collectSuspectElements(semanticSummaries);
+        const contentBounds = measureContentBounds(semanticSummaries);
+        const chartRegionCount = semanticNodeElements.filter(
+          (element) => element.getAttribute("data-html-visual-kind") === "chart-frame",
+        ).length;
+        const textRoots = semanticNodeElements.filter((element) =>
+          element.hasAttribute("data-html-block-id"),
+        );
+        const textCharacterCount = (
+          (textRoots.length > 0 ? textRoots : [pageRoot])
+            .map((element) => element.innerText || "")
+            .join(" ")
+        ).replace(/\s+/g, " ").trim().length;
+        const promptScaffoldLeak = detectPromptScaffoldLeak(
+          (textRoots.length > 0 ? textRoots : [pageRoot])
+            .map((element) => element.innerText || "")
+            .join(" "),
+        );
+        const semanticModuleCount = semanticNodeElements.length;
         const longestBlockHeight = semanticSummaries.reduce(
           (maxHeight, element) => Math.max(maxHeight, element.height),
           0,
@@ -1163,12 +1895,12 @@ function buildStandaloneHtmlReportPageDocument(
 
         const measurement = {
           pageNumber: ${pageNumber},
-          scrollHeight: pageRoot.scrollHeight,
+          scrollHeight: contentBounds.bottom,
           clientHeight: pageHeight,
-          scrollWidth: pageRoot.scrollWidth,
+          scrollWidth: contentBounds.right,
           clientWidth: pageWidth,
-          overflowX: pageRoot.scrollWidth > pageWidth + 2,
-          overflowY: pageRoot.scrollHeight > pageHeight + 2,
+          overflowX: contentBounds.right > pageWidth + 2,
+          overflowY: contentBounds.bottom > pageHeight + 2,
           semanticModuleCount,
           textCharacterCount,
           chartRegionCount,
@@ -1209,7 +1941,14 @@ function buildStandaloneHtmlReportPageDocument(
       }
 
       reportPageOverflow();
+      syncAnimationPlaybackState();
       window.addEventListener("resize", reportPageOverflow);
+      document.addEventListener("visibilitychange", syncAnimationPlaybackState);
+      window.addEventListener("pagehide", () => {
+        previewViewportVisible = false;
+        animationPlaybackActive = false;
+        stopAnimationSession();
+      });
       const pageRoot = document.querySelector("section.page");
       if (pageRoot) {
         const overflowObserver = new ResizeObserver(() => reportPageOverflow());

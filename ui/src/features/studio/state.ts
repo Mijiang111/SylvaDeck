@@ -24,8 +24,10 @@ import {
   pruneGeneratedHtmlReportCanvasOverrides,
 } from "./html-report-canvas";
 import { ensureHtmlLayoutStructure } from "./html-report-layout";
+import { normalizeHtmlAnimationStructure } from "./html-report-animation";
 import { ensureHtmlVisualStructure } from "./html-report-visuals";
 import { normalizeSlideScene } from "./slide-scene";
+import { getStarterPackManifest, isStarterPackId, isStarterPackLayout, isStarterPackThemeId } from "./starter-packs";
 import { getTemplateDefinition, isTemplateId } from "./templates";
 import type {
   BlockKind,
@@ -35,6 +37,7 @@ import type {
   GenerationHistoryEntry,
   GeneratedHtmlReport,
   GeneratedDraftAsset,
+  HtmlOutputMode,
   LayoutBlock,
   LayoutPage,
   MetricFact,
@@ -42,6 +45,7 @@ import type {
   PublishSnapshot,
   PublishSnapshotFormat,
   SerializableWorkbenchDraft,
+  StarterApplicationMode,
   TemplateId,
   WorkflowStage,
   WorkbenchDeckOptimizationState,
@@ -71,6 +75,53 @@ function isWorkbenchModuleUsageMode(value: unknown): value is WorkbenchModuleUsa
   return value === "disabled" || value === "fallback" || value === "chart-only";
 }
 
+function normalizeHtmlOutputMode(value: unknown): HtmlOutputMode {
+  return value === "animated-preview-js" ? "animated-preview-js" : "static";
+}
+
+function resolveStarterApplicationMode(args: {
+  starterPackId?: string | null;
+  starterThemeId?: string | null;
+  starterBindings?: Record<string, string>;
+}): StarterApplicationMode {
+  const hasDeckStarter = isStarterPackId(args.starterPackId);
+  const hasThemeStarter = isStarterPackThemeId(args.starterThemeId);
+  const hasPageStarter = Object.values(args.starterBindings ?? {}).some((value) => {
+    const starter = getStarterPackManifest(value);
+    return isStarterPackLayout(starter);
+  });
+
+  const dimensionCount = Number(hasDeckStarter) + Number(hasThemeStarter || hasPageStarter);
+  if (dimensionCount >= 2) {
+    return "mixed";
+  }
+  if (hasThemeStarter || hasPageStarter) {
+    return "theme";
+  }
+  return "deck";
+}
+
+function normalizeStarterBindings(
+  bindings: unknown,
+  pages: LayoutPage[],
+): Record<string, string> {
+  if (!bindings || typeof bindings !== "object") {
+    return {};
+  }
+
+  const knownPageIds = new Set(pages.map((page) => page.id));
+  return Object.entries(bindings as Record<string, unknown>).reduce<Record<string, string>>((accumulator, [pageId, starterId]) => {
+    if (typeof starterId !== "string") {
+      return accumulator;
+    }
+    const starter = getStarterPackManifest(starterId);
+    if (knownPageIds.has(pageId) && isStarterPackLayout(starter)) {
+      accumulator[pageId] = starter.id;
+    }
+    return accumulator;
+  }, {});
+}
+
 function createEmptyLongFormClarificationState(): WorkbenchLongFormClarificationState {
   return {
     status: "idle",
@@ -82,6 +133,7 @@ function createEmptyLongFormClarificationState(): WorkbenchLongFormClarification
 function createEmptyDeckOptimizationState(): WorkbenchDeckOptimizationState {
   return {
     autoOptimizedReportKey: null,
+    autoOptimizedVersion: null,
   };
 }
 
@@ -96,6 +148,12 @@ function normalizeDeckOptimizationState(value: unknown): WorkbenchDeckOptimizati
       typeof candidate.autoOptimizedReportKey === "string" &&
       candidate.autoOptimizedReportKey.trim()
         ? candidate.autoOptimizedReportKey.trim()
+        : null,
+    autoOptimizedVersion:
+      typeof candidate.autoOptimizedVersion === "number" &&
+      Number.isFinite(candidate.autoOptimizedVersion) &&
+      candidate.autoOptimizedVersion >= 1
+        ? Math.trunc(candidate.autoOptimizedVersion)
         : null,
   };
 }
@@ -200,8 +258,10 @@ function cloneProjectSnapshot(snapshot: WorkbenchProjectSnapshot): WorkbenchProj
     ...snapshot,
     longFormClarification: { ...snapshot.longFormClarification },
     deckOptimization: { ...snapshot.deckOptimization },
+    starterBindings: { ...snapshot.starterBindings },
     pages: snapshot.pages.map((page) => ({
       ...page,
+      starterLayoutId: page.starterLayoutId ?? null,
       blocks: page.blocks.map((block) => ({ ...block })),
     })),
     generatedDraft: cloneGeneratedDraft(snapshot.generatedDraft),
@@ -227,9 +287,11 @@ function cloneProject(project: WorkbenchProject): WorkbenchProject {
     ...project,
     longFormClarification: { ...project.longFormClarification },
     deckOptimization: { ...project.deckOptimization },
+    starterBindings: { ...project.starterBindings },
     briefMessages: cloneConversationMessages(project.briefMessages),
     pages: project.pages.map((page) => ({
       ...page,
+      starterLayoutId: page.starterLayoutId ?? null,
       blocks: page.blocks.map((block) => ({ ...block })),
     })),
     generatedDraft: cloneGeneratedDraft(project.generatedDraft),
@@ -305,6 +367,8 @@ function summarizeProject(
     workspaceId: workspace.id,
     workspaceName: workspace.name,
     templateId: project.templateId,
+    starterPackId: project.starterPackId,
+    starterThemeId: project.starterThemeId,
     projectName: project.projectName,
     updatedAt: project.updatedAt,
     chatUpdatedAt: project.updatedAt,
@@ -332,6 +396,11 @@ function summarizeWorkspace(workspace: WorkbenchWorkspace): WorkbenchWorkspaceSu
 
 function createProjectSnapshot(args: {
   templateId: TemplateId;
+  starterPackId?: WorkbenchProject["starterPackId"];
+  starterThemeId?: WorkbenchProject["starterThemeId"];
+  starterBindings?: WorkbenchProject["starterBindings"];
+  starterApplicationMode?: WorkbenchProject["starterApplicationMode"];
+  htmlOutputMode?: WorkbenchProject["htmlOutputMode"];
   projectName: string;
   sourceText: string;
   generationMode: WorkbenchGenerationMode;
@@ -347,6 +416,17 @@ function createProjectSnapshot(args: {
   return {
     version: PROJECT_SNAPSHOT_VERSION,
     templateId: args.templateId,
+    starterPackId: args.starterPackId ?? null,
+    starterThemeId: args.starterThemeId ?? null,
+    starterBindings: { ...(args.starterBindings ?? {}) },
+    starterApplicationMode:
+      args.starterApplicationMode ??
+      resolveStarterApplicationMode({
+        starterPackId: args.starterPackId,
+        starterThemeId: args.starterThemeId,
+        starterBindings: args.starterBindings,
+      }),
+    htmlOutputMode: args.htmlOutputMode ?? "static",
     projectName: args.projectName,
     sourceText: args.sourceText,
     generationMode: args.generationMode,
@@ -356,6 +436,7 @@ function createProjectSnapshot(args: {
     deckOptimization: { ...args.deckOptimization },
     pages: args.pages.map((page) => ({
       ...page,
+      starterLayoutId: page.starterLayoutId ?? null,
       blocks: page.blocks.map((block) => ({ ...block })),
     })),
     workflowStage: args.workflowStage,
@@ -406,6 +487,11 @@ function createPublishSnapshotEntry(args: {
 
 function createStoredProjectRecord(args: {
   templateId: TemplateId;
+  starterPackId?: WorkbenchProject["starterPackId"];
+  starterThemeId?: WorkbenchProject["starterThemeId"];
+  starterBindings?: WorkbenchProject["starterBindings"];
+  starterApplicationMode?: WorkbenchProject["starterApplicationMode"];
+  htmlOutputMode?: WorkbenchProject["htmlOutputMode"];
   projectName?: string;
   sourceText?: string;
   generationMode?: WorkbenchGenerationMode;
@@ -430,6 +516,24 @@ function createStoredProjectRecord(args: {
     id: args.id ?? createProjectId(),
     version: PROJECT_BUNDLE_VERSION,
     templateId: args.templateId,
+    starterPackId: isStarterPackId(args.starterPackId) ? args.starterPackId : null,
+    starterThemeId: isStarterPackThemeId(args.starterThemeId) ? args.starterThemeId : null,
+    starterBindings: normalizeStarterBindings(
+      args.starterBindings,
+      (args.pages ?? clonePages(args.templateId)).map((page) => ({
+        ...page,
+        starterLayoutId: page.starterLayoutId ?? null,
+        blocks: page.blocks.map((block) => ({ ...block })),
+      })),
+    ),
+    starterApplicationMode:
+      args.starterApplicationMode ??
+      resolveStarterApplicationMode({
+        starterPackId: args.starterPackId,
+        starterThemeId: args.starterThemeId,
+        starterBindings: args.starterBindings,
+      }),
+    htmlOutputMode: args.htmlOutputMode ?? "static",
     projectName: args.projectName?.trim() || template.defaultProjectName,
     sourceText: args.sourceText ?? template.defaultSourceText,
     generationMode: args.generationMode ?? "standard",
@@ -443,6 +547,7 @@ function createStoredProjectRecord(args: {
     briefMessages: cloneConversationMessages(args.briefMessages ?? []),
     pages: (args.pages ?? clonePages(args.templateId)).map((page) => ({
       ...page,
+      starterLayoutId: page.starterLayoutId ?? null,
       blocks: page.blocks.map((block) => ({ ...block })),
     })),
     generatedDraft: cloneGeneratedDraft(args.generatedDraft ?? null),
@@ -864,6 +969,10 @@ function normalizeGeneratedHtmlReport(value: unknown): GeneratedHtmlReport {
     html: normalizedTypography.html,
     pageCount: candidate.pageCount as number,
     pageTitles,
+    htmlOutputMode: normalizeHtmlOutputMode(candidate.htmlOutputMode),
+    animationStructure: normalizeHtmlAnimationStructure(candidate.animationStructure, {
+      pageCount: candidate.pageCount as number,
+    }),
     styleProfileId:
       typeof candidate.styleProfileId === "string" && candidate.styleProfileId.trim()
         ? candidate.styleProfileId.trim()
@@ -973,10 +1082,14 @@ function normalizeProjectSnapshot(
         ? "layout"
         : "generated"
       : "intake";
+  const normalizedPages = normalizeImportedPages(candidate.pages);
 
   return {
     version: PROJECT_SNAPSHOT_VERSION,
     templateId,
+    starterPackId: isStarterPackId(candidate.starterPackId) ? candidate.starterPackId : null,
+    starterThemeId: isStarterPackThemeId(candidate.starterThemeId) ? candidate.starterThemeId : null,
+    htmlOutputMode: normalizeHtmlOutputMode(candidate.htmlOutputMode),
     projectName,
     sourceText,
     generationMode: isWorkbenchGenerationMode(candidate.generationMode)
@@ -991,7 +1104,18 @@ function normalizeProjectSnapshot(
         : null,
     longFormClarification: normalizeLongFormClarificationState(candidate.longFormClarification),
     deckOptimization: normalizeDeckOptimizationState(candidate.deckOptimization),
-    pages: normalizeImportedPages(candidate.pages),
+    pages: normalizedPages,
+    starterBindings: normalizeStarterBindings(candidate.starterBindings, normalizedPages),
+    starterApplicationMode:
+      candidate.starterApplicationMode === "theme" ||
+      candidate.starterApplicationMode === "mixed" ||
+      candidate.starterApplicationMode === "deck"
+        ? candidate.starterApplicationMode
+        : resolveStarterApplicationMode({
+            starterPackId: candidate.starterPackId,
+            starterThemeId: candidate.starterThemeId,
+            starterBindings: candidate.starterBindings as Record<string, string> | undefined,
+          }),
     workflowStage,
     generatedDraft,
     capturedAt:
@@ -1119,6 +1243,7 @@ function normalizeStoredProject(
         ? "layout"
         : "generated"
       : "intake";
+  const normalizedPages = normalizeImportedPages(candidate.pages);
   const briefMessages = Array.isArray(candidate.briefMessages)
     ? candidate.briefMessages.map((message, index) =>
         normalizeConversationMessage(message, `briefMessages.${index + 1}`),
@@ -1135,6 +1260,9 @@ function normalizeStoredProject(
         ? candidate.version
         : PROJECT_BUNDLE_VERSION,
     templateId,
+    starterPackId: isStarterPackId(candidate.starterPackId) ? candidate.starterPackId : null,
+    starterThemeId: isStarterPackThemeId(candidate.starterThemeId) ? candidate.starterThemeId : null,
+    htmlOutputMode: normalizeHtmlOutputMode(candidate.htmlOutputMode),
     projectName:
       typeof candidate.projectName === "string" && candidate.projectName.trim()
         ? candidate.projectName.trim()
@@ -1156,7 +1284,18 @@ function normalizeStoredProject(
     longFormClarification: normalizeLongFormClarificationState(candidate.longFormClarification),
     deckOptimization: normalizeDeckOptimizationState(candidate.deckOptimization),
     briefMessages,
-    pages: normalizeImportedPages(candidate.pages),
+    pages: normalizedPages,
+    starterBindings: normalizeStarterBindings(candidate.starterBindings, normalizedPages),
+    starterApplicationMode:
+      candidate.starterApplicationMode === "theme" ||
+      candidate.starterApplicationMode === "mixed" ||
+      candidate.starterApplicationMode === "deck"
+        ? candidate.starterApplicationMode
+        : resolveStarterApplicationMode({
+            starterPackId: candidate.starterPackId,
+            starterThemeId: candidate.starterThemeId,
+            starterBindings: candidate.starterBindings as Record<string, string> | undefined,
+          }),
     generatedDraft: normalizedGeneratedDraft,
     generationHistory,
     publishSnapshots,
@@ -2159,10 +2298,17 @@ function normalizeImportedPages(pages: unknown): LayoutPage[] {
     }
 
     const candidate = page as Partial<LayoutPage>;
-    const pageId =
+    const rawPageId =
       typeof candidate.id === "string" && candidate.id
-        ? candidate.id
+        ? candidate.id.trim()
         : `${index + 1}`;
+    const pageIdMatch = rawPageId.match(/(\d+)/);
+    const pageId =
+      /^\d+$/.test(rawPageId)
+        ? rawPageId
+        : pageIdMatch?.[1]
+          ? String(Number.parseInt(pageIdMatch[1], 10))
+          : `${index + 1}`;
 
     if (!Array.isArray(candidate.blocks)) {
       throw new Error(`Page ${pageId} does not contain valid blocks`);
@@ -2181,6 +2327,11 @@ function normalizeImportedPages(pages: unknown): LayoutPage[] {
       note: typeof candidate.note === "string" ? candidate.note : "",
       instruction:
         typeof candidate.instruction === "string" ? candidate.instruction : "",
+      starterLayoutId:
+        (() => {
+          const starter = getStarterPackManifest(candidate.starterLayoutId);
+          return isStarterPackLayout(starter) ? starter.id : null;
+        })(),
       blocks: candidate.blocks.map((block, blockIndex) =>
         normalizeImportedBlock(block, pageId, blockIndex),
       ),
@@ -2193,6 +2344,11 @@ export function createTemplateProjectState(templateId: TemplateId) {
 
   return {
     templateId,
+    starterPackId: null,
+    starterThemeId: null,
+    starterBindings: {},
+    starterApplicationMode: "deck" as const,
+    htmlOutputMode: "static" as const,
     projectName: template.defaultProjectName,
     sourceText: template.defaultSourceText,
     generationMode: "standard" as const,
@@ -2213,12 +2369,17 @@ export function createProjectBundle(args: {
   sourceText: string;
   generationMode?: WorkbenchGenerationMode;
   moduleUsageMode?: WorkbenchProject["moduleUsageMode"];
+  htmlOutputMode?: WorkbenchProject["htmlOutputMode"];
   requestedPageCount?: number | null;
   longFormClarification?: WorkbenchLongFormClarificationState;
   deckOptimization?: WorkbenchDeckOptimizationState;
   briefMessages?: ConversationMessage[];
   pages: LayoutPage[];
   templateId: TemplateId;
+  starterPackId?: WorkbenchProject["starterPackId"];
+  starterThemeId?: WorkbenchProject["starterThemeId"];
+  starterBindings?: WorkbenchProject["starterBindings"];
+  starterApplicationMode?: WorkbenchProject["starterApplicationMode"];
   generatedDraft?: GeneratedDraftAsset | null;
   generationHistory?: GenerationHistoryEntry[];
   publishSnapshots?: PublishSnapshot[];
@@ -2229,6 +2390,11 @@ export function createProjectBundle(args: {
   return createStoredProjectRecord({
     id: args.id,
     templateId: args.templateId,
+    starterPackId: args.starterPackId,
+    starterThemeId: args.starterThemeId,
+    starterBindings: args.starterBindings,
+    starterApplicationMode: args.starterApplicationMode,
+    htmlOutputMode: args.htmlOutputMode,
     projectName: args.projectName,
     sourceText: args.sourceText,
     generationMode: args.generationMode,
@@ -2253,12 +2419,17 @@ export function serializeProjectBundle(args: {
   sourceText: string;
   generationMode?: WorkbenchGenerationMode;
   moduleUsageMode?: WorkbenchProject["moduleUsageMode"];
+  htmlOutputMode?: WorkbenchProject["htmlOutputMode"];
   requestedPageCount?: number | null;
   longFormClarification?: WorkbenchLongFormClarificationState;
   deckOptimization?: WorkbenchDeckOptimizationState;
   briefMessages?: ConversationMessage[];
   pages: LayoutPage[];
   templateId: TemplateId;
+  starterPackId?: WorkbenchProject["starterPackId"];
+  starterThemeId?: WorkbenchProject["starterThemeId"];
+  starterBindings?: WorkbenchProject["starterBindings"];
+  starterApplicationMode?: WorkbenchProject["starterApplicationMode"];
   generatedDraft?: GeneratedDraftAsset | null;
   generationHistory?: GenerationHistoryEntry[];
   publishSnapshots?: PublishSnapshot[];
@@ -2351,6 +2522,11 @@ export function recordProjectGeneration(args: {
       const capturedAt = new Date().toISOString();
       const snapshot = createProjectSnapshot({
         templateId: args.generatedDraft.templateId,
+        starterPackId: project.starterPackId,
+        starterThemeId: project.starterThemeId,
+        starterBindings: project.starterBindings,
+        starterApplicationMode: project.starterApplicationMode,
+        htmlOutputMode: project.htmlOutputMode,
         projectName: args.projectName,
         sourceText: args.sourceText,
         generationMode: project.generationMode,
@@ -2391,7 +2567,7 @@ export function recordProjectGeneration(args: {
         moduleUsageMode: project.moduleUsageMode,
         requestedPageCount: project.requestedPageCount,
         longFormClarification: project.longFormClarification,
-        deckOptimization: { autoOptimizedReportKey: null },
+        deckOptimization: { autoOptimizedReportKey: null, autoOptimizedVersion: null },
         pages: args.pages,
         generatedDraft: args.generatedDraft,
         generationHistory: nextHistory,
@@ -2416,6 +2592,11 @@ export function recordPublishSnapshot(args: {
       const capturedAt = new Date().toISOString();
       const snapshot = createProjectSnapshot({
         templateId: project.templateId,
+        starterPackId: project.starterPackId,
+        starterThemeId: project.starterThemeId,
+        starterBindings: project.starterBindings,
+        starterApplicationMode: project.starterApplicationMode,
+        htmlOutputMode: project.htmlOutputMode,
         projectName: project.projectName,
         sourceText: project.sourceText,
         generationMode: project.generationMode,

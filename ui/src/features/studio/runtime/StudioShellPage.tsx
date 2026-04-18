@@ -66,8 +66,19 @@ import {
   storeModuleAuthoringHandoff,
 } from "@/features/studio/module-authoring-handoff";
 import { getIndustryStyleProfile } from "@/features/studio/industry-style";
+import {
+  createStarterLayoutPage,
+  getStarterPackManifest,
+  isStarterPackDeck,
+  isStarterPackLayout,
+  listStarterPackManifests,
+  listStarterPackThemes,
+  recommendStarterPackManifests,
+} from "@/features/studio/starter-packs";
+import type { WorkbenchAgentProvider } from "@/features/studio/ai-settings";
 import type {
   GeneratedDraftAsset,
+  HtmlOutputMode,
   HtmlCanvasFrame,
   HtmlEditableBlock,
   HtmlLayoutZoneKind,
@@ -145,7 +156,19 @@ const MODULE_USAGE_OPTIONS: Array<{
   { value: "chart-only", label: "Charts only" },
 ];
 
+const HTML_OUTPUT_MODE_OPTIONS: Array<{
+  value: HtmlOutputMode;
+  label: string;
+}> = [
+  { value: "static", label: "Static HTML" },
+  { value: "animated-preview-js", label: "Animated HTML" },
+];
+
 const GENERAL_CONSULTING_PROFILE = getIndustryStyleProfile("general-consulting");
+
+function describeHtmlOutputMode(mode: HtmlOutputMode) {
+  return mode === "animated-preview-js" ? "Animated HTML mode" : "Static HTML mode";
+}
 
 function inferVisualKindForModule(manifest: PublishedModuleManifest): HtmlVisualNodeKind {
   if (
@@ -223,11 +246,108 @@ function formatSaveStatus(saveState: string, lastSavedAt: string | null) {
   return "Local-first Studio";
 }
 
+function resolvePageNumberFromId(
+  pageId: string | null | undefined,
+  pages: LayoutPage[] | null | undefined,
+) {
+  if (pageId && pages?.length) {
+    const pageIndex = pages.findIndex((page) => page.id === pageId);
+    if (pageIndex >= 0) {
+      return pageIndex + 1;
+    }
+  }
+
+  const parsed = Number.parseInt(pageId ?? "", 10);
+  return Number.isInteger(parsed) && parsed >= 1 ? parsed : 1;
+}
+
+function resolvePageIdFromNumber(
+  pageNumber: number,
+  pages: LayoutPage[] | null | undefined,
+) {
+  return pages?.[pageNumber - 1]?.id ?? String(pageNumber);
+}
+
+function buildStarterBindingIntent(
+  pages: LayoutPage[],
+  starterBindings: Record<string, string>,
+) {
+  return pages.flatMap((page, index) => {
+    const starter = getStarterPackManifest(starterBindings[page.id] ?? page.starterLayoutId ?? null);
+    if (!isStarterPackLayout(starter)) {
+      return [];
+    }
+    return [
+      {
+        pageId: page.id,
+        pageNumber: index + 1,
+        starterId: starter.id,
+      },
+    ];
+  });
+}
+
+function resolveStarterMode(args: {
+  starterPackId?: string | null;
+  starterThemeId?: string | null;
+  starterBindings?: Record<string, string>;
+  themeOnly?: boolean;
+}): WorkbenchProject["starterApplicationMode"] {
+  const hasDeckStarter = isStarterPackDeck(getStarterPackManifest(args.starterPackId ?? null));
+  const hasThemeStarter = Boolean(args.starterThemeId);
+  const hasPageStarter = Object.values(args.starterBindings ?? {}).some((starterId) =>
+    isStarterPackLayout(getStarterPackManifest(starterId)),
+  );
+
+  if (args.themeOnly && hasThemeStarter) {
+    return "theme";
+  }
+  if (hasDeckStarter && (hasThemeStarter || hasPageStarter)) {
+    return "mixed";
+  }
+  if (hasDeckStarter) {
+    return "deck";
+  }
+  if (hasThemeStarter || hasPageStarter) {
+    return "theme";
+  }
+  return "deck";
+}
+
+function renumberPagesWithStarterBindings(args: {
+  pages: LayoutPage[];
+  starterBindings: Record<string, string>;
+}) {
+  const nextStarterBindings: Record<string, string> = {};
+  const nextPages = args.pages.map((page, index) => {
+    const nextId = String(index + 1);
+    const starter = getStarterPackManifest(args.starterBindings[page.id] ?? page.starterLayoutId ?? null);
+    if (isStarterPackLayout(starter)) {
+      nextStarterBindings[nextId] = starter.id;
+    }
+    return {
+      ...page,
+      id: nextId,
+      chapter: `Page ${index + 1}`,
+      starterLayoutId: isStarterPackLayout(starter) ? starter.id : null,
+      blocks: page.blocks.map((block) => ({ ...block })),
+    };
+  });
+
+  return {
+    pages: nextPages,
+    starterBindings: nextStarterBindings,
+  };
+}
+
 export function StudioProjectEditPage({ projectId }: { projectId: string }) {
   const { workspaceRepository } = useStudioWorkspace({ projectId });
   const location = useLocation();
   const navigate = useNavigate();
   const [chatInput, setChatInput] = useState("");
+  const [pendingDeckStarterId, setPendingDeckStarterId] = useState("");
+  const [pendingThemeId, setPendingThemeId] = useState("");
+  const [pendingPageStarterId, setPendingPageStarterId] = useState("");
   const [canvasMoreOpen, setCanvasMoreOpen] = useState(false);
   const [pagesStripVisible, setPagesStripVisible] = useState(true);
   const [propertiesVisible, setPropertiesVisible] = useState(true);
@@ -285,9 +405,19 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
     redo,
     importBundle,
     setInspectorTab,
+    setAiSettings,
   } = useStudioProjectActions();
 
   const project = documentState.project;
+  const starterDeckOptions = useMemo(
+    () => listStarterPackManifests("deck").filter(isStarterPackDeck),
+    [],
+  );
+  const starterPageOptions = useMemo(
+    () => listStarterPackManifests("layout").filter(isStarterPackLayout),
+    [],
+  );
+  const starterThemeOptions = useMemo(() => listStarterPackThemes(), []);
 
   const draft = useMemo(() => {
     if (!project) {
@@ -330,6 +460,8 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
       : "Start a new report with one sentence or paste rough notes.");
 
   const generatedHtmlReport = project?.generatedDraft?.htmlReport ?? null;
+  const resolvedHtmlOutputMode: HtmlOutputMode =
+    generatedHtmlReport?.htmlOutputMode ?? project?.htmlOutputMode ?? "static";
   const displayProjectTitle = useMemo(() => {
     if (generatedHtmlReport?.title) {
       return generatedHtmlReport.title;
@@ -354,13 +486,23 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
   const hasStreamingPreview =
     streamUi.partialPages.length > 0 &&
     (streamUi.isStreaming || Boolean(streamUi.error));
+  const activePage = useMemo(
+    () => project?.pages.find((page) => page.id === selection.activePageId) ?? project?.pages[0] ?? null,
+    [project, selection.activePageId],
+  );
+  const activePageStarterId =
+    (activePage && project?.starterBindings[activePage.id]) ?? activePage?.starterLayoutId ?? "";
   const currentCanvasPageId =
     shell.currentCanvasPageId ??
     selection.activePageId ??
     (hasStreamingPreview ? String(streamUi.partialPages[0]?.pageNumber ?? "1") : null) ??
     project?.pages[0]?.id ??
     null;
-  const currentCanvasPageNumber = Math.max(1, Number.parseInt(currentCanvasPageId || "1", 10));
+  const currentCanvasPageNumber = resolvePageNumberFromId(currentCanvasPageId, project?.pages);
+  const activePageNumber = resolvePageNumberFromId(
+    selection.activePageId || currentCanvasPageId,
+    project?.pages,
+  );
   const currentCanvasPageTitle = useMemo(() => {
     if (!project && !hasStreamingPreview) {
       return "";
@@ -398,38 +540,34 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
     briefAiSettings: brief.aiSettings,
     currentCanvasPageNumber,
     hasStreamingPreview,
-    selectionHtmlPageOverflows: selection.htmlPageOverflows,
-    setPropertiesVisible,
+      selectionHtmlPageOverflows: selection.htmlPageOverflows,
+      setPropertiesVisible,
   });
-  const activePage = useMemo(
-    () => project?.pages.find((page) => page.id === selection.activePageId) ?? project?.pages[0] ?? null,
-    [project, selection.activePageId],
-  );
   const activeHtmlPageTitle = useMemo(() => {
     if (!generatedHtmlReport || !project) {
       return "";
     }
 
-    const pageIndex = Math.max(0, Number.parseInt(selection.activePageId || "1", 10) - 1);
+    const pageIndex = Math.max(0, activePageNumber - 1);
     return (
       generatedHtmlReport.pageTitles[pageIndex] ??
       project.pages[pageIndex]?.title ??
       activePage?.title ??
       ""
     );
-  }, [activePage, generatedHtmlReport, project, selection.activePageId]);
+  }, [activePage, activePageNumber, generatedHtmlReport, project]);
   const activeHtmlStructurePage = useMemo(() => {
     if (!generatedHtmlReport?.structure?.pages?.length) {
       return null;
     }
 
-    const pageNumber = Math.max(1, Number.parseInt(selection.activePageId || "1", 10));
+    const pageNumber = activePageNumber;
     return (
       generatedHtmlReport.structure.pages.find((page) => page.pageNumber === pageNumber) ??
       generatedHtmlReport.structure.pages[0] ??
       null
     );
-  }, [generatedHtmlReport, selection.activePageId]);
+  }, [activePageNumber, generatedHtmlReport]);
   const activeHtmlBlock = useMemo(() => {
     if (!activeHtmlStructurePage || !selection.selectedHtmlBlockId) {
       return null;
@@ -474,9 +612,9 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
 
     return extractHtmlPageVisualStyle({
       report: generatedHtmlReport,
-      pageNumber: Math.max(1, Number.parseInt(selection.activePageId || "1", 10)),
+      pageNumber: activePageNumber,
     });
-  }, [generatedHtmlReport, selection.activePageId]);
+  }, [activePageNumber, generatedHtmlReport]);
   const activeHtmlVisualPage = useMemo(() => {
     if (!generatedHtmlReport?.visualStructure?.pages?.length) {
       return null;
@@ -484,10 +622,10 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
 
     return (
       generatedHtmlReport.visualStructure.pages.find(
-        (page) => page.pageNumber === Math.max(1, Number.parseInt(selection.activePageId || "1", 10)),
+        (page) => page.pageNumber === activePageNumber,
       ) ?? null
     );
-  }, [generatedHtmlReport, selection.activePageId]);
+  }, [activePageNumber, generatedHtmlReport]);
   const activeHtmlVisualNode = useMemo<HtmlVisualNode | null>(() => {
     if (!activeHtmlVisualPage || !selection.selectedVisualNodeId) {
       return null;
@@ -536,10 +674,10 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
 
     return extractGeneratedHtmlReportVisualNodeContent({
       report: generatedHtmlReport,
-      pageNumber: Math.max(1, Number.parseInt(selection.activePageId || "1", 10)),
+      pageNumber: activePageNumber,
       nodeId: selection.selectedVisualNodeId,
     });
-  }, [generatedHtmlReport, selection.activePageId, selection.selectedVisualNodeId]);
+  }, [activePageNumber, generatedHtmlReport, selection.selectedVisualNodeId]);
   const activeHtmlLayoutPage = useMemo(() => {
     if (!generatedHtmlReport?.layoutStructure?.pages?.length) {
       return null;
@@ -547,10 +685,10 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
 
     return (
       generatedHtmlReport.layoutStructure.pages.find(
-        (page) => page.pageNumber === Math.max(1, Number.parseInt(selection.activePageId || "1", 10)),
+        (page) => page.pageNumber === activePageNumber,
       ) ?? null
     );
-  }, [generatedHtmlReport, selection.activePageId]);
+  }, [activePageNumber, generatedHtmlReport]);
   const activeHtmlLayoutZone = useMemo(() => {
     if (!activeHtmlLayoutPage || !selection.selectedLayoutZoneId) {
       return null;
@@ -612,6 +750,7 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
   const {
     buildStorylineFromInput,
     regenerateReportContent,
+    regenerateReportWithIntent,
     continueConversation,
     cancelStreamingGeneration,
     handleLongFormClarificationChoice,
@@ -631,6 +770,58 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
     onConversationQueued: () => setChatInput(""),
     queueDeckReview,
   });
+  const recommendedDeckStarters = useMemo(
+    () =>
+      recommendStarterPackManifests({
+        briefText: project?.sourceText ?? brief.intakeInput,
+        kind: "deck",
+        limit: 3,
+      }).filter(isStarterPackDeck),
+    [brief.intakeInput, project?.sourceText],
+  );
+  const recommendedPageStarters = useMemo(
+    () =>
+      recommendStarterPackManifests({
+        briefText: [
+          project?.sourceText ?? "",
+          activePage?.title ?? "",
+          activePage?.note ?? "",
+          activePage?.instruction ?? "",
+        ]
+          .filter(Boolean)
+          .join("\n"),
+        kind: "layout",
+        limit: 4,
+      }).filter(isStarterPackLayout),
+    [activePage?.instruction, activePage?.note, activePage?.title, project?.sourceText],
+  );
+
+  useEffect(() => {
+    setPendingDeckStarterId(project?.starterPackId ?? "");
+  }, [project?.id, project?.starterPackId]);
+
+  useEffect(() => {
+    setPendingThemeId(project?.starterThemeId ?? "");
+  }, [project?.id, project?.starterThemeId]);
+
+  useEffect(() => {
+    setPendingPageStarterId(activePageStarterId);
+  }, [activePage?.id, activePageStarterId, project?.id]);
+
+  const selectedDeckStarter = useMemo(() => {
+    const starter = getStarterPackManifest(pendingDeckStarterId || null);
+    return isStarterPackDeck(starter) ? starter : null;
+  }, [pendingDeckStarterId]);
+
+  const selectedPageStarter = useMemo(() => {
+    const starter = getStarterPackManifest(pendingPageStarterId || null);
+    return isStarterPackLayout(starter) ? starter : null;
+  }, [pendingPageStarterId]);
+
+  const selectedTheme = useMemo(
+    () => starterThemeOptions.find((theme) => theme.id === pendingThemeId) ?? null,
+    [pendingThemeId, starterThemeOptions],
+  );
 
   const deferredLibraryQuery = useDeferredValue(library.query);
   const allLibraryProjectCards = useMemo<LibraryCardRecord[]>(() => {
@@ -705,6 +896,318 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
       label: "Update page brief",
       statusLine,
     });
+  }
+
+  function updateProjectHtmlOutputMode(nextMode: HtmlOutputMode) {
+    if (!project || generatedHtmlReport || project.htmlOutputMode === nextMode) {
+      return;
+    }
+
+    replaceCurrentProject(
+      {
+        ...project,
+        htmlOutputMode: nextMode,
+        updatedAt: new Date().toISOString(),
+      },
+      {
+        history: {
+          scope: "brief",
+          label: "Change HTML output mode",
+          fields: ["htmlOutputMode"],
+        },
+        mode: "editor",
+        statusLine:
+          nextMode === "animated-preview-js"
+            ? "This project will generate the first draft in animated HTML preview mode."
+            : "This project will generate the first draft in static HTML mode.",
+      },
+    );
+  }
+
+  async function regenerateWithStarterIntent(args: {
+    starterPackId?: string | null;
+    starterThemeId?: string | null;
+    starterApplicationMode?: WorkbenchProject["starterApplicationMode"];
+    starterBindings?: Record<string, string>;
+    requestedPageCount?: number | null;
+    statusLine: string;
+  }) {
+    if (!project?.sourceText.trim()) {
+      setStatusLine("Starter selection saved. Add a brief, then generate to see it applied.");
+      return;
+    }
+
+    const nextStarterPackId =
+      "starterPackId" in args ? args.starterPackId ?? null : project.starterPackId;
+    const nextStarterThemeId =
+      "starterThemeId" in args ? args.starterThemeId ?? null : project.starterThemeId;
+    const nextRequestedPageCount =
+      "requestedPageCount" in args
+        ? args.requestedPageCount ?? null
+        : project.requestedPageCount;
+
+    await regenerateReportWithIntent(
+      {
+        starterPackId: nextStarterPackId,
+        starterThemeId: nextStarterThemeId,
+        starterApplicationMode: args.starterApplicationMode ?? project.starterApplicationMode,
+        starterBindings: buildStarterBindingIntent(
+          project.pages,
+          args.starterBindings ?? project.starterBindings,
+        ),
+        requestedPageCount: nextRequestedPageCount,
+      },
+      args.statusLine,
+    );
+  }
+
+  function replaceProjectStarterState(args: {
+    starterPackId?: string | null;
+    starterThemeId?: string | null;
+    starterBindings?: Record<string, string>;
+    starterApplicationMode?: WorkbenchProject["starterApplicationMode"];
+    pages?: LayoutPage[];
+    requestedPageCount?: number | null;
+    label: string;
+    fields: Array<
+      | "starterPackId"
+      | "starterThemeId"
+      | "starterBindings"
+      | "starterApplicationMode"
+      | "pages"
+      | "requestedPageCount"
+    >;
+    statusLine: string;
+    resetSelection?: boolean;
+  }) {
+    if (!project) {
+      return;
+    }
+
+    const nextStarterPackId =
+      "starterPackId" in args ? args.starterPackId ?? null : project.starterPackId;
+    const nextStarterThemeId =
+      "starterThemeId" in args ? args.starterThemeId ?? null : project.starterThemeId;
+    const nextRequestedPageCount =
+      "requestedPageCount" in args
+        ? args.requestedPageCount ?? null
+        : project.requestedPageCount;
+
+    replaceCurrentProject(
+      {
+        ...project,
+        starterPackId: nextStarterPackId,
+        starterThemeId: nextStarterThemeId,
+        starterBindings: args.starterBindings ?? project.starterBindings,
+        starterApplicationMode:
+          args.starterApplicationMode ?? project.starterApplicationMode,
+        pages: args.pages ?? project.pages,
+        requestedPageCount: nextRequestedPageCount,
+        updatedAt: new Date().toISOString(),
+      },
+      {
+        history: {
+          scope: "brief",
+          label: args.label,
+          fields: args.fields,
+        },
+        mode: "editor",
+        resetSelection: args.resetSelection,
+        statusLine: args.statusLine,
+      },
+    );
+  }
+
+  async function handleRegenerateWithSelectedStarter() {
+    if (!project) {
+      return;
+    }
+
+    const nextStarterPackId = selectedDeckStarter?.id ?? null;
+    const nextStarterApplicationMode = resolveStarterMode({
+      starterPackId: nextStarterPackId,
+      starterThemeId: project.starterThemeId,
+      starterBindings: project.starterBindings,
+    });
+
+    replaceProjectStarterState({
+      starterPackId: nextStarterPackId,
+      starterApplicationMode: nextStarterApplicationMode,
+      label: nextStarterPackId ? "Select deck starter" : "Clear deck starter",
+      fields: ["starterPackId", "starterApplicationMode"],
+      statusLine: nextStarterPackId
+        ? `Selected ${selectedDeckStarter?.label ?? "starter pack"} as the deck starter.`
+        : "Cleared the current deck starter.",
+    });
+
+    await regenerateWithStarterIntent({
+      starterPackId: nextStarterPackId,
+      starterApplicationMode: nextStarterApplicationMode,
+      statusLine: nextStarterPackId
+        ? `Regenerating with ${selectedDeckStarter?.label ?? "the selected starter"}...`
+        : "Regenerating without a deck starter...",
+    });
+  }
+
+  async function handleApplySelectedStarterTheme() {
+    if (!project) {
+      return;
+    }
+
+    const nextStarterThemeId = selectedTheme?.id ?? null;
+    const nextStarterApplicationMode = nextStarterThemeId
+      ? "theme"
+      : resolveStarterMode({
+          starterPackId: project.starterPackId,
+          starterThemeId: null,
+          starterBindings: project.starterBindings,
+        });
+
+    replaceProjectStarterState({
+      starterThemeId: nextStarterThemeId,
+      starterApplicationMode: nextStarterApplicationMode,
+      label: nextStarterThemeId ? "Apply starter theme" : "Clear starter theme",
+      fields: ["starterThemeId", "starterApplicationMode"],
+      statusLine: nextStarterThemeId
+        ? `Applied ${selectedTheme?.label ?? "the selected starter theme"} as a theme-only constraint.`
+        : "Cleared the starter theme override.",
+    });
+
+    await regenerateWithStarterIntent({
+      starterThemeId: nextStarterThemeId,
+      starterApplicationMode: nextStarterApplicationMode,
+      statusLine: nextStarterThemeId
+        ? `Applying ${selectedTheme?.label ?? "starter theme"} across the deck...`
+        : "Regenerating after clearing the starter theme...",
+    });
+  }
+
+  async function handleReplaceCurrentPageWithStarter() {
+    if (!project || !activePage) {
+      return;
+    }
+
+    if (!selectedPageStarter && !activePageStarterId) {
+      setStatusLine("Choose a page starter first, then replace the current page scaffold.");
+      return;
+    }
+
+    const starterScaffold = selectedPageStarter
+      ? createStarterLayoutPage({
+          starter: selectedPageStarter,
+          pageId: activePage.id,
+          pageNumber: activePageNumber,
+          title: activePage.title,
+        })
+      : null;
+    const nextStarterBindings = { ...project.starterBindings };
+    if (selectedPageStarter) {
+      nextStarterBindings[activePage.id] = selectedPageStarter.id;
+    } else {
+      delete nextStarterBindings[activePage.id];
+    }
+    const nextPages = project.pages.map((page) =>
+      page.id === activePage.id
+        ? {
+            ...page,
+            starterLayoutId: selectedPageStarter?.id ?? null,
+            note: page.note || starterScaffold?.note || "",
+            instruction: page.instruction || starterScaffold?.instruction || "",
+            blocks: page.blocks.map((block) => ({ ...block })),
+          }
+        : page,
+    );
+    const nextStarterApplicationMode = resolveStarterMode({
+      starterPackId: project.starterPackId,
+      starterThemeId: project.starterThemeId,
+      starterBindings: nextStarterBindings,
+    });
+
+    replaceProjectStarterState({
+      pages: nextPages,
+      starterBindings: nextStarterBindings,
+      starterApplicationMode: nextStarterApplicationMode,
+      label: selectedPageStarter
+        ? "Replace current page with starter"
+        : "Clear current page starter",
+      fields: ["pages", "starterBindings", "starterApplicationMode"],
+      statusLine: selectedPageStarter
+        ? `Bound ${selectedPageStarter.label} to the current page.`
+        : "Cleared the current page starter binding.",
+    });
+
+    await regenerateWithStarterIntent({
+      starterBindings: nextStarterBindings,
+      starterApplicationMode: nextStarterApplicationMode,
+      statusLine: selectedPageStarter
+        ? `Regenerating page ${activePageNumber} with ${selectedPageStarter.label}...`
+        : `Regenerating page ${activePageNumber} without a page starter...`,
+    });
+  }
+
+  async function handleInsertStarterPage() {
+    if (!project || !selectedPageStarter) {
+      setStatusLine("Choose a page starter first, then insert a starter page.");
+      return;
+    }
+
+    const insertIndex = activePage
+      ? Math.max(0, project.pages.findIndex((page) => page.id === activePage.id))
+      : project.pages.length - 1;
+    const provisionalPage = createStarterLayoutPage({
+      starter: selectedPageStarter,
+      pageId: `insert-${Date.now()}`,
+      pageNumber: insertIndex + 2,
+      title: selectedPageStarter.label,
+    });
+    const provisionalPages = [
+      ...project.pages.slice(0, insertIndex + 1),
+      provisionalPage,
+      ...project.pages.slice(insertIndex + 1),
+    ];
+    const provisionalBindings = {
+      ...project.starterBindings,
+      [provisionalPage.id]: selectedPageStarter.id,
+    };
+    const {
+      pages: nextPages,
+      starterBindings: nextStarterBindings,
+    } = renumberPagesWithStarterBindings({
+      pages: provisionalPages,
+      starterBindings: provisionalBindings,
+    });
+    const insertedPageId = String(insertIndex + 2);
+    const nextRequestedPageCount = nextPages.length;
+    const nextStarterApplicationMode = resolveStarterMode({
+      starterPackId: project.starterPackId,
+      starterThemeId: project.starterThemeId,
+      starterBindings: nextStarterBindings,
+    });
+
+    replaceProjectStarterState({
+      pages: nextPages,
+      starterBindings: nextStarterBindings,
+      starterApplicationMode: nextStarterApplicationMode,
+      requestedPageCount: nextRequestedPageCount,
+      label: "Insert starter page",
+      fields: ["pages", "starterBindings", "starterApplicationMode", "requestedPageCount"],
+      statusLine: `Inserted a ${selectedPageStarter.label} starter page after the current page.`,
+      resetSelection: false,
+    });
+    selectPage(insertedPageId);
+    setCurrentCanvasPageId(insertedPageId);
+    setPropertiesVisible(true);
+
+    await regenerateReportWithIntent(
+      {
+        requestedPageCount: nextRequestedPageCount,
+        starterPackId: project.starterPackId,
+        starterThemeId: project.starterThemeId,
+        starterApplicationMode: nextStarterApplicationMode,
+        starterBindings: buildStarterBindingIntent(nextPages, nextStarterBindings),
+      },
+      `Regenerating with a new ${selectedPageStarter.label} starter page...`,
+    );
   }
 
   function updateHtmlBlockOnPage(
@@ -796,7 +1299,7 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
 
     const nextHtmlReport = updateGeneratedHtmlReportVisualStyle({
       report: project.generatedDraft.htmlReport,
-      pageNumber: Math.max(1, Number.parseInt(selection.activePageId || "1", 10)),
+      pageNumber: activePageNumber,
       style: nextStyle,
     });
 
@@ -823,7 +1326,7 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
 
     const nextHtmlReport = updateGeneratedHtmlReportVisualNode({
       report: project.generatedDraft.htmlReport,
-      pageNumber: Math.max(1, Number.parseInt(selection.activePageId || "1", 10)),
+      pageNumber: activePageNumber,
       nodeId: selection.selectedVisualNodeId,
       style: nextStyle,
     });
@@ -884,7 +1387,7 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
       selection.selectedVisualNodeId && placement !== "page-end" ? placement : "page-end";
     const { report: nextHtmlReport, nodeId } = addGeneratedHtmlReportVisualNode({
       report: project.generatedDraft.htmlReport,
-      pageNumber: Math.max(1, Number.parseInt(selection.activePageId || "1", 10)),
+      pageNumber: activePageNumber,
       kind,
       placement: actualPlacement,
       anchorNodeId: selection.selectedVisualNodeId,
@@ -905,7 +1408,7 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
       statusLine: `Added a ${kind.replace(/-/g, " ")} to this page.`,
     });
     if (nodeId) {
-      selectVisualNode(Math.max(1, Number.parseInt(selection.activePageId || "1", 10)), nodeId);
+      selectVisualNode(activePageNumber, nodeId);
     }
   }
 
@@ -916,7 +1419,7 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
 
     const { report: nextHtmlReport, nodeId } = duplicateGeneratedHtmlReportVisualNode({
       report: project.generatedDraft.htmlReport,
-      pageNumber: Math.max(1, Number.parseInt(selection.activePageId || "1", 10)),
+      pageNumber: activePageNumber,
       nodeId: selection.selectedVisualNodeId,
     });
 
@@ -935,7 +1438,7 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
       statusLine: "Duplicated the selected visual element.",
     });
     if (nodeId) {
-      selectVisualNode(Math.max(1, Number.parseInt(selection.activePageId || "1", 10)), nodeId);
+      selectVisualNode(activePageNumber, nodeId);
     }
   }
 
@@ -946,7 +1449,7 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
 
     const nextHtmlReport = deleteGeneratedHtmlReportVisualNode({
       report: project.generatedDraft.htmlReport,
-      pageNumber: Math.max(1, Number.parseInt(selection.activePageId || "1", 10)),
+      pageNumber: activePageNumber,
       nodeId: selection.selectedVisualNodeId,
     });
 
@@ -974,7 +1477,7 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
 
     const nextHtmlReport = duplicateGeneratedHtmlReportVisualContentNode({
       report: project.generatedDraft.htmlReport,
-      pageNumber: Math.max(1, Number.parseInt(selection.activePageId || "1", 10)),
+      pageNumber: activePageNumber,
       nodeId: selection.selectedVisualNodeId,
       contentNodeId,
     });
@@ -1002,7 +1505,7 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
 
     const nextHtmlReport = deleteGeneratedHtmlReportVisualContentNode({
       report: project.generatedDraft.htmlReport,
-      pageNumber: Math.max(1, Number.parseInt(selection.activePageId || "1", 10)),
+      pageNumber: activePageNumber,
       nodeId: selection.selectedVisualNodeId,
       contentNodeId,
     });
@@ -1034,10 +1537,7 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
         return;
       }
 
-      const pageNumber = Math.max(
-        1,
-        Number.parseInt(selection.activePageId || currentCanvasPageId || "1", 10),
-      );
+      const pageNumber = activePageNumber;
       const selectionContext = {
         projectName: project.projectName,
         pageTitle:
@@ -1120,7 +1620,7 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
         return;
       }
 
-      const pageNumber = Math.max(1, Number.parseInt(selection.activePageId || "1", 10));
+      const pageNumber = activePageNumber;
       const nextKind = inferVisualKindForModule(manifest);
       const pageStyle = activeHtmlVisualStyle ?? resolveModulePageStyleFallback(project);
       const nextHtmlReport = updateGeneratedHtmlReportVisualNode({
@@ -1163,7 +1663,7 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
         return;
       }
 
-      const pageNumber = Math.max(1, Number.parseInt(selection.activePageId || "1", 10));
+      const pageNumber = activePageNumber;
       const nextKind = inferVisualKindForModule(manifest);
       const inserted = addGeneratedHtmlReportVisualNode({
         report: project.generatedDraft.htmlReport,
@@ -1297,7 +1797,9 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
   }
 
   function handleCanvasPageJump(pageNumber: number) {
-    const pageId = String(pageNumber);
+    const pageId = hasStreamingPreview
+      ? String(pageNumber)
+      : resolvePageIdFromNumber(pageNumber, project?.pages);
     setCurrentCanvasPageId(pageId);
     focusPage(pageId);
   }
@@ -1495,7 +1997,132 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
         title: "Page",
         fields: pageFields,
       },
+      {
+        id: "starter-deck",
+        title: "Starter deck",
+        fields: [
+          {
+            id: `starter-deck-select-${project.id}`,
+            kind: "select",
+            label: "Deck starter",
+            value: pendingDeckStarterId,
+            description:
+              "Select a deck starter, then explicitly regenerate to apply its cadence and visual starting language.",
+            options: [
+              { value: "", label: "Blank (default)" },
+              ...starterDeckOptions.map((starter) => ({
+                value: starter.id,
+                label: `${starter.label} · ${starter.pageCount} pages`,
+              })),
+            ],
+            onChange: setPendingDeckStarterId,
+          },
+          {
+            id: `starter-deck-mode-${project.id}`,
+            kind: "readonly",
+            label: "Active starter mode",
+            value:
+              project.starterApplicationMode === "theme"
+                ? "Theme-only"
+                : project.starterApplicationMode === "mixed"
+                  ? "Deck plus page/theme"
+                  : "Deck starter",
+          },
+          {
+            id: `starter-deck-actions-${project.id}`,
+            kind: "actions",
+            label: "Deck starter actions",
+            actions: [
+              {
+                id: `regenerate-with-starter-${project.id}`,
+                label: selectedDeckStarter ? "Regenerate with starter" : "Clear deck starter",
+                onPress: () => void handleRegenerateWithSelectedStarter(),
+              },
+            ],
+          },
+        ],
+      },
+      {
+        id: "starter-page",
+        title: "Page starter",
+        fields: [
+          {
+            id: `starter-page-select-${activePage.id}`,
+            kind: "select",
+            label: "Current page starter",
+            value: pendingPageStarterId,
+            description:
+              "Use this to bind a starter silhouette to the current page without changing the rest of the deck.",
+            options: [
+              { value: "", label: "Blank (default)" },
+              ...starterPageOptions.map((starter) => ({
+                value: starter.id,
+                label: `${starter.label} · ${starter.pageFamily}`,
+              })),
+            ],
+            onChange: setPendingPageStarterId,
+          },
+          {
+            id: `starter-page-actions-${activePage.id}`,
+            kind: "actions",
+            label: "Page starter actions",
+            actions: [
+              {
+                id: `replace-with-starter-${activePage.id}`,
+                label: selectedPageStarter ? "Replace current page with starter" : "Clear current page starter",
+                onPress: () => void handleReplaceCurrentPageWithStarter(),
+              },
+              {
+                id: `insert-starter-page-${activePage.id}`,
+                label: "Insert starter page",
+                onPress: () => void handleInsertStarterPage(),
+              },
+            ],
+          },
+        ],
+      },
     ];
+
+    if (recommendedDeckStarters.length > 0 || recommendedPageStarters.length > 0) {
+      sections.push({
+        id: "starter-recommendations",
+        title: "Recommended starters",
+        fields: [
+          ...(recommendedDeckStarters.length > 0
+            ? [
+                {
+                  id: `recommended-deck-${project.id}`,
+                  kind: "actions" as const,
+                  label: "Deck recommendations",
+                  description:
+                    "Recommendations are assistive only. Choosing one here just stages it for confirmation.",
+                  actions: recommendedDeckStarters.map((starter) => ({
+                    id: `recommend-deck-${starter.id}`,
+                    label: starter.label,
+                    onPress: () => setPendingDeckStarterId(starter.id),
+                  })),
+                },
+              ]
+            : []),
+          ...(recommendedPageStarters.length > 0
+            ? [
+                {
+                  id: `recommended-page-${activePage.id}`,
+                  kind: "actions" as const,
+                  label: "Page recommendations",
+                  description:
+                    "These recommendations do not write starter metadata until you use one of the page actions above.",
+                  actions: recommendedPageStarters.map((starter) => ({
+                    id: `recommend-page-${starter.id}`,
+                    label: starter.label,
+                    onPress: () => setPendingPageStarterId(starter.id),
+                  })),
+                },
+              ]
+            : []),
+        ],
+      });
+    }
 
     if (!isBriefMode && recommendedModuleManifests.length > 0) {
       sections.push({
@@ -1572,13 +2199,26 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
     activeHtmlPageTitle,
     activeHtmlVisualStyle,
     activePage,
+    handleInsertStarterPage,
+    handleRegenerateWithSelectedStarter,
+    handleReplaceCurrentPageWithStarter,
     generatedHtmlReport,
     insertPublishedModule,
+    pendingDeckStarterId,
+    pendingPageStarterId,
     project,
+    project?.starterApplicationMode,
     recommendedModuleManifests,
+    recommendedDeckStarters,
+    recommendedPageStarters,
+    selectedDeckStarter,
     setProjectName,
+    setPendingDeckStarterId,
+    setPendingPageStarterId,
     setSourceText,
     shell.mode,
+    starterDeckOptions,
+    starterPageOptions,
   ]);
 
   const textInspectorSchema = useMemo<InspectorSchema | null>(() => {
@@ -1651,7 +2291,7 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
               description: "Adjust the selected text block without affecting the rest of the page.",
               onChange: (value: number) =>
                 updateHtmlBlockOnPage(
-                  Math.max(1, Number.parseInt(selection.activePageId || "1", 10)),
+                  activePageNumber,
                   activeHtmlBlock.id,
                   { fontSize: value },
                 ),
@@ -2282,6 +2922,30 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                         </button>
                       ))}
                     </div>
+                    {generatedHtmlReport ? (
+                      <div className="inline-flex items-center border border-[rgba(0,242,255,0.22)] bg-[rgba(0,242,255,0.06)] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--studio-ink)]">
+                        {describeHtmlOutputMode(resolvedHtmlOutputMode)}
+                      </div>
+                    ) : (
+                      <div className="flex flex-wrap items-center gap-2">
+                        {HTML_OUTPUT_MODE_OPTIONS.map((option) => (
+                          <button
+                            key={option.value}
+                            type="button"
+                            onClick={() => updateProjectHtmlOutputMode(option.value)}
+                            disabled={brief.isGeneratingReport || streamUi.isStreaming || isDeckReviewLocked}
+                            className={[
+                              "inline-flex items-center rounded-full border px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] transition disabled:cursor-not-allowed disabled:opacity-40",
+                              resolvedHtmlOutputMode === option.value
+                                ? "border-[rgba(0,242,255,0.35)] bg-[rgba(0,242,255,0.1)] text-[var(--studio-ink)]"
+                                : "border-[var(--studio-line)] bg-[rgba(255,255,255,0.03)] text-[var(--studio-muted-strong)] hover:border-[rgba(0,242,255,0.2)] hover:text-[var(--studio-ink)]",
+                            ].join(" ")}
+                          >
+                            {option.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   <div className="flex items-center gap-2">
                     {streamUi.isStreaming ? (
@@ -2365,6 +3029,7 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                         Retry
                       </button>
                     ) : null}
+
                   </>
                 ) : (
                   <>
@@ -2459,6 +3124,41 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                       </button>
                     </div>
 
+                    <div className="h-4 w-px shrink-0 bg-[var(--studio-line)]" />
+
+                    <div className="flex items-center gap-2">
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--studio-muted)]">
+                        Starter theme
+                      </div>
+                      <select
+                        value={pendingThemeId}
+                        onChange={(event) => setPendingThemeId(event.target.value)}
+                        className="h-8 min-w-[170px] border border-[var(--studio-line)] bg-[rgba(255,255,255,0.02)] px-2.5 text-[11px] text-[var(--studio-ink)] outline-none transition focus:border-[rgba(0,242,255,0.28)]"
+                        disabled={isDeckReviewLocked}
+                      >
+                        <option value="">None</option>
+                        {starterThemeOptions.map((theme) => (
+                          <option key={theme.id} value={theme.id}>
+                            {theme.label}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => void handleApplySelectedStarterTheme()}
+                        className={toolbarButtonClass}
+                        disabled={isDeckReviewLocked}
+                      >
+                        {pendingThemeId ? "Apply starter theme" : "Clear theme"}
+                      </button>
+                    </div>
+
+                    {generatedHtmlReport ? (
+                      <div className="inline-flex items-center border border-[rgba(0,242,255,0.22)] bg-[rgba(0,242,255,0.06)] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--studio-ink)]">
+                        {describeHtmlOutputMode(resolvedHtmlOutputMode)}
+                      </div>
+                    ) : null}
+
                     <div className="ml-auto">
                       <button
                         ref={canvasMoreButtonRef}
@@ -2491,6 +3191,17 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                               className="flex h-9 w-full items-center px-3 text-left text-[12px] text-[var(--studio-ink)] transition hover:bg-[rgba(255,255,255,0.04)] disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               {brief.isGeneratingReport ? "Regenerating..." : "Regenerate"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setCanvasMoreOpen(false);
+                                void handleRegenerateWithSelectedStarter();
+                              }}
+                              disabled={brief.isGeneratingReport || isDeckReviewLocked}
+                              className="flex h-9 w-full items-center px-3 text-left text-[12px] text-[var(--studio-ink)] transition hover:bg-[rgba(255,255,255,0.04)] disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              Regenerate with starter
                             </button>
                             <button
                               type="button"
@@ -2724,6 +3435,9 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                         Once the first HTML report lands, this area becomes the full PPT canvas with
                         text, visual, and layout editing.
                       </div>
+                      <div className="mt-5 inline-flex items-center border border-[rgba(0,242,255,0.22)] bg-[rgba(0,242,255,0.06)] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--studio-ink)]">
+                        {describeHtmlOutputMode(resolvedHtmlOutputMode)}
+                      </div>
                       <button
                         type="button"
                         onClick={() => void continueConversation()}
@@ -2905,6 +3619,206 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                             </div>
                           </section>
 
+                          <section className="border-b border-[var(--studio-line-soft)] pb-5">
+                            <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[var(--studio-muted)]">
+                              AI Provider
+                            </div>
+                            <div className="mt-3 space-y-3">
+                              <label className="block text-[12px] text-[var(--studio-muted-strong)]">
+                                Provider
+                                <select
+                                  value={brief.aiSettings.provider}
+                                  onChange={(e) => {
+                                    const provider = e.target.value as WorkbenchAgentProvider;
+                                    setAiSettings({ ...brief.aiSettings, provider });
+                                  }}
+                                  disabled={brief.isGeneratingReport || streamUi.isStreaming}
+                                  className="mt-1 block w-full cursor-pointer border border-[var(--studio-line)] bg-[rgba(8,8,8,0.98)] px-2 py-2 text-[12px] text-[var(--studio-ink)] transition hover:border-[rgba(0,242,255,0.28)] disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  <option value="cursor">Cursor</option>
+                                  <option value="codex">Codex</option>
+                                  <option value="kimi">Kimi</option>
+                                </select>
+                              </label>
+
+                              {brief.aiSettings.provider === "cursor" ? (
+                                <>
+                                  <label className="block text-[12px] text-[var(--studio-muted-strong)]">
+                                    Command
+                                    <input
+                                      type="text"
+                                      value={brief.aiSettings.cursor.command}
+                                      onChange={(e) =>
+                                        setAiSettings({
+                                          ...brief.aiSettings,
+                                          cursor: { ...brief.aiSettings.cursor, command: e.target.value },
+                                        })
+                                      }
+                                      placeholder="agent"
+                                      className="mt-1 block w-full border border-[var(--studio-line)] bg-[rgba(255,255,255,0.02)] px-2 py-2 text-[12px] text-[var(--studio-ink)] outline-none transition focus:border-[rgba(0,242,255,0.35)]"
+                                    />
+                                  </label>
+                                  <label className="block text-[12px] text-[var(--studio-muted-strong)]">
+                                    Model
+                                    <input
+                                      type="text"
+                                      value={brief.aiSettings.cursor.model}
+                                      onChange={(e) =>
+                                        setAiSettings({
+                                          ...brief.aiSettings,
+                                          cursor: { ...brief.aiSettings.cursor, model: e.target.value },
+                                        })
+                                      }
+                                      placeholder="auto"
+                                      className="mt-1 block w-full border border-[var(--studio-line)] bg-[rgba(255,255,255,0.02)] px-2 py-2 text-[12px] text-[var(--studio-ink)] outline-none transition focus:border-[rgba(0,242,255,0.35)]"
+                                    />
+                                  </label>
+                                  <label className="block text-[12px] text-[var(--studio-muted-strong)]">
+                                    Working directory
+                                    <input
+                                      type="text"
+                                      value={brief.aiSettings.cursor.cwd}
+                                      onChange={(e) =>
+                                        setAiSettings({
+                                          ...brief.aiSettings,
+                                          cursor: { ...brief.aiSettings.cursor, cwd: e.target.value },
+                                        })
+                                      }
+                                      placeholder=""
+                                      className="mt-1 block w-full border border-[var(--studio-line)] bg-[rgba(255,255,255,0.02)] px-2 py-2 text-[12px] text-[var(--studio-ink)] outline-none transition focus:border-[rgba(0,242,255,0.35)]"
+                                    />
+                                  </label>
+                                </>
+                              ) : brief.aiSettings.provider === "codex" ? (
+                                <>
+                                  <label className="block text-[12px] text-[var(--studio-muted-strong)]">
+                                    Command
+                                    <input
+                                      type="text"
+                                      value={brief.aiSettings.codex.command}
+                                      onChange={(e) =>
+                                        setAiSettings({
+                                          ...brief.aiSettings,
+                                          codex: { ...brief.aiSettings.codex, command: e.target.value },
+                                        })
+                                      }
+                                      placeholder="codex"
+                                      className="mt-1 block w-full border border-[var(--studio-line)] bg-[rgba(255,255,255,0.02)] px-2 py-2 text-[12px] text-[var(--studio-ink)] outline-none transition focus:border-[rgba(0,242,255,0.35)]"
+                                    />
+                                  </label>
+                                  <label className="block text-[12px] text-[var(--studio-muted-strong)]">
+                                    Model
+                                    <input
+                                      type="text"
+                                      value={brief.aiSettings.codex.model}
+                                      onChange={(e) =>
+                                        setAiSettings({
+                                          ...brief.aiSettings,
+                                          codex: { ...brief.aiSettings.codex, model: e.target.value },
+                                        })
+                                      }
+                                      placeholder="gpt-5.4"
+                                      className="mt-1 block w-full border border-[var(--studio-line)] bg-[rgba(255,255,255,0.02)] px-2 py-2 text-[12px] text-[var(--studio-ink)] outline-none transition focus:border-[rgba(0,242,255,0.35)]"
+                                    />
+                                  </label>
+                                  <label className="block text-[12px] text-[var(--studio-muted-strong)]">
+                                    Working directory
+                                    <input
+                                      type="text"
+                                      value={brief.aiSettings.codex.cwd}
+                                      onChange={(e) =>
+                                        setAiSettings({
+                                          ...brief.aiSettings,
+                                          codex: { ...brief.aiSettings.codex, cwd: e.target.value },
+                                        })
+                                      }
+                                      placeholder=""
+                                      className="mt-1 block w-full border border-[var(--studio-line)] bg-[rgba(255,255,255,0.02)] px-2 py-2 text-[12px] text-[var(--studio-ink)] outline-none transition focus:border-[rgba(0,242,255,0.35)]"
+                                    />
+                                  </label>
+                                </>
+                              ) : (
+                                <>
+                                  <label className="block text-[12px] text-[var(--studio-muted-strong)]">
+                                    Command
+                                    <input
+                                      type="text"
+                                      value={brief.aiSettings.kimi.command}
+                                      onChange={(e) =>
+                                        setAiSettings({
+                                          ...brief.aiSettings,
+                                          kimi: { ...brief.aiSettings.kimi, command: e.target.value },
+                                        })
+                                      }
+                                      placeholder="node"
+                                      className="mt-1 block w-full border border-[var(--studio-line)] bg-[rgba(255,255,255,0.02)] px-2 py-2 text-[12px] text-[var(--studio-ink)] outline-none transition focus:border-[rgba(0,242,255,0.35)]"
+                                    />
+                                  </label>
+                                  <label className="block text-[12px] text-[var(--studio-muted-strong)]">
+                                    Model
+                                    <input
+                                      type="text"
+                                      value={brief.aiSettings.kimi.model}
+                                      onChange={(e) =>
+                                        setAiSettings({
+                                          ...brief.aiSettings,
+                                          kimi: { ...brief.aiSettings.kimi, model: e.target.value },
+                                        })
+                                      }
+                                      placeholder="moonshot-v1-128k"
+                                      className="mt-1 block w-full border border-[var(--studio-line)] bg-[rgba(255,255,255,0.02)] px-2 py-2 text-[12px] text-[var(--studio-ink)] outline-none transition focus:border-[rgba(0,242,255,0.35)]"
+                                    />
+                                  </label>
+                                  <label className="block text-[12px] text-[var(--studio-muted-strong)]">
+                                    Working directory
+                                    <input
+                                      type="text"
+                                      value={brief.aiSettings.kimi.cwd}
+                                      onChange={(e) =>
+                                        setAiSettings({
+                                          ...brief.aiSettings,
+                                          kimi: { ...brief.aiSettings.kimi, cwd: e.target.value },
+                                        })
+                                      }
+                                      placeholder=""
+                                      className="mt-1 block w-full border border-[var(--studio-line)] bg-[rgba(255,255,255,0.02)] px-2 py-2 text-[12px] text-[var(--studio-ink)] outline-none transition focus:border-[rgba(0,242,255,0.35)]"
+                                    />
+                                  </label>
+                                  <label className="block text-[12px] text-[var(--studio-muted-strong)]">
+                                    API Key
+                                    <input
+                                      type="password"
+                                      value={brief.aiSettings.kimi.apiKey}
+                                      onChange={(e) =>
+                                        setAiSettings({
+                                          ...brief.aiSettings,
+                                          kimi: { ...brief.aiSettings.kimi, apiKey: e.target.value },
+                                        })
+                                      }
+                                      placeholder="sk-..."
+                                      className="mt-1 block w-full border border-[var(--studio-line)] bg-[rgba(255,255,255,0.02)] px-2 py-2 text-[12px] text-[var(--studio-ink)] outline-none transition focus:border-[rgba(0,242,255,0.35)]"
+                                    />
+                                  </label>
+                                  <label className="block text-[12px] text-[var(--studio-muted-strong)]">
+                                    Base URL
+                                    <input
+                                      type="text"
+                                      value={brief.aiSettings.kimi.baseUrl}
+                                      onChange={(e) =>
+                                        setAiSettings({
+                                          ...brief.aiSettings,
+                                          kimi: { ...brief.aiSettings.kimi, baseUrl: e.target.value },
+                                        })
+                                      }
+                                      placeholder="https://api.moonshot.cn/v1"
+                                      className="mt-1 block w-full border border-[var(--studio-line)] bg-[rgba(255,255,255,0.02)] px-2 py-2 text-[12px] text-[var(--studio-ink)] outline-none transition focus:border-[rgba(0,242,255,0.35)]"
+                                    />
+                                  </label>
+                                </>
+                              )}
+                            </div>
+                          </section>
+
                           <section>
                             <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[var(--studio-muted)]">
                               Local-first notes
@@ -2974,7 +3888,9 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                       <button
                         key={page.id}
                         type="button"
-                        onClick={() => handleCanvasPageJump(Number.parseInt(page.id, 10))}
+                        onClick={() =>
+                          handleCanvasPageJump(resolvePageNumberFromId(page.id, project.pages))
+                        }
                         className={[
                           "min-w-[144px] border-b-2 px-1 pb-2 pt-1 text-left transition",
                           currentCanvasPageId === page.id
@@ -2983,7 +3899,7 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                         ].join(" ")}
                       >
                         <div className="text-[9px] font-semibold uppercase tracking-[0.16em] text-[var(--studio-muted)]">
-                          Page {page.id}
+                          Page {resolvePageNumberFromId(page.id, project.pages)}
                         </div>
                         <div className="mt-1 truncate text-[11px] font-medium text-[var(--studio-ink)]">
                           {page.title}

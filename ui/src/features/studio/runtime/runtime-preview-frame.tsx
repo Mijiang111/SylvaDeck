@@ -30,6 +30,7 @@ import {
   HTML_REPORT_PAGE_WIDTH,
   type HtmlReportPagePreview,
 } from "./runtime-export-annotations";
+import { HTML_REPORT_PAGE_RADIUS } from "./runtime-report-view-math";
 
 type PreviewInteractionMode = "idle" | "selected" | "editing-text" | "arranging";
 type PreviewTransformMode =
@@ -193,6 +194,7 @@ function HtmlReportPreviewFrame({
   const frameContainerRef = useRef<HTMLDivElement | null>(null);
   const quickEditorRef = useRef<HTMLTextAreaElement | null>(null);
   const [frameEpoch, setFrameEpoch] = useState(0);
+  const [isFrameVisible, setIsFrameVisible] = useState(false);
   const [selectedLayoutRect, setSelectedLayoutRect] = useState<null | {
     top: number;
     left: number;
@@ -274,6 +276,79 @@ function HtmlReportPreviewFrame({
   function suppressNextArrangeClick() {
     suppressNextArrangeClickRef.current = true;
   }
+
+  useEffect(() => {
+    const node = frameContainerRef.current;
+    if (!node || typeof window === "undefined") {
+      return;
+    }
+
+    const updateVisibilityFromRect = () => {
+      const rect = node.getBoundingClientRect();
+      setIsFrameVisible(
+        rect.width > 0 &&
+          rect.height > 0 &&
+          rect.bottom > 0 &&
+          rect.right > 0 &&
+          rect.top < window.innerHeight &&
+          rect.left < window.innerWidth,
+      );
+    };
+
+    updateVisibilityFromRect();
+
+    if (typeof window.IntersectionObserver === "function") {
+      const observer = new window.IntersectionObserver(
+        (entries) => {
+          const entry = entries[0];
+          if (!entry) {
+            return;
+          }
+          setIsFrameVisible(
+            entry.isIntersecting &&
+              entry.intersectionRect.width > 0 &&
+              entry.intersectionRect.height > 0,
+          );
+        },
+        { threshold: 0.05 },
+      );
+      observer.observe(node);
+      return () => observer.disconnect();
+    }
+
+    window.addEventListener("scroll", updateVisibilityFromRect, true);
+    window.addEventListener("resize", updateVisibilityFromRect);
+    return () => {
+      window.removeEventListener("scroll", updateVisibilityFromRect, true);
+      window.removeEventListener("resize", updateVisibilityFromRect);
+    };
+  }, [pagePreview.pageNumber, pagePreview.srcDoc, previewScale]);
+
+  useEffect(() => {
+    if (frameEpoch < 1) {
+      return;
+    }
+
+    postPreviewCommand({
+      action: "preview-runtime-visibility",
+      active: isFrameVisible,
+    });
+  }, [frameEpoch, isFrameVisible, pagePreview.pageNumber]);
+
+  useEffect(
+    () => () => {
+      iframeRef.current?.contentWindow?.postMessage(
+        {
+          type: "ppt-html-preview-command",
+          pageNumber: pagePreview.pageNumber,
+          action: "preview-runtime-visibility",
+          active: false,
+        },
+        "*",
+      );
+    },
+    [pagePreview.pageNumber],
+  );
 
   useEffect(() => {
     if (!quickEditor) {
@@ -1226,7 +1301,7 @@ function HtmlReportPreviewFrame({
           setFrameEpoch((current) => current + 1);
         }}
         className={[
-          "block border-0 bg-white shadow-[0_12px_28px_rgba(15,23,31,0.16)]",
+          "block border-0 shadow-[0_12px_28px_rgba(15,23,31,0.16)]",
           interactive ? "" : "pointer-events-none",
         ].join(" ")}
         style={{
@@ -1234,6 +1309,8 @@ function HtmlReportPreviewFrame({
           height: `${HTML_REPORT_PAGE_HEIGHT}px`,
           transform: `scale(${previewScale})`,
           transformOrigin: "top left",
+          borderRadius: `${HTML_REPORT_PAGE_RADIUS}px`,
+          background: "transparent",
         }}
       />
 
