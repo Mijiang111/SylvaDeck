@@ -10,8 +10,8 @@ Studio combines three workflows in one repo:
 - A template workbench for building reusable page shape contracts
 - A review and repair loop for fit, title quality, density, and export readiness
 
-## Screenshots
-
+## Demo
+https://github.com/user-attachments/assets/8e23be8b-eacd-4753-9fa6-65e1ee5f96ff
 <table>
   <tr>
     <td align="center"><b>首页界面</b></td>
@@ -36,7 +36,7 @@ Studio combines three workflows in one repo:
   </tr>
 </table>
 
-https://github.com/user-attachments/assets/8e23be8b-eacd-4753-9fa6-65e1ee5f96ff
+
 
 
 
