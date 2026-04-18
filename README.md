@@ -36,11 +36,9 @@ https://github.com/user-attachments/assets/f44fef6a-efa0-4c5d-b1f0-766061ff56c5
 </table>
 <table>
   <tr>
-    <td align="center"><b>首页界面</b></td>
     <td align="center"><b>模板工作台</b></td>
   </tr>
   <tr>
-    <td><img src="docs/assets/studio-home.png" alt="Studio home"></td>
     <td><img src="docs/assets/template-workbench.png" alt="Template workbench"></td>
   </tr>
 </table>
