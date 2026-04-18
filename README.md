@@ -1,6 +1,6 @@
 # Claw Design
 
-I’m open-sourcing this in alpha, this is a vibe coding project from uni student.
+I’m open-sourcing this in alpha, this is a vibe coding project from uni-student. 
 
 It already works, but it is still rough in places. Studio is a local-first AI presentation workbench for generating, refining, and authoring 16:9 HTML slide decks, and I’d really appreciate issues or feedback if you try it and hit something confusing.
 
@@ -11,16 +11,31 @@ Studio combines three workflows in one repo:
 - A review and repair loop for fit, title quality, density, and export readiness
 
 ## Demo
+<table>
+  <tr>
+    <td align="center"><b>演示视频 A</b></td>
+    <td align="center"><b>演示视频 B</b></td>
+  </tr>
+  <tr>
+    <td>
+
 https://github.com/user-attachments/assets/8e23be8b-eacd-4753-9fa6-65e1ee5f96ff
+
+   </td>
+    <td>
+
+https://github.com/user-attachments/assets/3ebb1c8d-479b-49b5-92ee-11fc5232a615
+
+   </td>
+  </tr>
+</table>
 <table>
   <tr>
     <td align="center"><b>首页界面</b></td>
-    <td align="center"><b>模板库</b></td>
     <td align="center"><b>模板工作台</b></td>
   </tr>
   <tr>
     <td><img src="docs/assets/studio-home.png" alt="Studio home"></td>
-    <td><img src="docs/assets/template-library.png" alt="Template library"></td>
     <td><img src="docs/assets/template-workbench.png" alt="Template workbench"></td>
   </tr>
 </table>
