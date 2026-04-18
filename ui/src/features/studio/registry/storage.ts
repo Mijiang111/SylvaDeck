@@ -2,6 +2,7 @@ import {
   MODULE_SKILL_PRESET_STORAGE_KEY,
   MODULE_SKILL_PRESETS,
   MODULE_REGISTRY,
+  MODULE_REGISTRY_DELETED_STORAGE_KEY,
   MODULE_REGISTRY_STORAGE_KEY,
   SKILL_REGISTRY,
   SKILL_REGISTRY_STORAGE_KEY,
@@ -152,8 +153,33 @@ export function loadCustomModuleRegistry() {
   return readStoredModuleLibrary()?.modules ?? [];
 }
 
+function readDeletedModuleIds(): string[] {
+  if (!canUseStorage()) return [];
+  try {
+    const raw = window.localStorage.getItem(MODULE_REGISTRY_DELETED_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((id): id is string => typeof id === "string");
+  } catch {
+    return [];
+  }
+}
+
+function writeDeletedModuleIds(ids: string[]) {
+  if (!canUseStorage()) return;
+  window.localStorage.setItem(
+    MODULE_REGISTRY_DELETED_STORAGE_KEY,
+    JSON.stringify(Array.from(new Set(ids)))
+  );
+}
+
 export function loadAvailableModuleRegistry() {
-  return [...MODULE_REGISTRY, ...loadCustomModuleRegistry()].sort((a, b) => a.order - b.order);
+  const deletedIds = new Set(readDeletedModuleIds());
+  return [
+    ...MODULE_REGISTRY.filter((m) => !deletedIds.has(m.id)),
+    ...loadCustomModuleRegistry().filter((m) => !deletedIds.has(m.id)),
+  ].sort((a, b) => a.order - b.order);
 }
 
 export function loadCustomSkillRegistry() {
@@ -214,12 +240,24 @@ export function upsertCustomModuleRegistryEntry(entry: ModuleRegistryEntry) {
     : [...current, normalized];
 
   writeStoredModuleLibrary(next);
+
+  const deletedIds = readDeletedModuleIds();
+  if (deletedIds.includes(normalized.id)) {
+    writeDeletedModuleIds(deletedIds.filter((id) => id !== normalized.id));
+  }
+
   return next;
 }
 
 export function deleteCustomModuleRegistryEntry(moduleId: ModuleTemplateId) {
   const next = loadCustomModuleRegistry().filter((entry) => entry.id !== moduleId);
   writeStoredModuleLibrary(next);
+
+  const deletedIds = readDeletedModuleIds();
+  if (!deletedIds.includes(moduleId)) {
+    writeDeletedModuleIds([...deletedIds, moduleId]);
+  }
+
   return next;
 }
 

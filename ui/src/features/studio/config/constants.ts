@@ -22,6 +22,7 @@ export const TEMPLATE_STORAGE_KEY = "studio-template-v1";
 export const GENERATED_DRAFT_STORAGE_KEY = "studio-generated-draft-v1";
 export const PROJECT_LIBRARY_STORAGE_KEY = "studio-project-library-v1";
 export const MODULE_REGISTRY_STORAGE_KEY = "studio-module-registry-v1";
+export const MODULE_REGISTRY_DELETED_STORAGE_KEY = "studio-module-registry-deleted-v1";
 export const SKILL_REGISTRY_STORAGE_KEY = "studio-skill-registry-v1";
 export const MODULE_SKILL_PRESET_STORAGE_KEY = "studio-module-skill-preset-registry-v1";
 export const MODULE_ASSET_STORAGE_KEY = "studio-module-assets-v1";

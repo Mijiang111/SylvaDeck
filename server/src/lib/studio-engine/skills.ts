@@ -47,6 +47,11 @@ const STUDIO_THINKING_MODE_SKILL_FALLBACKS = {
     "Use question / background / method / result / interpretation / limitation-or-next-work grammar.",
     "Do not default to board language, recommendation-first framing, or leadership action language.",
   ].join("\n"),
+  "brain-to-deck": [
+    "Use brain-to-deck mode when the input is raw, unstructured, or mixed-material and the goal is a polished visual deliverable.",
+    "Extract core themes, rebuild narrative flow, and enforce the requested visual style rigidly.",
+    "Use action titles, strip decoration, and keep the voice close to the source material.",
+  ].join("\n"),
 } satisfies Record<Exclude<DeckThinkingMode, "neutral">, string>;
 const STUDIO_3D_HERO_SKILL_FALLBACK = [
   "Use a 3D hero page only when the page must explain one system, chip, platform, device, or layered object.",

@@ -1,4 +1,4 @@
-# PPT Workbench Studio
+# Claw Design
 
 I’m open-sourcing this in alpha.
 

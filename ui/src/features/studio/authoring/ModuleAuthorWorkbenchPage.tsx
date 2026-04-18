@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import {
   BLOCK_KIND_PRESETS,
@@ -82,6 +82,8 @@ import {
   MODULE_CANVAS_ROWS,
   MODULE_SCENE_COLUMNS,
   MODULE_SCENE_ROWS,
+  MODULE_SCENE_WIDTH,
+  MODULE_SCENE_HEIGHT,
   MODULE_UNIT_SIZE,
   normalizeModuleFrameLayout,
   parseDataBlockInput,
@@ -422,7 +424,10 @@ export function ModuleAuthorWorkbenchPage() {
     selectedField && canDefineOutputContract(selectedField)
       ? selectedField
       : null;
-  const fieldById = new Map(draft.fields.map((field) => [field.id, field]));
+  const fieldById = useMemo(
+    () => new Map(draft.fields.map((field) => [field.id, field])),
+    [draft.fields]
+  );
   const dataFields = draft.fields.filter(
     (field) => getCanvasObjectKind(field) === "data"
   );
@@ -431,9 +436,12 @@ export function ModuleAuthorWorkbenchPage() {
   );
   const connectableFields = draft.fields.filter(isFieldConnectable);
   const aiEditableFields = draft.fields.filter(isAiEditableField);
-  const validFieldIds = new Set(draft.fields.map((field) => field.id));
-  const connections = (draft.connections ?? []).filter(
-    (connection, index, collection) => {
+  const validFieldIds = useMemo(
+    () => new Set(draft.fields.map((field) => field.id)),
+    [draft.fields]
+  );
+  const connections = useMemo(() => {
+    return (draft.connections ?? []).filter((connection, index, collection) => {
       const sourceField = fieldById.get(connection.sourceFieldId);
       const targetField = fieldById.get(connection.targetFieldId);
       return (
@@ -449,8 +457,8 @@ export function ModuleAuthorWorkbenchPage() {
             candidate.targetFieldId === connection.targetFieldId
         ) === index
       );
-    }
-  );
+    });
+  }, [draft.fields, draft.connections, fieldById, validFieldIds]);
   const selectedDataField =
     selectedField && selectedObjectKind === "data" ? selectedField : null;
   const selectedChartField =
@@ -496,28 +504,36 @@ export function ModuleAuthorWorkbenchPage() {
       return [field.id, getSceneLayout(field, fallback)];
     })
   );
-  const chartSourceByFieldId = new Map(
-    chartFields.map((field) => {
-      const sourceConnection = connections.find(
-        (connection) =>
-          connection.kind === "data-flow" &&
-          connection.targetFieldId === field.id &&
-          getCanvasObjectKind(fieldById.get(connection.sourceFieldId)!) ===
-            "data"
-      );
-      return [
-        field.id,
-        sourceConnection
-          ? fieldById.get(sourceConnection.sourceFieldId) ?? null
-          : null,
-      ] as const;
-    })
+  const chartSourceByFieldId = useMemo(
+    () =>
+      new Map(
+        chartFields.map((field) => {
+          const sourceConnection = connections.find(
+            (connection) =>
+              connection.kind === "data-flow" &&
+              connection.targetFieldId === field.id &&
+              getCanvasObjectKind(fieldById.get(connection.sourceFieldId)!) ===
+                "data"
+          );
+          return [
+            field.id,
+            sourceConnection
+              ? fieldById.get(sourceConnection.sourceFieldId) ?? null
+              : null,
+          ] as const;
+        })
+      ),
+    [chartFields, connections, fieldById]
   );
-  const chartPreviewByFieldId = new Map(
-    chartFields.map((field) => [
-      field.id,
-      deriveChartPreview(field, chartSourceByFieldId.get(field.id)),
-    ])
+  const chartPreviewByFieldId = useMemo(
+    () =>
+      new Map(
+        chartFields.map((field) => [
+          field.id,
+          deriveChartPreview(field, chartSourceByFieldId.get(field.id)),
+        ])
+      ),
+    [chartFields, chartSourceByFieldId]
   );
   const connectionRenderItems = connections
     .map((connection, index) => {
@@ -945,7 +961,7 @@ export function ModuleAuthorWorkbenchPage() {
 
 
 
-  function handleStageChange(nextStage: AuthoringStage) {
+  const handleStageChange = useCallback((nextStage: AuthoringStage) => {
     setActiveStage(nextStage);
     if (nextStage !== "define") {
       setModuleFrameInteractionState(null);
@@ -979,7 +995,7 @@ export function ModuleAuthorWorkbenchPage() {
     }
 
     setCanvasMode("visual");
-  }
+  }, []);
 
   function refreshModules(nextDraft?: ModuleRegistryEntry) {
     setAvailableModules(loadAvailableModuleRegistry());
@@ -1084,7 +1100,23 @@ export function ModuleAuthorWorkbenchPage() {
     };
   }
 
-  function fitFlowBoardToView() {
+  const handleFieldSelection = useCallback((fieldId: string, additive: boolean) => {
+    setSelectedFieldIds((current) => {
+      if (!additive) {
+        return [fieldId];
+      }
+      return current.includes(fieldId)
+        ? current.filter((id) => id !== fieldId)
+        : [...current, fieldId];
+    });
+
+    const nextField = draft.fields.find((field) => field.id === fieldId);
+    if (nextField && activeStage === "semantics" && canvasMode === "visual") {
+      setCanvasMode("semantic");
+    }
+  }, [draft.fields, activeStage, canvasMode]);
+
+  const fitFlowBoardToView = useCallback(() => {
     const viewport = thinkingFlowViewportRef.current;
     if (!viewport) {
       return;
@@ -1093,9 +1125,9 @@ export function ModuleAuthorWorkbenchPage() {
     const next = getFlowFitState(viewport.clientWidth, viewport.clientHeight);
     setFlowViewportScale(next.scale);
     setFlowViewportOffset(next.offset);
-  }
+  }, []);
 
-  function zoomFlowBoard(nextScale: number) {
+  const zoomFlowBoard = useCallback((nextScale: number) => {
     const viewport = thinkingFlowViewportRef.current;
     if (!viewport) {
       setFlowViewportScale(clamp(nextScale, 0.55, 1.8));
@@ -1112,9 +1144,9 @@ export function ModuleAuthorWorkbenchPage() {
         clampedScale
       )
     );
-  }
+  }, []);
 
-  function selectThinkingFlowNode(nodeId: string, additive = false) {
+  const selectThinkingFlowNode = useCallback((nodeId: string, additive = false) => {
     const node = thinkingFlowNodeById.get(nodeId);
     if (!node) {
       return;
@@ -1134,11 +1166,11 @@ export function ModuleAuthorWorkbenchPage() {
     } else {
       setSelectedFieldIds([]);
     }
-  }
+  }, [thinkingFlowNodeById, selectedFlowNodeIds, handleFieldSelection]);
 
-  function addThinkingFlowNode(
+  const addThinkingFlowNode = useCallback((
     kind: Exclude<ModuleThinkingFlowNodeKind, "start" | "output">
-  ) {
+  ) => {
     const existingCount = thinkingFlowNodes.filter(
       (node) => node.kind === kind
     ).length;
@@ -1151,7 +1183,7 @@ export function ModuleAuthorWorkbenchPage() {
     setSelectedFlowNodeId(nextNode.id);
     setSelectedFieldIds([]);
     setStatus(`${getThinkingFlowNodeLabel(kind)} added to the flow.`);
-  }
+  }, [thinkingFlowNodes]);
 
   function runThinkingFlowPreview() {
     const previewBlock = buildModulePreviewBlock(draft);
@@ -1228,10 +1260,10 @@ export function ModuleAuthorWorkbenchPage() {
     setStatus(`Removed ${removableSelectedFlowNodes.length} flow nodes.`);
   }
 
-  function startThinkingFlowDrag(
+  const startThinkingFlowDrag = useCallback((
     nodeId: string,
     event: React.PointerEvent<HTMLButtonElement>
-  ) {
+  ) => {
     event.preventDefault();
     event.stopPropagation();
     if (flowInteractionMode === "pan") {
@@ -1284,12 +1316,12 @@ export function ModuleAuthorWorkbenchPage() {
     setSelectedFlowNodeId(nodeId);
     setSelectedFlowNodeIds(affectedNodeIds);
     setSelectedFieldIds([]);
-  }
+  }, [flowInteractionMode, flowViewportOffset, thinkingFlowNodeById, selectedFlowNodeIds, selectThinkingFlowNode, getThinkingFlowPoint]);
 
-  function startThinkingFlowConnection(
+  const startThinkingFlowConnection = useCallback((
     nodeId: string,
     event: React.PointerEvent<HTMLButtonElement>
-  ) {
+  ) => {
     event.preventDefault();
     event.stopPropagation();
     const node = thinkingFlowNodeById.get(nodeId);
@@ -1320,9 +1352,9 @@ export function ModuleAuthorWorkbenchPage() {
           : `${node.label} already has both Yes and No branches. Remove one edge first.`
         : `Connecting from ${node.label}. Choose another node to finish.`
     );
-  }
+  }, [thinkingFlowNodeById, thinkingFlowEdges, selectThinkingFlowNode, getThinkingFlowPoint]);
 
-  function completeThinkingFlowConnection(targetNodeId: string) {
+  const completeThinkingFlowConnection = useCallback((targetNodeId: string) => {
     if (!pendingFlowEdgeSourceId) {
       return;
     }
@@ -1387,20 +1419,20 @@ export function ModuleAuthorWorkbenchPage() {
     setPendingFlowEdgeSourceId(null);
     setFlowEdgePreviewPoint(null);
     selectThinkingFlowNode(targetNodeId);
-  }
+  }, [pendingFlowEdgeSourceId, thinkingFlowNodeById, thinkingFlowEdges, selectThinkingFlowNode]);
 
-  function removeThinkingFlowEdge(edgeId: string) {
+  const removeThinkingFlowEdge = useCallback((edgeId: string) => {
     updateThinkingFlow((flow) => ({
       ...flow,
       edges: flow.edges.filter((edge) => edge.id !== edgeId),
     }));
     setStatus("Flow link removed.");
-  }
+  }, [updateThinkingFlow]);
 
-  function toggleThinkingFlowEdgeBranch(
+  const toggleThinkingFlowEdgeBranch = useCallback((
     edgeId: string,
     currentBranch: ModuleThinkingFlowBranch
-  ) {
+  ) => {
     const edge = thinkingFlowEdges.find((candidate) => candidate.id === edgeId);
     if (!edge) {
       return;
@@ -1438,11 +1470,11 @@ export function ModuleAuthorWorkbenchPage() {
         thinkingFlowNodeById.get(edge.targetNodeId)?.label ?? "that node"
       }.`
     );
-  }
+  }, [thinkingFlowEdges, thinkingFlowNodeById, updateThinkingFlow]);
 
-  function startFlowViewportInteraction(
+  const startFlowViewportInteraction = useCallback((
     event: React.PointerEvent<HTMLDivElement>
-  ) {
+  ) => {
     if (event.button !== 0) {
       return;
     }
@@ -1475,13 +1507,13 @@ export function ModuleAuthorWorkbenchPage() {
       currentX: point.x,
       currentY: point.y,
     });
-  }
+  }, [flowInteractionMode, flowViewportOffset, getThinkingFlowPoint]);
 
-  function handleFlowViewportWheel(event: React.WheelEvent<HTMLDivElement>) {
+  const handleFlowViewportWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
     event.preventDefault();
     const direction = event.deltaY < 0 ? 0.1 : -0.1;
     zoomFlowBoard(flowViewportScale + direction);
-  }
+  }, [flowViewportScale, zoomFlowBoard]);
 
   function getScenePoint(clientX: number, clientY: number) {
     const viewport = workspaceViewportRef.current;
@@ -1524,10 +1556,10 @@ export function ModuleAuthorWorkbenchPage() {
     setStatus(`Chart set to ${CHART_KIND_LABEL[kind]}.`);
   }
 
-  function startConnection(
+  const startConnection = useCallback((
     fieldId: string,
     event: React.PointerEvent<HTMLElement>
-  ) {
+  ) => {
     event.preventDefault();
     event.stopPropagation();
 
@@ -1546,12 +1578,12 @@ export function ModuleAuthorWorkbenchPage() {
     setStatus(
       `Connecting from ${source.label}. Choose another block to finish the link.`
     );
-  }
+  }, [draft.fields, getScenePoint, handleFieldSelection, activeStage, handleStageChange]);
 
-  function completeConnection(
+  const completeConnection = useCallback((
     targetFieldId: string,
     event?: React.PointerEvent<HTMLElement>
-  ) {
+  ) => {
     event?.preventDefault();
     event?.stopPropagation();
 
@@ -1617,7 +1649,7 @@ export function ModuleAuthorWorkbenchPage() {
 
     setPendingConnectionSourceId(null);
     setConnectionPreviewPoint(null);
-  }
+  }, [pendingConnectionSourceId, draft.fields, connections, setDraft, setPendingConnectionSourceId, setConnectionPreviewPoint, setStatus]);
 
   function removeConnection(connectionId: string) {
     setDraft((current) => ({
@@ -1628,21 +1660,21 @@ export function ModuleAuthorWorkbenchPage() {
     }));
   }
 
-  function openLibraryModal() {
+  const openLibraryModal = useCallback(() => {
     setModuleFrameInteractionState(null);
     setPendingConnectionSourceId(null);
     setConnectionPreviewPoint(null);
     openTemplateLibrary();
-  }
+  }, [openTemplateLibrary]);
 
   function closeLibraryModal() {
     closeTemplateLibrary();
   }
 
-  function startModuleFrameInteraction(
+  const startModuleFrameInteraction = useCallback((
     mode: ModuleFrameInteractionMode,
     event: React.PointerEvent<HTMLElement>
-  ) {
+  ) => {
     event.preventDefault();
     event.stopPropagation();
 
@@ -1657,7 +1689,7 @@ export function ModuleAuthorWorkbenchPage() {
       startY: point.y,
       initialFrame: moduleFrame,
     });
-  }
+  }, [getArtboardPoint, moduleFrame]);
 
   function resolveModuleFrameInteraction(
     interaction: ModuleFrameInteractionState,
@@ -1769,11 +1801,7 @@ export function ModuleAuthorWorkbenchPage() {
     const activeDrag = dragState;
 
     function onPointerMove(event: PointerEvent) {
-      if (!sceneRef.current) {
-        return;
-      }
-
-      const rect = sceneRef.current.getBoundingClientRect();
+      const rect = activeDrag.sceneRect;
       const deltaColumns = Math.round(
         ((event.clientX - activeDrag.startX) / rect.width) *
           MODULE_SCENE_COLUMNS
@@ -2328,7 +2356,23 @@ export function ModuleAuthorWorkbenchPage() {
   }, [draft.fields, draft.kind, marqueeState, workspaceOffset, workspaceScale]);
 
   useEffect(() => {
-    fitWorkspaceToView();
+    const viewport = workspaceViewportRef.current;
+    if (viewport && viewport.clientWidth > 0 && viewport.clientHeight > 0) {
+      fitWorkspaceToView();
+      return;
+    }
+    const timer = window.setInterval(() => {
+      const v = workspaceViewportRef.current;
+      if (v && v.clientWidth > 0 && v.clientHeight > 0) {
+        fitWorkspaceToView();
+        window.clearInterval(timer);
+      }
+    }, 16);
+    const timeout = window.setTimeout(() => window.clearInterval(timer), 500);
+    return () => {
+      window.clearInterval(timer);
+      window.clearTimeout(timeout);
+    };
   }, []);
 
   useEffect(() => {
@@ -2410,10 +2454,10 @@ export function ModuleAuthorWorkbenchPage() {
     requestAnimationFrame(() => fitWorkspaceToView());
   }
 
-  function addCanvasObject(
+  const addCanvasObject = useCallback((
     kind: ModuleCanvasObjectKind = "slot",
     preset: CanvasObjectPreset = "default"
-  ) {
+  ) => {
     let createdId = "";
     let createdLabel = "";
     handleStageChange("compose");
@@ -2458,7 +2502,7 @@ export function ModuleAuthorWorkbenchPage() {
     });
     setSelectedFieldIds(createdId ? [createdId] : []);
     setStatus(`Added ${createdLabel || getObjectKindLabel(kind)} to the canvas.`);
-  }
+  }, []);
 
   function groupSelectedFields() {
     if (selectedFields.length < 2) {
@@ -2766,22 +2810,6 @@ export function ModuleAuthorWorkbenchPage() {
     setStatus(`Distributed ${selectedFields.length} objects horizontally.`);
   }
 
-  function handleFieldSelection(fieldId: string, additive: boolean) {
-    setSelectedFieldIds((current) => {
-      if (!additive) {
-        return [fieldId];
-      }
-      return current.includes(fieldId)
-        ? current.filter((id) => id !== fieldId)
-        : [...current, fieldId];
-    });
-
-    const nextField = draft.fields.find((field) => field.id === fieldId);
-    if (nextField && activeStage === "semantics" && canvasMode === "visual") {
-      setCanvasMode("semantic");
-    }
-  }
-
   function applyLayoutPreset(preset: FieldLayoutPresetId) {
     setDraft((current) => ({
       ...current,
@@ -2798,7 +2826,7 @@ export function ModuleAuthorWorkbenchPage() {
     );
   }
 
-  function fitWorkspaceToView() {
+  const fitWorkspaceToView = useCallback(() => {
     const viewport = workspaceViewportRef.current;
     if (!viewport) {
       setWorkspaceScale(1);
@@ -2818,12 +2846,12 @@ export function ModuleAuthorWorkbenchPage() {
     );
     setWorkspaceScale(nextScale);
     setWorkspaceOffset({ x: 0, y: 0 });
-  }
+  }, []);
 
-  function zoomWorkspace(
+  const zoomWorkspace = useCallback((
     nextScale: number,
     anchor?: { clientX: number; clientY: number }
-  ) {
+  ) => {
     const viewport = workspaceViewportRef.current;
     const clampedScale = clamp(nextScale, 0.65, 8);
     if (!viewport || !anchor) {
@@ -2861,18 +2889,18 @@ export function ModuleAuthorWorkbenchPage() {
         clampedScale
       )
     );
-  }
+  }, [workspaceOffset, workspaceScale]);
 
-  function handleWorkspaceWheel(event: React.WheelEvent<HTMLDivElement>) {
+  const handleWorkspaceWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
     event.preventDefault();
     const direction = event.deltaY > 0 ? 0.92 : 1.08;
     zoomWorkspace(workspaceScale * direction, {
       clientX: event.clientX,
       clientY: event.clientY,
     });
-  }
+  }, [workspaceScale, zoomWorkspace]);
 
-  function startWorkspacePan(event: React.PointerEvent<HTMLDivElement>) {
+  const startWorkspacePan = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
     setPanState({
       startX: event.clientX,
@@ -2880,9 +2908,9 @@ export function ModuleAuthorWorkbenchPage() {
       initialX: workspaceOffset.x,
       initialY: workspaceOffset.y,
     });
-  }
+  }, [workspaceOffset]);
 
-  function startMarqueeSelection(event: React.PointerEvent<HTMLElement>) {
+  const startMarqueeSelection = useCallback((event: React.PointerEvent<HTMLElement>) => {
     const viewport = workspaceViewportRef.current;
     if (!viewport) {
       return;
@@ -2903,13 +2931,13 @@ export function ModuleAuthorWorkbenchPage() {
       currentX: point.x,
       currentY: point.y,
     });
-  }
+  }, [workspaceScale, workspaceOffset]);
 
-  function startFieldDrag(
+  const startFieldDrag = useCallback((
     event: React.PointerEvent<HTMLElement>,
     fieldId: string,
     mode: CanvasEditMode
-  ) {
+  ) => {
     event.preventDefault();
     event.stopPropagation();
 
@@ -2946,6 +2974,7 @@ export function ModuleAuthorWorkbenchPage() {
         ])
     );
 
+    const sceneRect = sceneRef.current?.getBoundingClientRect();
     setSelectedFieldIds(affectedFieldIds);
     setDragState({
       fieldId,
@@ -2955,8 +2984,11 @@ export function ModuleAuthorWorkbenchPage() {
       mode,
       startX: event.clientX,
       startY: event.clientY,
+      sceneRect: sceneRect
+        ? { width: sceneRect.width, height: sceneRect.height }
+        : { width: MODULE_SCENE_WIDTH, height: MODULE_SCENE_HEIGHT },
     });
-  }
+  }, [draft.fields, draft.kind, selectedFieldIds]);
 
   function saveSelectedAsModule() {
     if (selectedFields.length === 0) {
@@ -3392,7 +3424,6 @@ export function ModuleAuthorWorkbenchPage() {
               flowViewportOffset,
               flowViewportScale,
               isFlowStage,
-              isLibraryOpen,
               isModuleFrameInteracting,
               marqueeState,
               moduleFrame,
@@ -3426,9 +3457,7 @@ export function ModuleAuthorWorkbenchPage() {
               getScenePoint,
               handleFieldSelection,
               handleFlowViewportWheel,
-              handleStageChange,
               handleWorkspaceWheel,
-              openLibraryModal,
               removeThinkingFlowEdge,
               selectThinkingFlowNode,
               setConnectionPreviewPoint,

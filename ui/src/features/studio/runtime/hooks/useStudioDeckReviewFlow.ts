@@ -30,6 +30,12 @@ import {
   STANDARD_DECK_REVIEW_HARD_TIMEOUT_MS,
   type DeckReviewState,
 } from "../runtime-shell-contract";
+import {
+  COMPLETED_AUTO_OPTIMIZATION_VERSION,
+  hasPersistedCompletedAutoOptimization,
+  resolveDeckReviewTimeoutState,
+  shouldPersistCompletedAutoOptimization,
+} from "./deck-review-helpers";
 
 function buildDeckReviewKey(report: GeneratedDraftAsset["htmlReport"] | null | undefined) {
   if (!report) {
@@ -261,11 +267,15 @@ export function useStudioDeckReviewFlow(args: UseStudioDeckReviewFlowArgs) {
     [currentDeckReviewKey, generatedHtmlReport?.pageCount, project?.pages.length, recordHtmlOverflow],
   );
 
-  const markAutoOptimizedReportKey = useCallback((reportKey: string) => {
+  const persistCompletedAutoOptimizedReportKey = useCallback((reportKey: string | null) => {
+    if (!reportKey) {
+      return;
+    }
+
     const latestProject = useWorkbenchStudioStore.getState().document.project;
     if (
       !latestProject ||
-      latestProject.deckOptimization.autoOptimizedReportKey === reportKey
+      hasPersistedCompletedAutoOptimization(latestProject.deckOptimization, reportKey)
     ) {
       return;
     }
@@ -275,6 +285,7 @@ export function useStudioDeckReviewFlow(args: UseStudioDeckReviewFlowArgs) {
         ...latestProject,
         deckOptimization: {
           autoOptimizedReportKey: reportKey,
+          autoOptimizedVersion: COMPLETED_AUTO_OPTIMIZATION_VERSION,
         },
         updatedAt: new Date().toISOString(),
       },
@@ -315,9 +326,6 @@ export function useStudioDeckReviewFlow(args: UseStudioDeckReviewFlowArgs) {
         options?.pendingPages && options.pendingPages.length > 0
           ? [...options.pendingPages].sort((left, right) => left - right)
           : Array.from({ length: report.pageCount }, (_, index) => index + 1);
-      if (options?.markAutoOptimized) {
-        markAutoOptimizedReportKey(reportKey);
-      }
       setDeckReview((current) => ({
         phase: "reviewing",
         mode: options?.mode ?? "auto",
@@ -348,7 +356,7 @@ export function useStudioDeckReviewFlow(args: UseStudioDeckReviewFlowArgs) {
           : "Reviewing the generated deck for fit issues before editing unlocks.",
       );
     },
-    [markAutoOptimizedReportKey, mergeLatestMeasuredPages, setPropertiesVisible, setStatusLine],
+    [mergeLatestMeasuredPages, setPropertiesVisible, setStatusLine],
   );
 
   const handleReviewStreamEvent = useCallback((event: StudioGenerateStreamEvent) => {
@@ -414,6 +422,20 @@ export function useStudioDeckReviewFlow(args: UseStudioDeckReviewFlowArgs) {
           generationMode: project.generationMode,
           moduleUsageMode: project.moduleUsageMode,
           requestedPageCount: project.requestedPageCount,
+          starterPackId: project.starterPackId,
+          starterThemeId: project.starterThemeId,
+          starterApplicationMode: project.starterApplicationMode,
+          starterBindings: project.pages.flatMap((page, index) =>
+            project.starterBindings[page.id] || page.starterLayoutId
+              ? [
+                  {
+                    pageId: page.id,
+                    pageNumber: index + 1,
+                    starterId: project.starterBindings[page.id] ?? page.starterLayoutId ?? "",
+                  },
+                ]
+              : [],
+          ),
           signal: abortController.signal,
           onEvent: handleReviewStreamEvent,
         },
@@ -597,7 +619,7 @@ export function useStudioDeckReviewFlow(args: UseStudioDeckReviewFlowArgs) {
       hasStreamingPreview ||
       isDeckReviewLocked ||
       !currentDeckReviewKey ||
-      project.deckOptimization.autoOptimizedReportKey === currentDeckReviewKey ||
+      hasPersistedCompletedAutoOptimization(project.deckOptimization, currentDeckReviewKey) ||
       autoReviewedReportKeysRef.current.has(currentDeckReviewKey) ||
       Object.keys(selectionHtmlPageOverflows).length > 0
     ) {
@@ -648,6 +670,9 @@ export function useStudioDeckReviewFlow(args: UseStudioDeckReviewFlowArgs) {
       hasPageFitFailure(measurement, generatedHtmlReport.pageCount),
     );
     if (failedMeasurements.length === 0) {
+      if (shouldPersistCompletedAutoOptimization(deckReview.mode)) {
+        persistCompletedAutoOptimizedReportKey(deckReview.reportKey);
+      }
       mergeLatestMeasuredPages(deckReview.measurements);
       setDeckReview(DEFAULT_DECK_REVIEW_STATE);
       setStatusLine(
@@ -672,6 +697,9 @@ export function useStudioDeckReviewFlow(args: UseStudioDeckReviewFlowArgs) {
     }
 
     if (deckReview.repairPass >= 2) {
+      if (shouldPersistCompletedAutoOptimization(deckReview.mode)) {
+        persistCompletedAutoOptimizedReportKey(deckReview.reportKey);
+      }
       const failedLabel = failedMeasurements.map((measurement) => `P${measurement.pageNumber}`).join(", ");
       mergeLatestMeasuredPages(deckReview.measurements);
       setDeckReview({
@@ -708,6 +736,9 @@ export function useStudioDeckReviewFlow(args: UseStudioDeckReviewFlowArgs) {
         : MAX_AUTO_REPAIR_PAGES_PER_PASS,
     );
     if (repairMeasurements.length === 0) {
+      if (shouldPersistCompletedAutoOptimization(deckReview.mode)) {
+        persistCompletedAutoOptimizedReportKey(deckReview.reportKey);
+      }
       const failedLabel = failedMeasurements.map((measurement) => `P${measurement.pageNumber}`).join(", ");
       mergeLatestMeasuredPages(deckReview.measurements);
       setDeckReview({
@@ -749,6 +780,7 @@ export function useStudioDeckReviewFlow(args: UseStudioDeckReviewFlowArgs) {
     runDeckRepair,
     setStatusLine,
     mergeLatestMeasuredPages,
+    persistCompletedAutoOptimizedReportKey,
   ]);
 
   useEffect(() => {
@@ -757,18 +789,33 @@ export function useStudioDeckReviewFlow(args: UseStudioDeckReviewFlowArgs) {
     }
 
     const timeoutId = window.setTimeout(() => {
-      mergeLatestMeasuredPages(deckReview.measurements);
-      clearOverflowFlags([...deckReview.pendingPages, ...deckReview.failedPages]);
+      const warning = "Auto-review timed out, editing the current draft instead.";
+      let didUnlock = false;
+      let measurementsToMerge: Record<number, PageFitMeasurement> = {};
+      let pagesToClear: number[] = [];
+
       setDeckReview((current) => {
-        if (current.phase !== "reviewing" || Object.keys(current.measurements).length > 0) {
-          return current;
+        const next = resolveDeckReviewTimeoutState({
+          current,
+          expectedStartedAt: deckReview.startedAt,
+          allowedPhases: ["reviewing"],
+          warning,
+        });
+        didUnlock = next !== current;
+        if (didUnlock) {
+          measurementsToMerge = current.measurements;
+          pagesToClear = [...current.pendingPages, ...current.failedPages];
         }
-        return {
-          ...DEFAULT_DECK_REVIEW_STATE,
-          warning: "Auto-review timed out, editing the current draft instead.",
-        };
+        return next;
       });
-      setStatusLine("Auto-review timed out, editing the current draft instead.");
+
+      if (!didUnlock) {
+        return;
+      }
+
+      mergeLatestMeasuredPages(measurementsToMerge);
+      clearOverflowFlags(pagesToClear);
+      setStatusLine(warning);
     }, 12_000);
 
     return () => window.clearTimeout(timeoutId);
@@ -799,51 +846,72 @@ export function useStudioDeckReviewFlow(args: UseStudioDeckReviewFlowArgs) {
     const remainingMs =
       deckReview.startedAt + hardTimeoutMs - Date.now();
     if (remainingMs <= 0) {
-      mergeLatestMeasuredPages(deckReview.measurements);
-      clearOverflowFlags([...deckReview.pendingPages, ...deckReview.failedPages]);
-      setDeckReview({
-        ...DEFAULT_DECK_REVIEW_STATE,
-        warning:
-          project?.generationMode === "long-form" ||
-          (generatedHtmlReport?.pageCount ?? 0) >= 10
-            ? "Long-form auto-review took too long, so Studio unlocked the current draft."
-            : "Auto-review took too long, so Studio unlocked the current draft.",
-      });
-      setStatusLine(
+      const warning =
         project?.generationMode === "long-form" ||
-          (generatedHtmlReport?.pageCount ?? 0) >= 10
+        (generatedHtmlReport?.pageCount ?? 0) >= 10
           ? "Long-form auto-review took too long, so Studio unlocked the current draft."
-          : "Auto-review took too long, so Studio unlocked the current draft.",
-      );
+          : "Auto-review took too long, so Studio unlocked the current draft.";
+      let didUnlock = false;
+      let measurementsToMerge: Record<number, PageFitMeasurement> = {};
+      let pagesToClear: number[] = [];
+
+      setDeckReview((current) => {
+        const next = resolveDeckReviewTimeoutState({
+          current,
+          expectedStartedAt: deckReview.startedAt,
+          allowedPhases: ["reviewing", "repairing"],
+          warning,
+        });
+        didUnlock = next !== current;
+        if (didUnlock) {
+          measurementsToMerge = current.measurements;
+          pagesToClear = [...current.pendingPages, ...current.failedPages];
+        }
+        return next;
+      });
+
+      if (!didUnlock) {
+        return;
+      }
+
+      mergeLatestMeasuredPages(measurementsToMerge);
+      clearOverflowFlags(pagesToClear);
+      setStatusLine(warning);
       return;
     }
 
     const timeoutId = window.setTimeout(() => {
-      mergeLatestMeasuredPages(deckReview.measurements);
-      clearOverflowFlags([...deckReview.pendingPages, ...deckReview.failedPages]);
-      setDeckReview((current) => {
-        if (
-          (current.phase !== "reviewing" && current.phase !== "repairing") ||
-          current.startedAt !== deckReview.startedAt
-        ) {
-          return current;
-        }
-
-        return {
-          ...DEFAULT_DECK_REVIEW_STATE,
-          warning:
-            project?.generationMode === "long-form" ||
-            (generatedHtmlReport?.pageCount ?? 0) >= 10
-              ? "Long-form auto-review stopped and Studio unlocked the current draft."
-              : "Auto-review took too long, so Studio unlocked the current draft.",
-        };
-      });
-      setStatusLine(
+      const warning =
         project?.generationMode === "long-form" ||
-          (generatedHtmlReport?.pageCount ?? 0) >= 10
+        (generatedHtmlReport?.pageCount ?? 0) >= 10
           ? "Long-form auto-review stopped and Studio unlocked the current draft."
-          : "Auto-review took too long, so Studio unlocked the current draft.",
-      );
+          : "Auto-review took too long, so Studio unlocked the current draft.";
+      let didUnlock = false;
+      let measurementsToMerge: Record<number, PageFitMeasurement> = {};
+      let pagesToClear: number[] = [];
+
+      setDeckReview((current) => {
+        const next = resolveDeckReviewTimeoutState({
+          current,
+          expectedStartedAt: deckReview.startedAt,
+          allowedPhases: ["reviewing", "repairing"],
+          warning,
+        });
+        didUnlock = next !== current;
+        if (didUnlock) {
+          measurementsToMerge = current.measurements;
+          pagesToClear = [...current.pendingPages, ...current.failedPages];
+        }
+        return next;
+      });
+
+      if (!didUnlock) {
+        return;
+      }
+
+      mergeLatestMeasuredPages(measurementsToMerge);
+      clearOverflowFlags(pagesToClear);
+      setStatusLine(warning);
     }, remainingMs);
 
     return () => window.clearTimeout(timeoutId);

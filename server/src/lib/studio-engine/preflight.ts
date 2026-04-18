@@ -1,5 +1,6 @@
 import type {
   FreeformLayoutPlan,
+  HeroModelIntent,
   SegmentedThinkingInputs,
   StudioBriefSynthesis,
   StudioCapabilityActivation,
@@ -22,27 +23,10 @@ import {
 } from "./brief.js";
 import { extractJsonDocument } from "./render.js";
 import { buildStudioWorkingMemory } from "./working-memory.js";
+import { extractRequestedDeckPageCount } from "./page-count.js";
 
 function detectRequestedPageCount(brief: string, requestedPageCount?: number | null) {
-  if (requestedPageCount && requestedPageCount > 0) {
-    return requestedPageCount;
-  }
-
-  const normalized = normalizeStudioText(brief);
-  const numericMatch = normalized.match(/\b(\d+)\s*pages?\b/i);
-  if (numericMatch?.[1]) {
-    return Number.parseInt(numericMatch[1], 10) || 1;
-  }
-  if (/\bone\s+page\b/i.test(normalized)) {
-    return 1;
-  }
-  if (/\btwo\s+pages?\b/i.test(normalized)) {
-    return 2;
-  }
-  if (/\bthree\s+pages?\b/i.test(normalized)) {
-    return 3;
-  }
-  return 1;
+  return extractRequestedDeckPageCount(brief, requestedPageCount) ?? 1;
 }
 
 function createEmptySourceWeightProfile(brief: string) {
@@ -71,8 +55,166 @@ function hasExplicitThreeDimensionalRequest(brief: string) {
   );
 }
 
+function matchesThreeDimensionalCue(value: string | undefined) {
+  const normalized = normalizeStudioText(value ?? "").toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    normalized.includes("3d") ||
+    normalized.includes("three dimensional") ||
+    normalized.includes("three-dimensional") ||
+    normalized.includes("pseudo 3d") ||
+    normalized.includes("pseudo-3d") ||
+    normalized.includes("hero model") ||
+    normalized.includes("hero-model") ||
+    normalized.includes("cutaway") ||
+    normalized.includes("exploded view") ||
+    normalized.includes("exploded stack") ||
+    normalized.includes("exploded")
+  );
+}
+
 function hasExplicitChartRequest(brief: string) {
-  return /\b(?:chart|graph|bar chart|line chart|waterfall|visualize|figure)\b/i.test(brief);
+  return /\b(?:chart|graph|bar chart|line chart|waterfall|visualize|figure|matrix|quadrant|2x2|bcg)\b/i.test(
+    brief,
+  ) || /(?:矩阵|矩陣|四象限|波士顿矩阵|波士頓矩陣|BCG矩阵|BCG矩陣|二维矩阵|二維矩陣)/i.test(brief);
+}
+
+const CHINESE_PAGE_NUMBER_TOKEN_PATTERN = /[一二两三四五六七八九十]{1,3}/;
+const EXPLICIT_PAGE_MARKER_PATTERN = new RegExp(
+  `\\b(?:page|slide)\\s*(\\d{1,2})\\b|第\\s*(\\d{1,2}|${CHINESE_PAGE_NUMBER_TOKEN_PATTERN.source})\\s*(?:页|頁|张|張)`,
+  "gi",
+);
+const MATRIX_STRUCTURE_CUE_PATTERN =
+  /(?:\bbcg\b|\bbcg matrix\b|\bmatrix\b|波士顿矩阵|波士頓矩陣|矩阵|矩陣)/i;
+const QUADRANT_STRUCTURE_CUE_PATTERN =
+  /(?:\bquadrant\b|\b2x2\b|\b2 x 2\b|四象限)/i;
+const CHART_STRUCTURE_CUE_PATTERN =
+  /(?:\bchart\b|\bgraph\b|\bbar chart\b|\bline chart\b|\bwaterfall\b|\bfigure\b|\bvisualize\b)/i;
+const DECK_SCOPED_PAGE_MISSION_PATTERN =
+  /\b(?:deck|slides?|presentation|storyboard|flow|overall|two-page|three-page|request understanding|presentation intent|slide\s*1|slide\s*2|page\s*1|page\s*2|first\b.*second\b)\b/i;
+const CHINESE_DECK_SCOPED_PAGE_MISSION_PATTERN =
+  /(?:整份|整个|整個|两页|兩頁|三页|三頁|第一页.*第二页|先.*再|演示流程|汇报流程|簡報流程|presentation flow|request understanding)/i;
+const PAGE_ROLE_TITLE_PATTERNS: Array<{
+  pattern: RegExp;
+  title: string;
+}> = [
+  { pattern: /\b(?:worth doing|why this is worth doing|why it matters)\b/i, title: "Why This Is Worth Doing" },
+  { pattern: /(?:值得做|为什么值得做|為什麼值得做)/i, title: "Why This Is Worth Doing" },
+  { pattern: /\b(?:architecture|switching architecture|provider switching)\b/i, title: "Provider Switching Architecture" },
+  { pattern: /(?:架构|架構|切换架构|切換架構)/i, title: "Provider Switching Architecture" },
+  { pattern: /\b(?:use cases?|fit by use case|scenarios?)\b/i, title: "Provider Fit by Use Case" },
+  { pattern: /(?:适用场景|適用場景|场景|場景)/i, title: "Provider Fit by Use Case" },
+  { pattern: /\b(?:data needed|required data)\b/i, title: "Data Needed" },
+  { pattern: /(?:所需字段|所需欄位|需要哪些数据|需要哪些數據|数据需求|數據需求)/i, title: "Data Needed" },
+  { pattern: /\b(?:risk|risks|rollback)\b/i, title: "Migration Risks and Rollback" },
+  { pattern: /(?:风险|風險|回滚|回滾)/i, title: "Migration Risks and Rollback" },
+  { pattern: /\b(?:next week|execution plan|next-step|next steps)\b/i, title: "Next-Week Execution Plan" },
+  { pattern: /(?:下周执行计划|下週執行計劃|执行计划|執行計劃|下一步)/i, title: "Next-Week Execution Plan" },
+];
+
+function parsePageReferenceToken(value: string | null | undefined) {
+  const normalized = normalizeStudioText(value ?? "").toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+
+  const numericValue = Number.parseInt(normalized, 10);
+  if (Number.isInteger(numericValue) && numericValue >= 1 && numericValue <= 12) {
+    return numericValue;
+  }
+
+  switch (normalized) {
+    case "一":
+      return 1;
+    case "二":
+    case "两":
+      return 2;
+    case "三":
+      return 3;
+    case "四":
+      return 4;
+    case "五":
+      return 5;
+    case "六":
+      return 6;
+    case "七":
+      return 7;
+    case "八":
+      return 8;
+    case "九":
+      return 9;
+    case "十":
+      return 10;
+    case "十一":
+      return 11;
+    case "十二":
+      return 12;
+    default:
+      return null;
+  }
+}
+
+function normalizeMissionScope(
+  value: string | null | undefined,
+  combinedText: string,
+): StudioPageMission["missionScope"] {
+  const normalized = normalizeStudioText(value ?? "").toLowerCase();
+  if (normalized === "page") {
+    return "page";
+  }
+  if (normalized === "deck") {
+    return "deck";
+  }
+
+  return DECK_SCOPED_PAGE_MISSION_PATTERN.test(combinedText) ||
+    CHINESE_DECK_SCOPED_PAGE_MISSION_PATTERN.test(combinedText)
+    ? "deck"
+    : "page";
+}
+
+function normalizeStructureCue(
+  value: string | null | undefined,
+  combinedText: string,
+): StudioPageMission["structureCue"] {
+  const normalized = normalizeStudioText(value ?? "").toLowerCase();
+  if (normalized.includes("quadrant")) {
+    return "quadrant";
+  }
+  if (normalized.includes("matrix") || normalized.includes("bcg")) {
+    return "matrix";
+  }
+  if (normalized.includes("chart")) {
+    return "chart";
+  }
+
+  if (QUADRANT_STRUCTURE_CUE_PATTERN.test(combinedText)) {
+    return "quadrant";
+  }
+  if (MATRIX_STRUCTURE_CUE_PATTERN.test(combinedText)) {
+    return "matrix";
+  }
+  if (CHART_STRUCTURE_CUE_PATTERN.test(combinedText)) {
+    return "chart";
+  }
+  return null;
+}
+
+function buildPreferredVisualFromStructureCue(
+  cue: StudioPageMission["structureCue"],
+): string | null {
+  switch (cue) {
+    case "matrix":
+      return "matrix-first 2x2 quadrant frame";
+    case "quadrant":
+      return "quadrant-first 2x2 frame";
+    case "chart":
+      return "chart-first evidence view";
+    default:
+      return null;
+  }
 }
 
 function inferEvidenceTierFromWorkingMemory(memory: StudioWorkingMemory): StudioEvidenceTier {
@@ -190,14 +332,19 @@ function buildFallbackCapabilityActivations(args: {
     {
       kind: "style",
       reason: "Every page still needs a coherent professional visual system.",
-      lines: ["Use a restrained, presentation-grade visual language and keep it consistent."],
+      lines: ["Use a coherent, presentation-grade visual language with strong hierarchy and intentional spacing."],
     },
     ...(hasExplicitThreeDimensionalRequest(args.brief)
       ? [
           {
             kind: "3d" as const,
             reason: "The brief explicitly requests 3D treatment.",
-            lines: ["Use one dominant 3D concept object only if it directly serves the page mission."],
+            lines: [
+              "Treat the page as one fabricated 3D hero object, not a flat UI composition.",
+              "Show perspective, visible thickness, overlap or occlusion, and cutaway or exploded layer logic.",
+              "Let the object dominate the page and keep copy peripheral.",
+              "Do not resolve as floating cards, glass panels, dashboard tiles, or shallow neumorphic surfaces.",
+            ],
           },
         ]
       : []),
@@ -219,11 +366,13 @@ function buildFallbackCapabilityActivations(args: {
 }
 
 function buildFallbackPageMission(args: {
+  brief: string;
   memory: StudioWorkingMemory;
   pageCount: number;
   evidenceTier: StudioEvidenceTier;
 }) {
   const subject = args.memory.primaryObject;
+  const deckStructureCue = normalizeStructureCue(undefined, args.brief);
   if (args.pageCount <= 1) {
     return [
       {
@@ -253,13 +402,16 @@ function buildFallbackPageMission(args: {
             ? ["Use only evidence the brief actually supplies."]
             : ["Use qualitative framing or explicit assumptions instead of fake hard evidence."],
         preferredVisual:
-          args.memory.userOperation === "value"
+          buildPreferredVisualFromStructureCue(deckStructureCue) ??
+          (args.memory.userOperation === "value"
             ? "single-proof-canvas"
             : args.memory.userOperation === "critique"
               ? "annotation-stage"
               : args.memory.userOperation === "narrate"
                 ? "vertical-story-strip"
-                : "poster-claim",
+                : "poster-claim"),
+        missionScope: "page",
+        structureCue: deckStructureCue,
       },
     ] satisfies StudioPageMission[];
   }
@@ -276,6 +428,8 @@ function buildFallbackPageMission(args: {
         ? ["Use the strongest evidence or framing clue the brief actually gives."]
         : ["Use only qualitative framing if the brief does not supply hard evidence."],
     preferredVisual: args.memory.userOperation === "narrate" ? "vertical-story-strip" : "poster-claim",
+    missionScope: "page",
+    structureCue: null,
   });
 
   for (let index = 2; index <= args.pageCount; index += 1) {
@@ -299,6 +453,8 @@ function buildFallbackPageMission(args: {
           ? ["Pull only from evidence already present in the brief."]
           : ["If evidence is weak, use labeled assumptions or qualitative structure."],
       preferredVisual: isLast ? "single-proof-canvas" : "annotation-stage",
+      missionScope: "page",
+      structureCue: null,
     });
   }
 
@@ -306,6 +462,10 @@ function buildFallbackPageMission(args: {
 }
 
 function sanitizeMission(mission: StudioPageMission, pageNumber: number): StudioPageMission {
+  const combinedText = [mission.title, mission.mission, mission.headlineClaim, mission.preferredVisual]
+    .filter(Boolean)
+    .join(" ");
+  const structureCue = normalizeStructureCue(mission.structureCue, combinedText);
   return {
     pageNumber,
     title: clampText(mission.title || `Page ${pageNumber}`, 80),
@@ -313,8 +473,317 @@ function sanitizeMission(mission: StudioPageMission, pageNumber: number): Studio
     headlineClaim: clampText(mission.headlineClaim || mission.mission || "Land one clear claim.", 220),
     supportPoints: uniqueStrings((mission.supportPoints ?? []).map((line) => clampText(line, 120))).slice(0, 2),
     evidenceNotes: uniqueStrings((mission.evidenceNotes ?? []).map((line) => clampText(line, 120))).slice(0, 2),
-    preferredVisual: mission.preferredVisual ? clampText(mission.preferredVisual, 60) : null,
+    preferredVisual: clampText(
+      mission.preferredVisual || buildPreferredVisualFromStructureCue(structureCue) || "",
+      60,
+    ) || null,
+    missionScope: normalizeMissionScope(mission.missionScope, combinedText),
+    structureCue,
   };
+}
+
+type ExplicitPageSegment = {
+  pageNumber: number;
+  text: string;
+};
+
+function trimExplicitPageSegmentText(value: string) {
+  const trimmed = value
+    .replace(/^[\s:：\-—–,，。.;；、]+/, "")
+    .replace(/\n\s*[-*]\s*(?!第|\bpage\b|\bslide\b)[\s\S]*$/i, "")
+    .replace(/\b(?:one page, one claim|evidence first|do not fabricate metrics)\b[\s\S]*$/i, "")
+    .replace(/(?:一页一(?:个)?(?:结论|观点|主张|问题)|证据优先|不要捏造数据)[\s\S]*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return trimmed.replace(/[\s,，。.;；、]+$/g, "").trim();
+}
+
+function extractExplicitPageSegments(brief: string, pageCount: number) {
+  const matches = Array.from(brief.matchAll(EXPLICIT_PAGE_MARKER_PATTERN))
+    .map((match) => {
+      const pageNumber = parsePageReferenceToken(match[1] ?? match[2] ?? "");
+      const start = match.index ?? -1;
+      if (pageNumber === null || start < 0 || pageNumber > pageCount) {
+        return null;
+      }
+      return {
+        pageNumber,
+        start,
+        end: start + match[0].length,
+      };
+    })
+    .filter((entry): entry is { pageNumber: number; start: number; end: number } => entry !== null);
+
+  const segments = new Map<number, ExplicitPageSegment>();
+  matches.forEach((entry, index) => {
+    const next = matches[index + 1];
+    const rawSegment = brief.slice(entry.end, next?.start ?? brief.length);
+    const text = trimExplicitPageSegmentText(rawSegment);
+    if (!text) {
+      return;
+    }
+    segments.set(entry.pageNumber, {
+      pageNumber: entry.pageNumber,
+      text,
+    });
+  });
+
+  return segments;
+}
+
+function resolveExplicitMissionTitle(args: {
+  segment: string;
+  pageNumber: number;
+  subject: string;
+  structureCue: StudioPageMission["structureCue"];
+}) {
+  const normalizedSegment = normalizeStudioText(args.segment);
+  for (const entry of PAGE_ROLE_TITLE_PATTERNS) {
+    if (entry.pattern.test(args.segment) || entry.pattern.test(normalizedSegment)) {
+      return entry.title;
+    }
+  }
+
+  const shortSubject = compactBoardTitle(args.subject, "Core subject", 4);
+  if (args.structureCue === "matrix" || args.structureCue === "quadrant") {
+    return shortSubject && shortSubject !== "Core subject"
+      ? `${shortSubject} in a BCG Matrix`
+      : "BCG Matrix View";
+  }
+  if (args.structureCue === "chart") {
+    return shortSubject && shortSubject !== "Core subject"
+      ? `${shortSubject} Through One Chart`
+      : "Chart-Led Proof";
+  }
+  if (/\b(?:3d|three-dimensional)\b/i.test(args.segment) || /(?:3D|三维|立体|建模)/i.test(args.segment)) {
+    return "3D Product Profit Logic";
+  }
+
+  const candidate = clampText(args.segment.replace(/^[上用把讲講写寫做是來来去]/, "").trim(), 60);
+  return candidate || `Page ${args.pageNumber}`;
+}
+
+function buildExplicitSegmentSupportPoints(args: {
+  segment: string;
+  structureCue: StudioPageMission["structureCue"];
+}) {
+  if (args.structureCue === "matrix" || args.structureCue === "quadrant") {
+    return [
+      "Use one 2x2 frame with explicit axes and named quadrants.",
+      "Place the company, business line, or product into the matrix instead of summarizing the whole deck.",
+    ];
+  }
+
+  if (args.structureCue === "chart") {
+    return [
+      "Keep one dominant chart or figure as the primary proof surface.",
+      "Use a compact annotation zone instead of a second narrative panel.",
+    ];
+  }
+
+  if (/\b(?:3d|three-dimensional)\b/i.test(args.segment) || /(?:3D|三维|立体|建模)/i.test(args.segment)) {
+    return [
+      "Keep one dominant product or system object with compact annotations.",
+      "Use assumption-labeled reasoning instead of unsupported metrics.",
+    ];
+  }
+
+  return [
+    "Resolve only the stated page task and keep secondary detail subordinate.",
+    "Do not turn this page into a deck-wide overview or request-understanding card.",
+  ];
+}
+
+function buildExplicitSegmentEvidenceNotes(args: {
+  structureCue: StudioPageMission["structureCue"];
+  evidenceTier: StudioEvidenceTier;
+}) {
+  if (args.evidenceTier === "source-backed") {
+    return args.structureCue === "matrix" || args.structureCue === "quadrant"
+      ? ["Keep axis labels and quadrant placements anchored to evidence already present in the brief."]
+      : ["Use only evidence already supplied in the raw brief."];
+  }
+
+  if (args.structureCue === "matrix" || args.structureCue === "quadrant") {
+    return ["If matrix evidence is missing, use qualitative placement or explicit assumptions instead of fake market-share data."];
+  }
+
+  return ["If evidence is missing, use qualitative framing or explicit assumptions instead of fake hard data."];
+}
+
+function buildMissionFromExplicitPageSegment(args: {
+  segment: ExplicitPageSegment;
+  subject: string;
+  evidenceTier: StudioEvidenceTier;
+}) {
+  const structureCue = normalizeStructureCue(undefined, args.segment.text);
+  const title = resolveExplicitMissionTitle({
+    segment: args.segment.text,
+    pageNumber: args.segment.pageNumber,
+    subject: args.subject,
+    structureCue,
+  });
+  const mission =
+    structureCue === "matrix" || structureCue === "quadrant"
+      ? `Frame ${args.subject || "the subject"} through one BCG-style 2x2 matrix.`
+      : structureCue === "chart"
+        ? `Explain ${args.subject || "the subject"} through one chart-led evidence view.`
+        : /\b(?:3d|three-dimensional)\b/i.test(args.segment.text) || /(?:3D|三维|立体|建模)/i.test(args.segment.text)
+          ? `Explain ${args.subject || "the subject"} through one 3D-model-centered page.`
+          : `Resolve page ${args.segment.pageNumber} around: ${clampText(args.segment.text, 140)}.`;
+  const headlineClaim =
+    structureCue === "matrix" || structureCue === "quadrant"
+      ? `${args.subject || "The subject"} should be positioned through one quadrant matrix before deeper explanation.`
+      : structureCue === "chart"
+        ? `${args.subject || "The subject"} is best supported through one chart-led proof pattern.`
+        : /\b(?:3d|three-dimensional)\b/i.test(args.segment.text) || /(?:3D|三维|立体|建模)/i.test(args.segment.text)
+          ? `${args.subject || "The subject"} is best explained through one dominant 3D product or system model.`
+          : clampText(args.segment.text, 180);
+
+  return sanitizeMission(
+    {
+      pageNumber: args.segment.pageNumber,
+      title,
+      mission,
+      headlineClaim,
+      supportPoints: buildExplicitSegmentSupportPoints({
+        segment: args.segment.text,
+        structureCue,
+      }),
+      evidenceNotes: buildExplicitSegmentEvidenceNotes({
+        structureCue,
+        evidenceTier: args.evidenceTier,
+      }),
+      preferredVisual: buildPreferredVisualFromStructureCue(structureCue),
+      missionScope: "page",
+      structureCue,
+    },
+    args.segment.pageNumber,
+  );
+}
+
+function fingerprintStudioPageMission(mission: StudioPageMission) {
+  return normalizeStudioText([mission.title, mission.mission, mission.headlineClaim].join(" "))
+    .toLowerCase()
+    .replace(EXPLICIT_PAGE_MARKER_PATTERN, " ")
+    .replace(/\b(?:page|slide|deck|presentation|ppt|overall|storyboard|flow)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function normalizeDeckPageMissions(args: {
+  brief: string;
+  pageCount: number;
+  subject: string;
+  evidenceTier: StudioEvidenceTier;
+  inputPageMissions: StudioPageMission[];
+  fallbackPageMissions: StudioPageMission[];
+}) {
+  const explicitSegments = extractExplicitPageSegments(args.brief, args.pageCount);
+  const fallbackByPage = new Map(
+    args.fallbackPageMissions.map((mission) => [mission.pageNumber, sanitizeMission(mission, mission.pageNumber)]),
+  );
+  const providedByPage = new Map(
+    args.inputPageMissions.map((mission, index) => [
+      mission.pageNumber || index + 1,
+      sanitizeMission(mission, mission.pageNumber || index + 1),
+    ]),
+  );
+
+  const initialMissions = Array.from({ length: args.pageCount }, (_value, index) => {
+    const pageNumber = index + 1;
+    const explicitSegment = explicitSegments.get(pageNumber);
+    if (explicitSegment) {
+      return buildMissionFromExplicitPageSegment({
+        segment: explicitSegment,
+        subject: args.subject,
+        evidenceTier: args.evidenceTier,
+      });
+    }
+
+    return (
+      providedByPage.get(pageNumber) ??
+      args.inputPageMissions[index] ??
+      fallbackByPage.get(pageNumber) ??
+      sanitizeMission(
+        {
+          pageNumber,
+          title: `Page ${pageNumber}`,
+          mission: "Resolve one clear page mission.",
+          headlineClaim: "Land one clear claim.",
+          supportPoints: [],
+          evidenceNotes: [],
+          preferredVisual: null,
+          missionScope: "page",
+          structureCue: null,
+        },
+        pageNumber,
+      )
+    );
+  });
+
+  const duplicateFingerprints = new Set(
+    Array.from(
+      initialMissions.reduce((accumulator, mission) => {
+        const fingerprint = fingerprintStudioPageMission(mission);
+        accumulator.set(fingerprint, (accumulator.get(fingerprint) ?? 0) + 1);
+        return accumulator;
+      }, new Map<string, number>()),
+    )
+      .filter(([fingerprint, count]) => Boolean(fingerprint) && count > 1)
+      .map(([fingerprint]) => fingerprint),
+  );
+
+  return initialMissions.map((mission, index) => {
+    const pageNumber = index + 1;
+    const explicitSegment = explicitSegments.get(pageNumber);
+    if (explicitSegment) {
+      return buildMissionFromExplicitPageSegment({
+        segment: explicitSegment,
+        subject: args.subject,
+        evidenceTier: args.evidenceTier,
+      });
+    }
+
+    if (
+      mission.missionScope === "deck" ||
+      duplicateFingerprints.has(fingerprintStudioPageMission(mission))
+    ) {
+      return (
+        fallbackByPage.get(pageNumber) ??
+        sanitizeMission(
+          {
+            ...mission,
+            pageNumber,
+            title: `Page ${pageNumber}`,
+            mission: `Resolve page ${pageNumber} through one page-scoped argument.`,
+            headlineClaim: `Page ${pageNumber} should land its own claim, not a deck-wide intent.`,
+            supportPoints: [
+              "Keep this page scoped to one page-specific task.",
+              "Do not repeat the same deck-level framing from another page.",
+            ],
+            evidenceNotes: buildExplicitSegmentEvidenceNotes({
+              structureCue: mission.structureCue,
+              evidenceTier: args.evidenceTier,
+            }),
+            preferredVisual:
+              mission.preferredVisual || buildPreferredVisualFromStructureCue(mission.structureCue),
+            missionScope: "page",
+          },
+          pageNumber,
+        )
+      );
+    }
+
+    return sanitizeMission(
+      {
+        ...mission,
+        pageNumber,
+      },
+      pageNumber,
+    );
+  });
 }
 
 export function buildFallbackStudioPreflightPlan(args: {
@@ -329,11 +798,20 @@ export function buildFallbackStudioPreflightPlan(args: {
   });
   const pageCount = detectRequestedPageCount(args.brief, args.requestedPageCount);
   const evidenceTier = inferEvidenceTierFromWorkingMemory(workingMemory);
-  const pageMissions = buildFallbackPageMission({
+  const fallbackPageMissions = buildFallbackPageMission({
+    brief: args.brief,
     memory: workingMemory,
     pageCount,
     evidenceTier,
   }).map((mission) => sanitizeMission(mission, mission.pageNumber));
+  const pageMissions = normalizeDeckPageMissions({
+    brief: args.brief,
+    pageCount,
+    subject: workingMemory.primaryObject,
+    evidenceTier,
+    inputPageMissions: fallbackPageMissions,
+    fallbackPageMissions,
+  });
 
   return {
     rawBrief: args.brief,
@@ -406,10 +884,10 @@ function normalizeCapabilityKind(value: string | undefined): StudioCapabilityAct
   if (!normalized) {
     return null;
   }
-  if (normalized.includes("3d")) {
+  if (matchesThreeDimensionalCue(normalized)) {
     return "3d";
   }
-  if (normalized.includes("chart")) {
+  if (normalized.includes("chart") || normalized.includes("matrix") || normalized.includes("quadrant") || normalized.includes("bcg")) {
     return "chart";
   }
   if (normalized.includes("template")) {
@@ -486,7 +964,7 @@ export function parseStudioPreflightPlan(args: {
   );
   const evidenceTier = normalizeEvidenceTier(parsed.evidencePolicy?.tier as string | undefined, fallback.evidencePolicy.tier);
 
-  const pageMissions =
+  const parsedPageMissions =
     (parsed.pageMissions ?? [])
       .slice(0, pageCount)
       .map((mission, index) =>
@@ -502,11 +980,27 @@ export function parseStudioPreflightPlan(args: {
               mission.preferredVisual === null || mission.preferredVisual === undefined
                 ? null
                 : String(mission.preferredVisual),
+            missionScope:
+              mission.missionScope === null || mission.missionScope === undefined
+                ? "page"
+                : normalizeMissionScope(String(mission.missionScope), String(mission.mission ?? "")),
+            structureCue:
+              mission.structureCue === null || mission.structureCue === undefined
+                ? null
+                : normalizeStructureCue(String(mission.structureCue), String(mission.mission ?? "")),
           },
           index + 1,
         ),
       )
       .filter((mission) => mission.title || mission.mission);
+  const pageMissions = normalizeDeckPageMissions({
+    brief: args.brief,
+    pageCount,
+    subject: String(parsed.subject ?? fallback.subject),
+    evidenceTier,
+    inputPageMissions: parsedPageMissions.length > 0 ? parsedPageMissions : fallback.pageMissions,
+    fallbackPageMissions: fallback.pageMissions,
+  });
 
   return {
     rawBrief: args.brief,
@@ -527,7 +1021,7 @@ export function parseStudioPreflightPlan(args: {
           .map((line) => clampText(line, 180)),
       ).slice(0, 3),
     },
-    pageMissions: pageMissions.length > 0 ? pageMissions : fallback.pageMissions,
+    pageMissions,
     visualThinking: sanitizeVisualThinking(parsed.visualThinking, fallback.visualThinking),
     capabilityActivations: sanitizeCapabilityActivations(parsed.capabilityActivations, fallback.capabilityActivations),
     assumptionPolicy: uniqueStrings(
@@ -567,7 +1061,9 @@ export function buildStudioPreflightPrompt(args: {
     '    "headlineClaim": string,',
     '    "supportPoints": string[],',
     '    "evidenceNotes": string[],',
-    '    "preferredVisual": string | null',
+    '    "preferredVisual": string | null,',
+    '    "missionScope": "page" | "deck",',
+    '    "structureCue": "matrix" | "quadrant" | "chart" | null',
     "  }],",
     '  "visualThinking": {',
     '    "dominantVisualAnchor": string,',
@@ -584,9 +1080,10 @@ export function buildStudioPreflightPrompt(args: {
     `- Requested page count: ${requestedPageCount}.`,
     "- Identify the real subject and do not confuse audience or quality bar with the subject.",
     "- Activate 3D only if the raw brief explicitly asks for 3D, cutaway, exploded view, or hero model.",
-    "- Activate chart only if the raw brief explicitly asks for a chart or the page is truly chart-first.",
+    "- Activate chart only if the raw brief explicitly asks for a chart, matrix, quadrant, or the page is truly figure-first.",
     "- If evidence is weak, allow axiomatic/common-knowledge or explicit assumption framing, but never invent citations, recent facts, market shares, financial numbers, or valuation multiples.",
     "- Keep page missions tight: one page, one mission, one headline claim.",
+    "- For multi-page decks, pageMissions must be page-scoped and specific to that page. Do not reuse one deck-level mission across multiple pages.",
     "",
     "Raw brief:",
     args.brief,
@@ -707,7 +1204,6 @@ export function findStudioPageMission(args: {
 }) {
   const mission =
     args.preflight.pageMissions.find((entry) => entry.pageNumber === args.pageNumber) ??
-    args.preflight.pageMissions[0] ??
     null;
   if (!mission) {
     return {
@@ -718,6 +1214,8 @@ export function findStudioPageMission(args: {
       supportPoints: [],
       evidenceNotes: args.preflight.evidencePolicy.lines.slice(0, 2),
       preferredVisual: null,
+      missionScope: "page",
+      structureCue: null,
     } satisfies StudioPageMission;
   }
 
@@ -729,7 +1227,47 @@ export function buildVisualThinkingLines(args: {
   visualOperatorLines?: string[];
   freeformLayoutPlan?: FreeformLayoutPlan | null;
   preferredVisual?: string | null;
+  structureCue?: StudioPageMission["structureCue"];
+  heroModelIntent?: HeroModelIntent | null;
+  wowPage?: boolean;
 }) {
+  if (args.heroModelIntent?.enabled) {
+    return [
+      args.wowPage
+        ? "Dominant visual anchor: one fabricated pseudo-3D hero object with visible depth, internal structure, and premium surface treatment."
+        : "Dominant visual anchor: one fabricated pseudo-3D hero object with visible depth and internal structure.",
+      args.wowPage
+        ? "Reading path: object first, then headline claim, then elegant compact annotations and support."
+        : "Reading path: object first, then headline claim, then compact annotations and support.",
+      args.wowPage
+        ? "Region strategy: hero-object-first composition with one memorable spatial gesture and only slim peripheral narrative."
+        : "Region strategy: hero-object-first composition with the object taking most of the page and only slim peripheral narrative.",
+      args.wowPage
+        ? "Density posture: crafted, premium, object-heavy, with negative space and material contrast doing real work."
+        : "Density posture: object-heavy, sparse text, compact annotations, and no competing regions.",
+      ...(args.wowPage
+        ? ["Craft note: refine surfaces, shadow discipline, and callout placement until the object feels designed, not merely arranged."]
+        : []),
+      "Avoid pattern: flat cards, dashboard tiles, glass panels, shallow neumorphism, or generic left-right explainers.",
+      ...(args.heroModelIntent.recommendedCompositionFamily
+        ? [`3D composition family: ${args.heroModelIntent.recommendedCompositionFamily}.`]
+        : []),
+      ...(args.heroModelIntent.objectFamily ? [`3D object family: ${args.heroModelIntent.objectFamily}.`] : []),
+      ...(args.visualOperatorLines ?? []).slice(0, 2),
+    ].map((line) => clampText(line, 220));
+  }
+
+  if (args.structureCue === "matrix" || args.structureCue === "quadrant") {
+    return [
+      "Dominant visual anchor: one BCG-style 2x2 matrix occupying the main page field.",
+      "Reading path: headline claim -> axis frame -> quadrant placement -> short takeaway.",
+      "Region strategy: let the matrix own the page, with only a compact label or takeaway zone outside it.",
+      "Density posture: figure-first, spatially simple, and disciplined enough to avoid turning the page into a memo opener.",
+      "Avoid pattern: poster-claim openers, request-understanding cards, generic split layouts, or narrative summary boxes that replace the matrix itself.",
+      ...(args.visualOperatorLines ?? []).slice(0, 2),
+    ].map((line) => clampText(line, 220));
+  }
+
   const visualThinking = args.preflight.visualThinking;
   const freeformLines = args.freeformLayoutPlan
     ? [
@@ -741,8 +1279,15 @@ export function buildVisualThinkingLines(args: {
   return [
     `Dominant visual anchor: ${args.preferredVisual ?? visualThinking.dominantVisualAnchor}.`,
     `Reading path: ${visualThinking.readingPath}.`,
-    `Region strategy: ${visualThinking.regionStrategy}.`,
-    `Density posture: ${visualThinking.densityPosture}.`,
+    args.wowPage
+      ? `Region strategy: lead with one memorable visual gesture and one compact support region; ${visualThinking.regionStrategy}.`
+      : `Region strategy: ${visualThinking.regionStrategy}.`,
+    args.wowPage
+      ? "Density posture: crafted, deliberate, premium, and spacious enough for negative space to do real compositional work."
+      : `Density posture: ${visualThinking.densityPosture}.`,
+    ...(args.wowPage
+      ? ["Craft note: refine typography tension, surface contrast, shadow discipline, and annotation placement until the page feels intentional."]
+      : []),
     `Avoid pattern: ${visualThinking.avoidPattern}.`,
     ...freeformLines,
     ...(args.visualOperatorLines ?? []).slice(0, 2),
@@ -752,9 +1297,13 @@ export function buildVisualThinkingLines(args: {
 export function buildPreflightCapabilityCards(args: {
   preflight: StudioPreflightPlan;
   baseCards?: StudioCapabilityCard[];
+  forceKinds?: StudioCapabilityActivation["kind"][];
 }) {
   const baseCards = args.baseCards ?? [];
-  const activeKinds = new Set(args.preflight.capabilityActivations.map((item) => item.kind));
+  const activeKinds = new Set([
+    ...args.preflight.capabilityActivations.map((item) => item.kind),
+    ...(args.forceKinds ?? []),
+  ]);
   return baseCards.filter((card) => {
     if (card.id === "explicit-3d") {
       return activeKinds.has("3d");
@@ -766,6 +1315,9 @@ export function buildPreflightCapabilityCards(args: {
       return activeKinds.has("template");
     }
     if (card.id === "style-direction") {
+      return true;
+    }
+    if (card.id === "craft-direction") {
       return true;
     }
     if (card.id === "composition-direction") {

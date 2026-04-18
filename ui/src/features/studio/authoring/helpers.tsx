@@ -109,6 +109,7 @@ type FieldCanvasDragState = {
   mode: CanvasEditMode;
   startX: number;
   startY: number;
+  sceneRect: { width: number; height: number };
 };
 
 type WorkspacePanState = {
@@ -259,16 +260,16 @@ function clampLayoutToSurface(
 ): CanvasLayout {
   if (surface === "pasteboard") {
     return {
-      x: clamp(layout.x, 0, MODULE_SCENE_COLUMNS - layout.w),
-      y: clamp(layout.y, 0, MODULE_SCENE_ROWS - layout.h),
+      x: clamp(layout.x, 0, Math.max(0, MODULE_SCENE_COLUMNS - layout.w)),
+      y: clamp(layout.y, 0, Math.max(0, MODULE_SCENE_ROWS - layout.h)),
       w: clamp(layout.w, 2, MODULE_SCENE_COLUMNS),
       h: clamp(layout.h, 2, MODULE_SCENE_ROWS),
     };
   }
 
   return {
-    x: clamp(layout.x, 0, MODULE_CANVAS_COLUMNS - layout.w),
-    y: clamp(layout.y, 0, MODULE_CANVAS_ROWS - layout.h),
+    x: clamp(layout.x, 0, Math.max(0, MODULE_CANVAS_COLUMNS - layout.w)),
+    y: clamp(layout.y, 0, Math.max(0, MODULE_CANVAS_ROWS - layout.h)),
     w: clamp(layout.w, 2, MODULE_CANVAS_COLUMNS),
     h: clamp(layout.h, 2, MODULE_CANVAS_ROWS),
   };

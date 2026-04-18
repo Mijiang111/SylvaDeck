@@ -1,12 +1,12 @@
 import type { Dispatch, SetStateAction } from "react";
-import { BarChart3, Circle, Database, Link2, Minus, Sparkles, Square, Type } from "lucide-react";
+import { BarChart3, Circle, Database, Minus, Sparkles, Square, Type } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import type {
   ModuleCanvasObjectKind,
   ModuleRegistryEntry,
   ModuleTemplateField,
 } from "@/features/studio/types";
-import type { AuthoringStage } from "../authoring-local-types";
+
 import type { CanvasObjectPreset } from "../helpers";
 
 type TemplateCanvasToolbarProps = {
@@ -14,16 +14,16 @@ type TemplateCanvasToolbarProps = {
   view: {
     selectedField: ModuleTemplateField | null;
     selectedObjectKind: ModuleCanvasObjectKind | null;
-    isLibraryOpen: boolean;
+
   };
   actions: {
     setDraft: Dispatch<SetStateAction<ModuleRegistryEntry>>;
-    openLibraryModal: () => void;
+
     addCanvasObject: (
       kind: ModuleCanvasObjectKind,
       preset?: CanvasObjectPreset
     ) => void;
-    handleStageChange: (stage: AuthoringStage) => void;
+
   };
 };
 
@@ -32,8 +32,8 @@ export function TemplateCanvasToolbar({
   view,
   actions,
 }: TemplateCanvasToolbarProps) {
-  const { selectedField, selectedObjectKind, isLibraryOpen } = view;
-  const { setDraft, openLibraryModal, addCanvasObject, handleStageChange } = actions;
+  const { selectedField, selectedObjectKind } = view;
+  const { setDraft, addCanvasObject } = actions;
 
   if (!isActive) {
     return null;
@@ -43,12 +43,12 @@ export function TemplateCanvasToolbar({
                 <div className="pointer-events-none absolute inset-x-0 bottom-5 z-30 flex justify-center px-4">
                   <div className="pointer-events-auto flex w-full max-w-[860px] flex-col items-center gap-2">
                     {selectedField ? (
-                      <div className="w-full rounded-[20px] border border-white/10 bg-[#0e1429]/88 p-3 text-white shadow-[0_22px_40px_rgba(0,0,0,0.34)] backdrop-blur">
-                        <div className="mb-2 flex items-center justify-between gap-3">
-                          <div className="truncate text-[11px] font-semibold uppercase tracking-[0.18em] text-[#95a3c9]">
+                      <div className="w-full max-w-[560px] rounded-[2px] border border-white/10 bg-[#0e1429]/88 p-2 text-white shadow-[0_22px_40px_rgba(0,0,0,0.34)] backdrop-blur">
+                        <div className="mb-1.5 flex items-center justify-between gap-3">
+                          <div className="truncate text-[10px] font-semibold uppercase tracking-[0.18em] text-[#95a3c9]">
                             Comment
                           </div>
-                          <div className="truncate text-[12px] text-[#cad3ea]">
+                          <div className="truncate text-[11px] text-[#cad3ea]">
                             {selectedField.label}
                           </div>
                         </div>
@@ -76,26 +76,13 @@ export function TemplateCanvasToolbar({
                               ? "Describe the locked template copy or label."
                               : "Describe what this block should communicate."
                           }
-                          className="min-h-[88px] border border-white/10 bg-white/[0.04] px-3 py-2.5 text-sm leading-6 text-white placeholder:text-[#8c9abf]"
+                          className="min-h-[64px] border border-white/10 bg-white/[0.04] px-2 py-2 text-xs leading-5 text-white placeholder:text-[#8c9abf]"
                         />
                       </div>
                     ) : null}
 
                     <div className="max-w-full overflow-x-auto">
-                      <div className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-[#0e1429]/86 p-1.5 text-white shadow-[0_22px_40px_rgba(0,0,0,0.34)] backdrop-blur">
-                        <button
-                          type="button"
-                          onClick={openLibraryModal}
-                          className={[
-                            "inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-sm font-semibold transition",
-                            isLibraryOpen
-                              ? "bg-white text-[#0e1429]"
-                              : "text-[#eef3ff] hover:bg-white/10",
-                          ].join(" ")}
-                        >
-                          <span>Template</span>
-                        </button>
-                        <span className="mx-1 h-5 w-px bg-white/10" />
+                      <div className="inline-flex items-center gap-1 rounded-[2px] border border-white/10 bg-[#0e1429]/86 p-1.5 text-white shadow-[0_22px_40px_rgba(0,0,0,0.34)] backdrop-blur">
                         {[
                           {
                             label: "AI Text",
@@ -141,7 +128,7 @@ export function TemplateCanvasToolbar({
                               key={`${tool.kind}-${tool.label}`}
                               type="button"
                               onClick={() => addCanvasObject(tool.kind, tool.preset)}
-                              className="inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-sm font-semibold text-[#eef3ff] transition hover:bg-white/10"
+                              className="inline-flex items-center gap-1.5 rounded-[2px] px-3 py-2 text-sm font-semibold text-[#eef3ff] transition hover:bg-white/10"
                               title={`Add ${tool.label}`}
                             >
                               <Icon className="h-4 w-4" />
@@ -149,15 +136,7 @@ export function TemplateCanvasToolbar({
                             </button>
                           );
                         })}
-                        <span className="mx-1 h-5 w-px bg-white/10" />
-                        <button
-                          type="button"
-                          onClick={() => handleStageChange("semantics")}
-                          className="inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-sm font-semibold text-[#eef3ff] transition hover:bg-white/10"
-                        >
-                          <Link2 className="h-4 w-4" />
-                          <span>Flow</span>
-                        </button>
+
                       </div>
                     </div>
                   </div>

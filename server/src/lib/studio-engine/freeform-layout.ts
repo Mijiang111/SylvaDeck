@@ -283,13 +283,24 @@ export function resolveFreeformLayoutPlan(args: {
   const family = chooseDiverseFamily(candidates, args.usedCompositionFingerprints ?? []);
   const plan = describeFamily(family, args.synthesis?.subject ?? "");
 
+  const brainToDeckAvoidPatterns =
+    args.mode === "brain-to-deck"
+      ? [
+          "no 3D elements, no shadows, no rounded corners",
+          "strict action-titles: every title must be a complete sentence stating the conclusion",
+          "no gradients, no glow, no decorative filler",
+        ]
+      : [];
+
   return {
     ...plan,
     visualAnchor: clampText(plan.visualAnchor, 180),
     readingPath: clampText(plan.readingPath, 180),
     regionPlan: plan.regionPlan.map((line) => clampText(line, 180)).slice(0, 3),
     copyPlacement: plan.copyPlacement.map((line) => clampText(line, 180)).slice(0, 3),
-    avoidPattern: plan.avoidPattern.map((line) => clampText(line, 180)).slice(0, 3),
+    avoidPattern: [...plan.avoidPattern, ...brainToDeckAvoidPatterns]
+      .map((line) => clampText(line, 180))
+      .slice(0, 5),
   } satisfies FreeformLayoutPlan;
 }
 

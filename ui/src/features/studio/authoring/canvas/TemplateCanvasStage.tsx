@@ -79,6 +79,27 @@ type CanvasPoint = {
 
 type DerivedChartPreview = ReturnType<typeof deriveChartPreview>;
 
+const EMPTY_SERIES_LABELS: string[] = [];
+const EMPTY_BARS: DerivedChartPreview["bars"] = [];
+const EMPTY_STACKS: DerivedChartPreview["stacks"] = [];
+const EMPTY_WATERFALL: DerivedChartPreview["waterfall"] = [];
+
+function getEmptyChartPreview(field: ModuleTemplateField): DerivedChartPreview {
+  return {
+    kind: getChartKind(field),
+    status: "needs-data",
+    sourceLabel: null,
+    rowCount: 0,
+    numericColumnCount: 0,
+    seriesLabels: EMPTY_SERIES_LABELS,
+    bars: EMPTY_BARS,
+    stacks: EMPTY_STACKS,
+    waterfall: EMPTY_WATERFALL,
+    minValue: 0,
+    maxValue: 0,
+  };
+}
+
 type ConnectionRenderItem = {
   connection: ModuleConnection;
   sourceField: ModuleTemplateField;
@@ -108,7 +129,7 @@ type TemplateCanvasStageProps = {
     flowViewportOffset: CanvasPoint;
     flowViewportScale: number;
     isFlowStage: boolean;
-    isLibraryOpen: boolean;
+
     isModuleFrameInteracting: boolean;
     marqueeState: MarqueeSelectionState | null;
     moduleFrame: ModuleFrameLayout;
@@ -150,9 +171,9 @@ type TemplateCanvasStageProps = {
     getScenePoint: (clientX: number, clientY: number) => CanvasPoint | null;
     handleFieldSelection: (fieldId: string, additive: boolean) => void;
     handleFlowViewportWheel: (event: WheelEvent<HTMLDivElement>) => void;
-    handleStageChange: (stage: AuthoringStage) => void;
+
     handleWorkspaceWheel: (event: WheelEvent<HTMLDivElement>) => void;
-    openLibraryModal: () => void;
+
     removeThinkingFlowEdge: (edgeId: string) => void;
     selectThinkingFlowNode: (nodeId: string, additive?: boolean) => void;
     setConnectionPreviewPoint: Dispatch<SetStateAction<CanvasPoint | null>>;
@@ -225,7 +246,7 @@ export function TemplateCanvasStage({ view, actions }: TemplateCanvasStageProps)
     flowViewportOffset,
     flowViewportScale,
     isFlowStage,
-    isLibraryOpen,
+
     isModuleFrameInteracting,
     marqueeState,
     moduleFrame,
@@ -259,9 +280,7 @@ export function TemplateCanvasStage({ view, actions }: TemplateCanvasStageProps)
     getScenePoint,
     handleFieldSelection,
     handleFlowViewportWheel,
-    handleStageChange,
     handleWorkspaceWheel,
-    openLibraryModal,
     removeThinkingFlowEdge,
     selectThinkingFlowNode,
     setConnectionPreviewPoint,
@@ -624,19 +643,11 @@ export function TemplateCanvasStage({ view, actions }: TemplateCanvasStageProps)
                 const fieldTone = getFieldKindTone(field);
                 const dataTable = field.dataTable ?? createEmptyDataTable("");
                 const chartSource = chartSourceByFieldId.get(field.id) ?? null;
-                const chartPreview = chartPreviewByFieldId.get(field.id) ?? {
-                  kind: getChartKind(field),
-                  status: "needs-data",
-                  sourceLabel: null,
-                  rowCount: 0,
-                  numericColumnCount: 0,
-                  seriesLabels: [],
-                  bars: [],
-                  stacks: [],
-                  waterfall: [],
-                  minValue: 0,
-                  maxValue: 0,
-                };
+                const chartPreview =
+                  objectKind === "chart"
+                    ? (chartPreviewByFieldId.get(field.id) ??
+                      getEmptyChartPreview(field))
+                    : null;
                 const flowRunFieldOutput =
                   flowRunResult?.fieldOutputs[field.id] ?? null;
                 const outputPreviewTitle =
@@ -892,42 +903,42 @@ export function TemplateCanvasStage({ view, actions }: TemplateCanvasStageProps)
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
                             <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#7f6b54]">
-                              {getFieldBadge(field)} · {CHART_KIND_LABEL[chartPreview.kind]} chart
+                              {getFieldBadge(field)} · {CHART_KIND_LABEL[chartPreview!.kind]} chart
                             </div>
                             <div className="mt-1 truncate text-[12px] font-semibold text-[#173043]">
                               {chartSource?.label ?? "Awaiting data"}
                             </div>
                           </div>
                           <div className="text-[10px] uppercase tracking-[0.16em] text-[#927b5e]">
-                            {chartPreview.status === "ready"
-                              ? chartPreview.kind === "stacked"
-                                ? `${chartPreview.stacks.length} stacks`
-                                : chartPreview.kind === "waterfall"
-                                ? `${chartPreview.waterfall.length} steps`
-                                : `${chartPreview.bars.length} bars`
-                              : getChartStatusMessage(chartPreview)}
+                            {chartPreview!.status === "ready"
+                              ? chartPreview!.kind === "stacked"
+                                ? `${chartPreview!.stacks.length} stacks`
+                                : chartPreview!.kind === "waterfall"
+                                ? `${chartPreview!.waterfall.length} steps`
+                                : `${chartPreview!.bars.length} bars`
+                              : getChartStatusMessage(chartPreview!)}
                           </div>
                         </div>
                         <div className="mt-3 flex-1 overflow-hidden rounded-[12px] border border-[#e2d8c7] bg-white/90 px-3 py-3">
-                          {chartPreview.status === "ready" ? (
+                          {chartPreview!.status === "ready" ? (
                             <div className="flex h-full flex-col">
                               <div className="flex-1">
                                 <div className="h-full rounded-[10px] border border-[#f0e7da] bg-[#fcfaf6] px-3 py-3">
-                                  {renderChartGraphic(chartPreview)}
+                                  {renderChartGraphic(chartPreview!)}
                                 </div>
                               </div>
                               <div className="mt-3 flex items-center justify-between text-[10px] font-semibold uppercase tracking-[0.16em] text-[#927b5e]">
-                                <span>{chartPreview.rowCount} rows</span>
+                                <span>{chartPreview!.rowCount} rows</span>
                                 <span>
-                                  {chartPreview.kind === "stacked"
-                                    ? `${chartPreview.seriesLabels.length} series`
-                                    : CHART_KIND_LABEL[chartPreview.kind]}
+                                  {chartPreview!.kind === "stacked"
+                                    ? `${chartPreview!.seriesLabels.length} series`
+                                    : CHART_KIND_LABEL[chartPreview!.kind]}
                                 </span>
                               </div>
-                              {chartPreview.kind === "stacked" &&
-                              chartPreview.seriesLabels.length > 0 ? (
+                              {chartPreview!.kind === "stacked" &&
+                              chartPreview!.seriesLabels.length > 0 ? (
                                 <div className="mt-2 flex flex-wrap gap-2">
-                                  {chartPreview.seriesLabels.map(
+                                  {chartPreview!.seriesLabels.map(
                                     (label, seriesIndex) => (
                                       <span
                                         key={`${field.id}-legend-${label}`}
@@ -951,7 +962,7 @@ export function TemplateCanvasStage({ view, actions }: TemplateCanvasStageProps)
                               ) : null}
                             </div>
                           ) : (
-                            renderChartGraphic(chartPreview)
+                            renderChartGraphic(chartPreview!)
                           )}
                         </div>
                         <div className="mt-3 flex items-center justify-between text-[10px] font-semibold uppercase tracking-[0.16em] text-[#927b5e]">
@@ -1112,9 +1123,12 @@ export function TemplateCanvasStage({ view, actions }: TemplateCanvasStageProps)
                     ) : null}
                     {objectKind !== "line" ? (
                       <span
-                        onPointerDown={(event) =>
-                          startFieldDrag(event, field.id, "resize")
-                        }
+                        onPointerDown={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          startFieldDrag(event, field.id, "resize");
+                        }}
+                        style={{ touchAction: "none" }}
                         className="absolute bottom-2 right-2 inline-flex h-6 w-6 items-center justify-center rounded-full bg-[#102838] text-white"
                       >
                         <Plus className="h-3 w-3 rotate-45" />
@@ -1190,13 +1204,10 @@ export function TemplateCanvasStage({ view, actions }: TemplateCanvasStageProps)
           view={{
             selectedField,
             selectedObjectKind,
-            isLibraryOpen,
           }}
           actions={{
             setDraft,
-            openLibraryModal,
             addCanvasObject,
-            handleStageChange,
           }}
         />
       </div>

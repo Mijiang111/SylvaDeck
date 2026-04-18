@@ -80,6 +80,7 @@ export function createStudioProject(
     templateId,
     projectName: projectName?.trim() || seed.projectName,
     sourceText: seed.sourceText,
+    htmlOutputMode: seed.htmlOutputMode,
     briefMessages: seed.briefMessages,
     pages: seed.pages,
     generatedDraft: seed.generatedDraft,
@@ -363,6 +364,8 @@ export function summarizeProject(
     workspaceId: workspace.id,
     workspaceName: workspace.name,
     templateId: project.templateId,
+    starterPackId: project.starterPackId,
+    starterThemeId: project.starterThemeId,
     projectName: project.projectName,
     updatedAt: project.updatedAt,
     chatUpdatedAt: project.updatedAt,
@@ -423,6 +426,11 @@ export function createProjectSnapshot(project: WorkbenchProject): WorkbenchProje
   return {
     version: PROJECT_SNAPSHOT_VERSION,
     templateId: project.templateId,
+    starterPackId: project.starterPackId,
+    starterThemeId: project.starterThemeId,
+    starterBindings: deepClone(project.starterBindings),
+    starterApplicationMode: project.starterApplicationMode,
+    htmlOutputMode: project.htmlOutputMode,
     projectName: project.projectName,
     sourceText: project.sourceText,
     generationMode: project.generationMode,
@@ -446,13 +454,18 @@ export function appendGenerationHistory(
   const snapshot = {
     version: PROJECT_SNAPSHOT_VERSION,
     templateId: commit.generatedDraft.templateId,
+    starterPackId: nextProject.starterPackId,
+    starterThemeId: nextProject.starterThemeId,
+    starterBindings: deepClone(nextProject.starterBindings),
+    starterApplicationMode: nextProject.starterApplicationMode,
+    htmlOutputMode: commit.htmlOutputMode,
     projectName: commit.projectName,
     sourceText: commit.sourceText,
     generationMode: commit.generationMode,
     moduleUsageMode: commit.moduleUsageMode,
     requestedPageCount: commit.requestedPageCount,
     longFormClarification: deepClone(nextProject.longFormClarification),
-    deckOptimization: { autoOptimizedReportKey: null },
+    deckOptimization: { autoOptimizedReportKey: null, autoOptimizedVersion: null },
     pages: deepClone(commit.pages),
     workflowStage: commit.workflowStage,
     generatedDraft: deepClone(commit.generatedDraft),
@@ -483,9 +496,11 @@ export function appendGenerationHistory(
   nextProject.sourceText = commit.sourceText;
   nextProject.generationMode = commit.generationMode;
   nextProject.moduleUsageMode = commit.moduleUsageMode;
+  nextProject.htmlOutputMode = commit.htmlOutputMode;
   nextProject.requestedPageCount = commit.requestedPageCount;
   nextProject.deckOptimization = {
     autoOptimizedReportKey: null,
+    autoOptimizedVersion: null,
   };
   nextProject.pages = deepClone(commit.pages);
   nextProject.generatedDraft = deepClone(commit.generatedDraft);

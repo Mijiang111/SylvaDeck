@@ -193,6 +193,74 @@ const TASK_GRAMMAR_PACKS: Array<
     ],
     downgradeGuard: "a generic overview or recommendation poster",
   },
+  {
+    id: "unstructured-synthesis",
+    title: "Unstructured synthesis",
+    artifactLabel: "unstructured synthesis",
+    deliverableLabel: "structured deck",
+    taskMatchers: [
+      { label: "brain dump", pattern: /\bbrain\s+dump\b/i },
+      { label: "messy notes", pattern: /\bmessy\s+notes\b/i },
+      { label: "scattered ideas", pattern: /\bscattered\s+ideas\b/i },
+      { label: "organize thoughts", pattern: /\borganize\s+(?:my\s+)?thoughts\b/i },
+      { label: "turn into presentation", pattern: /\bturn\s+this\s+into\s+(?:a\s+)?(?:ppt|deck|presentation)\b/i },
+      { label: "visualize ideas", pattern: /\bvisualize\s+(?:my\s+)?ideas\b/i },
+      { label: "structure this", pattern: /\bstructure\s+this\b/i },
+      { label: "one-pager", pattern: /\bone-pager\b/i },
+    ],
+    sourceMatchers: [
+      { label: "meeting notes", pattern: /\bmeeting\s+notes\b/i },
+      { label: "raw thoughts", pattern: /\braw\s+thoughts\b/i },
+    ],
+    lines: [
+      "Treat the input as raw material to be structured, not as a finished outline.",
+      "Extract 3-7 core themes and arrange them into a coherent narrative flow.",
+      "Do not preserve the original chaotic order; rebuild the story.",
+    ],
+    proofPlanLines: [
+      "Theme extraction: identify the 3-7 strongest ideas across all inputs.",
+      "Narrative arc: determine the logical flow from problem to insight to conclusion.",
+      "Hierarchy: distinguish big-picture claims from supporting detail.",
+      "Visual opportunity: flag numbers, comparisons, and timelines for chart treatment.",
+    ],
+    layoutPreferenceLines: [
+      "Prefer evidence-wall, vertical-story-strip, or asymmetric-proof-field to carry dense information.",
+      "Avoid poster-claim openers when the material is multi-theme and data-rich.",
+    ],
+    downgradeGuard: "a generic topic list or decorative poster opener",
+  },
+  {
+    id: "strict-style-enforcement",
+    title: "Strict style enforcement",
+    artifactLabel: "strict style deck",
+    deliverableLabel: "strict style deck",
+    taskMatchers: [
+      { label: "strict style", pattern: /\bstrict\s+style\b/i },
+      { label: "bain style", pattern: /\bbain\s+style\b/i },
+      { label: "action titles", pattern: /\baction\s+titles?\b/i },
+      { label: "no shadow", pattern: /\bno\s+shadows?\b/i },
+      { label: "no 3d", pattern: /\bno\s+3d\b/i },
+    ],
+    sourceMatchers: [
+      { label: "minimal", pattern: /\bminimal\b/i },
+      { label: "consulting style", pattern: /\bconsulting\s+style\b/i },
+    ],
+    lines: [
+      "Enforce the requested visual style rigidly; do not drift into generic corporate defaults.",
+      "Use action titles: every slide title must be a complete sentence stating the conclusion.",
+      "Eliminate decorative elements: no shadows, no 3D, no rounded corners, no gradients, no glow.",
+    ],
+    proofPlanLines: [
+      "Style check: verify each title is an action title before generating the slide.",
+      "Visual discipline: reject any layout suggestion that introduces decoration.",
+      "Color restraint: use the specified palette only; avoid introducing new accent colors.",
+    ],
+    layoutPreferenceLines: [
+      "Favor clean asymmetric proof fields and evidence walls over ornate layouts.",
+      "Keep charts flat and two-dimensional.",
+    ],
+    downgradeGuard: "a generic template with decorative defaults",
+  },
 ];
 
 function collectMatcherLabels(text: string, matchers: PhraseMatcher[]) {
@@ -260,6 +328,23 @@ function buildComplexityReason(args: {
   }
 
   return "The task brief reads like a standard Studio request, so the fast workspace remains the default.";
+}
+
+export function resolveTaskGrammarPackById(
+  id: StudioTaskGrammarPackId,
+): StudioTaskGrammarPack | null {
+  const found = TASK_GRAMMAR_PACKS.find((pack) => pack.id === id);
+  if (!found) return null;
+  return {
+    id: found.id,
+    title: found.title,
+    artifactLabel: found.artifactLabel,
+    deliverableLabel: found.deliverableLabel,
+    lines: found.lines,
+    proofPlanLines: found.proofPlanLines,
+    layoutPreferenceLines: found.layoutPreferenceLines,
+    downgradeGuard: found.downgradeGuard,
+  };
 }
 
 export function hasTaskGrammarPack(
@@ -441,6 +526,9 @@ export function buildLayoutStrategyLines(args: {
 }
 
 export function preferredDeepFamilies(profile: StudioComplexityProfile): FreeformLayoutFamily[] {
+  if (hasTaskGrammarPack(profile, "unstructured-synthesis")) {
+    return ["evidence-wall", "vertical-story-strip", "asymmetric-proof-field"];
+  }
   if (hasTaskGrammarPack(profile, "valuation-finance-grade")) {
     return ["asymmetric-proof-field", "evidence-wall", "single-proof-canvas"];
   }

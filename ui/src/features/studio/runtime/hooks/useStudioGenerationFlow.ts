@@ -104,13 +104,25 @@ export function useStudioGenerationFlow(args: UseStudioGenerationFlowArgs) {
     );
   }, [project, replaceCurrentProject]);
 
+  const lockedHtmlOutputMode =
+    generatedHtmlReport?.htmlOutputMode ?? project?.htmlOutputMode ?? "static";
+
   const runHtmlGeneration = useCallback(async (
     briefSource: string,
     overrideIntent?: {
       generationMode?: WorkbenchProject["generationMode"];
       moduleUsageMode?: WorkbenchProject["moduleUsageMode"];
+      htmlOutputMode?: WorkbenchProject["htmlOutputMode"];
       requestedPageCount?: WorkbenchProject["requestedPageCount"];
       suppressInferredPageCount?: boolean;
+      starterPackId?: WorkbenchProject["starterPackId"];
+      starterThemeId?: WorkbenchProject["starterThemeId"];
+      starterApplicationMode?: WorkbenchProject["starterApplicationMode"];
+      starterBindings?: Array<{
+        pageId: string;
+        pageNumber: number;
+        starterId: string;
+      }>;
     },
   ) => {
     streamAbortControllerRef.current?.abort();
@@ -129,8 +141,30 @@ export function useStudioGenerationFlow(args: UseStudioGenerationFlowArgs) {
     const generationIntent = resolveGenerationIntent(briefSource, {
       generationMode: overrideIntent?.generationMode ?? project?.generationMode ?? "standard",
       moduleUsageMode: overrideIntent?.moduleUsageMode ?? project?.moduleUsageMode ?? "disabled",
+      htmlOutputMode:
+        generatedHtmlReport
+          ? lockedHtmlOutputMode
+          : overrideIntent?.htmlOutputMode ?? lockedHtmlOutputMode,
       requestedPageCount:
         overrideIntent?.requestedPageCount ?? project?.requestedPageCount ?? null,
+      starterPackId: overrideIntent?.starterPackId ?? project?.starterPackId ?? null,
+      starterThemeId: overrideIntent?.starterThemeId ?? project?.starterThemeId ?? null,
+      starterApplicationMode:
+        overrideIntent?.starterApplicationMode ?? project?.starterApplicationMode ?? "deck",
+      starterBindings:
+        overrideIntent?.starterBindings ??
+        project?.pages.flatMap((page, index) =>
+          project.starterBindings[page.id] || page.starterLayoutId
+            ? [
+                {
+                  pageId: page.id,
+                  pageNumber: index + 1,
+                  starterId: project.starterBindings[page.id] ?? page.starterLayoutId ?? "",
+                },
+              ]
+            : [],
+        ) ??
+        [],
       suppressInferredPageCount:
         overrideIntent?.suppressInferredPageCount ?? shouldSuppressKeptStandardInference,
     });
@@ -179,6 +213,7 @@ export function useStudioGenerationFlow(args: UseStudioGenerationFlowArgs) {
           sourceText: briefSource,
           generationMode: generationIntent.generationMode,
           moduleUsageMode: generationIntent.moduleUsageMode,
+          htmlOutputMode: generationIntent.htmlOutputMode,
           requestedPageCount: generationIntent.requestedPageCount,
           pages: result.pages,
           generatedDraft: asset,
@@ -221,8 +256,15 @@ export function useStudioGenerationFlow(args: UseStudioGenerationFlowArgs) {
     longFormClarification.status,
     longFormClarification.trigger,
     project?.generationMode,
+    generatedHtmlReport,
+    lockedHtmlOutputMode,
     project?.moduleUsageMode,
+    project?.htmlOutputMode,
     project?.requestedPageCount,
+    project?.starterApplicationMode,
+    project?.starterBindings,
+    project?.starterPackId,
+    project?.starterThemeId,
     project?.templateId,
     queueDeckReview,
     resetStreamUi,
@@ -310,6 +352,39 @@ export function useStudioGenerationFlow(args: UseStudioGenerationFlowArgs) {
     setStatusLine("Regenerating the HTML report...");
     try {
       await runHtmlGeneration(project.sourceText);
+    } catch (error) {
+      setStatusLine(
+        error instanceof Error ? error.message : "HTML report regeneration failed.",
+      );
+    } finally {
+      setGeneratingReport(false);
+    }
+  }, [
+    isDeckReviewLocked,
+    project?.sourceText,
+    runHtmlGeneration,
+    setGeneratingReport,
+    setStatusLine,
+  ]);
+
+  const regenerateReportWithIntent = useCallback(async (
+    overrideIntent: NonNullable<Parameters<typeof runHtmlGeneration>[1]>,
+    statusLine = "Regenerating the HTML report with the selected starter...",
+  ) => {
+    if (!project?.sourceText.trim()) {
+      setStatusLine("I still need source material before I can generate the HTML report.");
+      return;
+    }
+
+    if (isDeckReviewLocked) {
+      setStatusLine("Studio is still reviewing the latest deck. Wait a moment before regenerating.");
+      return;
+    }
+
+    setGeneratingReport(true);
+    setStatusLine(statusLine);
+    try {
+      await runHtmlGeneration(project.sourceText, overrideIntent);
     } catch (error) {
       setStatusLine(
         error instanceof Error ? error.message : "HTML report regeneration failed.",
@@ -588,6 +663,7 @@ export function useStudioGenerationFlow(args: UseStudioGenerationFlowArgs) {
   return {
     buildStorylineFromInput,
     regenerateReportContent,
+    regenerateReportWithIntent,
     continueConversation,
     cancelStreamingGeneration,
     handleLongFormClarificationChoice,

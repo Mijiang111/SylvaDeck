@@ -3,7 +3,7 @@ import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
 
 export const DEFAULT_CURSOR_LOCAL_MODEL = "auto";
-export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.4-mini";
+export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.4";
 export const DEFAULT_CODEX_REASONING_EFFORT = "medium";
 
 type CursorStream = "stdout" | "stderr";
@@ -560,6 +560,27 @@ function hasCodexReasoningOverride(args: readonly string[]) {
   );
 }
 
+function hasKimiWrapperArg(args: readonly string[]) {
+  return args.includes("--kimi-wrapper");
+}
+
+function resolveKimiWrapperArgs(args: readonly string[]) {
+  const index = args.indexOf("--kimi-wrapper");
+  if (index < 0) {
+    return null;
+  }
+
+  const wrapperPath = args[index + 1];
+  if (typeof wrapperPath !== "string" || wrapperPath.trim().length === 0) {
+    return null;
+  }
+
+  return {
+    wrapperPath,
+    remainingArgs: args.filter((_, entryIndex) => entryIndex !== index && entryIndex !== index + 1),
+  };
+}
+
 export async function testEnvironment(
   ctx: CursorEnvironmentTestContext,
 ): Promise<CursorEnvironmentTestResult> {
@@ -792,6 +813,9 @@ export async function execute(ctx: CursorExecuteContext): Promise<CursorExecuteR
   const command = asString(ctx.config.command, "agent");
   const cwd = asString(ctx.config.cwd, process.cwd());
   const isCodex = commandLooksLike(command, "codex");
+  const extraArgs = resolveExtraArgs(ctx.config);
+  const kimiWrapper = resolveKimiWrapperArgs(extraArgs);
+  const isKimiWrapper = Boolean(kimiWrapper);
   const model = asString(
     ctx.config.model,
     isCodex ? DEFAULT_CODEX_LOCAL_MODEL : DEFAULT_CURSOR_LOCAL_MODEL,
@@ -804,7 +828,6 @@ export async function execute(ctx: CursorExecuteContext): Promise<CursorExecuteR
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   await ensureCommandResolvable(command, cwd, runtimeEnv);
 
-  const extraArgs = resolveExtraArgs(ctx.config);
   const args = isCodex
     ? (() => {
         const nextArgs = ["exec", "--json", "--skip-git-repo-check"];
@@ -816,15 +839,22 @@ export async function execute(ctx: CursorExecuteContext): Promise<CursorExecuteR
         nextArgs.push("-");
         return nextArgs;
       })()
-    : (() => {
-        const autoTrustEnabled = !hasCursorTrustBypassArg(extraArgs);
-        const nextArgs = ["-p", "--output-format", "stream-json", "--workspace", cwd];
-        if (model) nextArgs.push("--model", model);
-        if (mode) nextArgs.push("--mode", mode);
-        if (autoTrustEnabled) nextArgs.push("--yolo");
-        if (extraArgs.length > 0) nextArgs.push(...extraArgs);
-        return nextArgs;
-      })();
+    : isKimiWrapper
+      ? (() => {
+          const nextArgs = [kimiWrapper!.wrapperPath, ...kimiWrapper!.remainingArgs];
+          if (model) nextArgs.push("--model", model);
+          nextArgs.push("-");
+          return nextArgs;
+        })()
+      : (() => {
+          const autoTrustEnabled = !hasCursorTrustBypassArg(extraArgs);
+          const nextArgs = ["-p", "--output-format", "stream-json", "--workspace", cwd];
+          if (model) nextArgs.push("--model", model);
+          if (mode) nextArgs.push("--mode", mode);
+          if (autoTrustEnabled) nextArgs.push("--yolo");
+          if (extraArgs.length > 0) nextArgs.push(...extraArgs);
+          return nextArgs;
+        })();
 
   const proc = await runChildProcess(ctx.runId, command, args, {
     cwd,
@@ -835,14 +865,19 @@ export async function execute(ctx: CursorExecuteContext): Promise<CursorExecuteR
     stdin: prompt,
     onLog: ctx.onLog,
   });
-  const parsed = isCodex ? parseCodexJsonl(proc.stdout) : parseCursorJsonl(proc.stdout);
+  const parsed = isCodex
+    ? parseCodexJsonl(proc.stdout)
+    : isKimiWrapper
+      ? parseCodexJsonl(proc.stdout)
+      : parseCursorJsonl(proc.stdout);
   const parsedError = typeof parsed.errorMessage === "string" ? parsed.errorMessage.trim() : "";
   const stderrLine = firstNonEmptyLine(proc.stderr);
+  const agentName = isCodex ? "Codex" : isKimiWrapper ? "Kimi" : "Cursor";
   const fallbackErrorMessage =
     parsedError ||
     stderrLine ||
     firstNonEmptyLine(proc.stdout) ||
-    `${isCodex ? "Codex" : "Cursor"} exited with code ${proc.exitCode ?? -1}`;
+    `${agentName} exited with code ${proc.exitCode ?? -1}`;
 
   return {
     exitCode: proc.exitCode,

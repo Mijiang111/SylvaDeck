@@ -1,4 +1,13 @@
-export const API_BASE = import.meta.env.VITE_API_BASE?.trim() || "/api";
+const viteEnv =
+  typeof import.meta === "object" && import.meta && "env" in import.meta
+    ? (import.meta as ImportMeta & {
+        env?: {
+          VITE_API_BASE?: string;
+        };
+      }).env
+    : undefined;
+
+export const API_BASE = viteEnv?.VITE_API_BASE?.trim() || "/api";
 
 export class ApiError extends Error {
   status: number;

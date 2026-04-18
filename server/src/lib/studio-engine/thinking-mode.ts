@@ -262,6 +262,36 @@ export const THINKING_MODE_PLUGINS: Record<DeckThinkingMode, ThinkingModePlugin>
     ],
     bannedLexicon: ["board-ready", "leadership action", "recommendation-first", "strategic implications"],
   },
+  "brain-to-deck": {
+    mode: "brain-to-deck",
+    label: "Brain-to-Deck",
+    summary: "Transform raw, unstructured brain dumps into a polished, visually disciplined deck.",
+    questionLabel: "Core theme",
+    planningPromptLines: [
+      "Treat the brief as raw material: extract 3-7 core themes and rebuild them into a coherent narrative.",
+      "Lead with conclusions: every slide title must be an action title (a complete sentence stating the point).",
+      "Strip decoration: no 3D, no shadows, no rounded corners, no gradients, no glow.",
+    ],
+    pagePromptLines: [
+      "Restructure the page around one clear claim and the strongest supporting evidence.",
+      "Preserve the user's original data points, but reframe them into a visual hierarchy.",
+      "Avoid generic corporate filler; keep the voice close to the source material.",
+    ],
+    repairPromptLines: [
+      "During repair, preserve the action-title discipline and visual restraint.",
+      "Do not let decorative defaults creep back in.",
+    ],
+    heuristicPlanningLines: [
+      "Identify the single most important insight and make it the headline.",
+      "Group supporting details into one dominant proof region and at most one compact annotation.",
+    ],
+    longFormSequencingLines: [
+      "Opening: state the synthesized thesis or the most important takeaway.",
+      "Middle: present evidence, comparisons, and data in a structured flow.",
+      "Close: land one clear implication or next step without generic wrap-up language.",
+    ],
+    bannedLexicon: ["3D", "shadow", "rounded corners", "gradient", "glow", "decorative"],
+  },
 };
 
 function detectAcademicResearch(text: string) {

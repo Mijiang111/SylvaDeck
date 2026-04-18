@@ -1,6 +1,6 @@
-import { normalizeStudioText } from "./brief.js";
+import { normalizeStudioText, uniqueStrings } from "./brief.js";
 import { buildStudioBriefSynthesis } from "./brief-synthesis.js";
-import { resolveStudioComplexityProfile } from "./complexity.js";
+import { resolveStudioComplexityProfile, resolveTaskGrammarPackById } from "./complexity.js";
 import type {
   EvidenceGraph,
   ResolvedThinkingContext,
@@ -8,6 +8,7 @@ import type {
   StudioBriefSynthesis,
   StudioComplexityProfile,
   StudioEvalOverrides,
+  StudioTaskGrammarPackId,
   StudioWorkingMemory,
 } from "./contracts.js";
 import { getThinkingModePlugin, resolveDeckThinkingMode, segmentThinkingInputs } from "./thinking-mode.js";
@@ -99,6 +100,20 @@ export function applyStudioEvalOverridesToComplexityProfile(args: {
     };
   }
 
+  if (overrides.injectTaskGrammarPackIds && overrides.injectTaskGrammarPackIds.length > 0) {
+    const packsToInject = overrides.injectTaskGrammarPackIds
+      .map((id) => resolveTaskGrammarPackById(id))
+      .filter((pack): pack is NonNullable<typeof pack> => pack !== null)
+      .filter((pack) => !nextProfile.taskGrammarPacks.some((existing) => existing.id === pack.id));
+    if (packsToInject.length > 0) {
+      nextProfile = {
+        ...nextProfile,
+        taskGrammarPacks: [...nextProfile.taskGrammarPacks, ...packsToInject],
+        reason: `${nextProfile.reason} Eval override injected task grammar packs: ${packsToInject.map((p) => p.id).join(", ")}.`,
+      };
+    }
+  }
+
   if (overrides.forceWorkloadLane) {
     nextProfile = {
       ...nextProfile,
@@ -146,6 +161,7 @@ export function buildStudioEvalTraceMeta(evalOverrides?: StudioEvalOverrides | n
     evalForceWorkloadLane: evalOverrides.forceWorkloadLane ?? null,
     evalDisableTaskGrammarPacks: evalOverrides.disableTaskGrammarPacks === true,
     evalDisableLayoutPlanningBlock: evalOverrides.disableLayoutPlanningBlock === true,
+    evalInjectTaskGrammarPackIds: evalOverrides.injectTaskGrammarPackIds ?? null,
   };
 }
 
@@ -162,12 +178,27 @@ export function resolveStudioGenerationPreparation(args: {
     inputs: segmentedInputs,
     requestedPageCount: args.requestedPageCount,
   });
+
+  const mergedEvalOverrides: StudioEvalOverrides | null =
+    workingMemory.thinkingModeHint === "brain-to-deck"
+      ? {
+          ...(args.evalOverrides ?? {}),
+          forceWorkloadLane: args.evalOverrides?.forceWorkloadLane ?? "deep",
+          disableTaskGrammarPacks: args.evalOverrides?.disableTaskGrammarPacks ?? false,
+          injectTaskGrammarPackIds: uniqueStrings([
+            ...(args.evalOverrides?.injectTaskGrammarPackIds ?? []),
+            "unstructured-synthesis",
+            "strict-style-enforcement",
+          ]) as StudioTaskGrammarPackId[],
+        }
+      : args.evalOverrides ?? null;
+
   const thinkingContext = applyStudioEvalOverridesToThinkingContext({
     thinkingContext: applyWorkingMemoryToThinkingContext({
       thinkingContext: resolveDeckThinkingMode(args.brief, args.evidenceGraph, segmentedInputs),
       workingMemory,
     }),
-    evalOverrides: args.evalOverrides,
+    evalOverrides: mergedEvalOverrides,
   });
   const complexityProfile = applyStudioEvalOverridesToComplexityProfile({
     brief: args.brief,
@@ -179,7 +210,7 @@ export function resolveStudioGenerationPreparation(args: {
       }),
       workingMemory,
     }),
-    evalOverrides: args.evalOverrides,
+    evalOverrides: mergedEvalOverrides,
   });
   const briefSynthesis: StudioBriefSynthesis = buildStudioBriefSynthesis({
     brief: args.brief,
@@ -195,5 +226,6 @@ export function resolveStudioGenerationPreparation(args: {
     thinkingContext,
     complexityProfile,
     briefSynthesis,
+    evalOverrides: mergedEvalOverrides,
   };
 }

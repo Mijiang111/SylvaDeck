@@ -10,6 +10,12 @@ import type {
   HtmlVisualStructure,
 } from "./types";
 import {
+  HTML_FIT_ROLE_ATTRIBUTE,
+  readHtmlFitParticipation,
+  resolveHtmlVisualFitParticipation,
+  setHtmlFitParticipation,
+} from "./html-fit-role";
+import {
   duplicateGeneratedHtmlReportCanvasVisualTransform,
   pruneGeneratedHtmlReportCanvasOverrides,
   removeGeneratedHtmlReportCanvasVisualTransform,
@@ -148,7 +154,7 @@ function hasVisualKeyword(tokens: string[]) {
   );
 }
 
-function inferVisualKind(element: Element): HtmlVisualNodeKind | null {
+export function inferVisualKind(element: Element): HtmlVisualNodeKind | null {
   const tagName = element.tagName.toUpperCase();
   const tokens = getClassTokens(element);
   const style = (element.getAttribute("style") ?? "").toLowerCase();
@@ -396,6 +402,7 @@ function extractPageVisualNodes(
   pageStyle: HtmlPageVisualStyle,
 ) {
   const candidates = collectHtmlVisualCandidates(page);
+  const editableCandidates = new Set(collectHtmlEditableCandidates(page));
 
   return candidates.map((element, sourceIndex) => {
     const kind = inferVisualKind(element) ?? "surface";
@@ -410,6 +417,12 @@ function extractPageVisualNodes(
       sourceIndex,
       moduleId: moduleId || undefined,
       moduleLabel: moduleLabel || undefined,
+      fitParticipation: resolveHtmlVisualFitParticipation({
+        kind,
+        explicitFitParticipation: readHtmlFitParticipation(element),
+        hasModuleBinding: Boolean(moduleId || moduleLabel),
+        hasEditableText: editableCandidates.has(element),
+      }),
       style: extractNodeStyle(element, kind, pageStyle),
     } satisfies HtmlVisualNode;
   });
@@ -514,7 +527,8 @@ export function ensureHtmlVisualStructure(
             typeof node.sourceTag === "string" &&
             node.sourceTag.length > 0 &&
             typeof node.sourceIndex === "number" &&
-            Number.isFinite(node.sourceIndex),
+            Number.isFinite(node.sourceIndex) &&
+            (node.fitParticipation === "content" || node.fitParticipation === "decorative"),
         ),
       )
     : false;
@@ -536,10 +550,56 @@ export function ensureHtmlVisualStructure(
   return extracted;
 }
 
+export function annotateHtmlFitRolesOnPage(pageElement: Element): void {
+  const explicitRoles = new Map<Element, NonNullable<ReturnType<typeof readHtmlFitParticipation>>>();
+  pageElement
+    .querySelectorAll(`[${HTML_FIT_ROLE_ATTRIBUTE}]`)
+    .forEach((element) => {
+      const fitParticipation = readHtmlFitParticipation(element);
+      if (fitParticipation) {
+        explicitRoles.set(element, fitParticipation);
+      }
+      element.removeAttribute(HTML_FIT_ROLE_ATTRIBUTE);
+    });
+
+  setHtmlFitParticipation(pageElement, "decorative", {
+    preserveContent: false,
+  });
+
+  const editableCandidates = collectHtmlEditableCandidates(pageElement);
+  const editableSet = new Set(editableCandidates);
+  editableCandidates.forEach((element) => {
+    setHtmlFitParticipation(element, "content", {
+      preserveContent: false,
+    });
+  });
+
+  collectHtmlVisualCandidates(pageElement).forEach((element) => {
+    const kind = inferVisualKind(element) ?? "surface";
+    const moduleId = element.getAttribute("data-html-module-id")?.trim();
+    const moduleLabel = element.getAttribute("data-html-module-label")?.trim();
+    setHtmlFitParticipation(
+      element,
+      resolveHtmlVisualFitParticipation({
+        kind,
+        explicitFitParticipation: explicitRoles.get(element) ?? null,
+        hasModuleBinding: Boolean(moduleId || moduleLabel),
+        hasEditableText: editableSet.has(element),
+      }),
+      {
+        preserveContent: false,
+      },
+    );
+  });
+}
+
 function refreshReportVisualArtifacts(args: {
   report: GeneratedHtmlReport;
   document: Document;
 }) {
+  args.document
+    .querySelectorAll("section.page")
+    .forEach((page) => annotateHtmlFitRolesOnPage(page));
   const nextHtml = createSerializableHtml(args.document);
   const nextStructure = extractHtmlEditableStructure({
     html: nextHtml,
@@ -687,10 +747,25 @@ function applyVisualNodeStyleToElement(
   element.setAttribute("data-export-role", kind);
   if (kind === "divider") {
     applyDividerStyle(element, style);
-    return;
+  } else {
+    applyPanelStyle(element, kind, style);
   }
 
-  applyPanelStyle(element, kind, style);
+  setHtmlFitParticipation(
+    element,
+    resolveHtmlVisualFitParticipation({
+      kind,
+      explicitFitParticipation: readHtmlFitParticipation(element),
+      hasModuleBinding: Boolean(
+        element.getAttribute("data-html-module-id")?.trim() ||
+          element.getAttribute("data-html-module-label")?.trim(),
+      ),
+      hasEditableText: Boolean(element.getAttribute("data-html-block-id")?.trim()),
+    }),
+    {
+      preserveContent: false,
+    },
+  );
 }
 
 function buildPageScopedReport(args: {

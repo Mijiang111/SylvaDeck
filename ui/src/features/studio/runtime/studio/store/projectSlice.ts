@@ -719,6 +719,7 @@ export const createProjectSlice: WorkbenchStudioSlice<ProjectSlice> = (set, get)
             "sourceText",
             "generationMode",
             "moduleUsageMode",
+            "htmlOutputMode",
             "requestedPageCount",
             "pages",
             "generatedDraft",

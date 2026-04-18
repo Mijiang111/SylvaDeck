@@ -3,9 +3,17 @@ import os from "node:os";
 import path from "node:path";
 import type { Response } from "express";
 import {
+  DEFAULT_CODEX_LOCAL_MODEL,
   execute as executeAgent,
   testEnvironment as testAgentEnvironment,
 } from "../cursor-cli.js";
+import {
+  DEFAULT_KIMI_BASE_URL,
+  DEFAULT_KIMI_MODEL,
+  type KimiEnvironmentCheck,
+  type KimiEnvironmentTestResult,
+  testEnvironment as testKimiEnvironment,
+} from "./kimi-adapter.js";
 import { logger } from "../../middleware/logger.js";
 import type {
   ExecuteStageResult,
@@ -16,10 +24,25 @@ import type {
 } from "./contracts.js";
 
 export type StudioAgentConfig = {
+  provider: "cursor" | "codex" | "kimi";
   command: string;
   model: string;
   cwd: string;
+  apiKey: string;
+  baseUrl: string;
 };
+
+function normalizeStudioAgentModel(provider: StudioAgentConfig["provider"], model: string | null | undefined) {
+  const normalized = model?.trim();
+  if (!normalized || normalized.toLowerCase() === "auto") {
+    if (provider === "kimi") return DEFAULT_KIMI_MODEL;
+    return DEFAULT_CODEX_LOCAL_MODEL;
+  }
+  if (normalized === "gpt-5.4-mini") {
+    return DEFAULT_CODEX_LOCAL_MODEL;
+  }
+  return normalized;
+}
 
 function resolveStageTimeoutSec(stage: string) {
   if (stage.startsWith("repair-page-")) {
@@ -29,6 +52,47 @@ function resolveStageTimeoutSec(stage: string) {
     return 120;
   }
   return 95;
+}
+
+function summarizeKimiStatus(checks: KimiEnvironmentCheck[]): KimiEnvironmentTestResult["status"] {
+  if (checks.some((check) => check.level === "error")) {
+    return "fail";
+  }
+  if (checks.some((check) => check.level === "warn")) {
+    return "warn";
+  }
+  return "pass";
+}
+
+function getKimiWrapperPath() {
+  return path.resolve(import.meta.dirname || process.cwd(), "kimi-exec.mjs");
+}
+
+function buildKimiExecutionConfig(
+  agentConfig: StudioAgentConfig,
+  options?: {
+    selfCheck?: boolean;
+    prompt?: string;
+    timeoutSec?: number;
+  },
+) {
+  return {
+    command: agentConfig.command || process.execPath,
+    cwd: agentConfig.cwd,
+    model: agentConfig.model,
+    mode: "ask" as const,
+    promptTemplate: options?.prompt ?? "",
+    extraArgs: [
+      "--kimi-wrapper",
+      getKimiWrapperPath(),
+      ...(options?.selfCheck ? ["--self-check"] : []),
+    ],
+    env: {
+      KIMI_API_KEY: agentConfig.apiKey,
+      KIMI_BASE_URL: agentConfig.baseUrl,
+    },
+    timeoutSec: options?.timeoutSec,
+  };
 }
 
 
@@ -107,11 +171,18 @@ function extractAssistantTextFromStdoutLine(rawLine: string) {
 
 export function resolveAgentConfig(
   overrides?: Partial<{
+    provider: string;
     command: string;
     model: string;
     cwd: string;
+    apiKey: string;
+    baseUrl: string;
   }> | null,
 ) {
+  const rawProvider = overrides?.provider?.trim().toLowerCase() || process.env.PPT_STUDIO_AGENT_PROVIDER?.trim().toLowerCase() || "";
+  const provider: StudioAgentConfig["provider"] =
+    rawProvider === "cursor" || rawProvider === "kimi" ? rawProvider : "codex";
+
   const localCodexAppPath = "/Applications/Codex.app/Contents/Resources/codex";
   const commandOverride = overrides?.command?.trim();
   const cwdOverride = overrides?.cwd?.trim();
@@ -123,15 +194,30 @@ export function resolveAgentConfig(
   const explicitCommand = process.env.PPT_STUDIO_AGENT_COMMAND?.trim();
   const explicitCwd = process.env.PPT_STUDIO_AGENT_CWD?.trim();
   const effectiveCommandOverride =
-    commandOverride === "codex" && detectedCommand ? detectedCommand : commandOverride;
+    provider === "codex" && commandOverride === "codex" && detectedCommand
+      ? detectedCommand
+      : commandOverride;
+  const effectiveExplicitCommand =
+    provider === "codex" && explicitCommand === "codex" && detectedCommand
+      ? detectedCommand
+      : explicitCommand;
+  const fallbackCommand =
+    provider === "cursor"
+      ? "agent"
+      : provider === "kimi"
+        ? process.execPath
+        : detectedCommand || "codex";
 
   return {
-    command: effectiveCommandOverride || explicitCommand || detectedCommand || "codex",
-    model: modelOverride || "gpt-5.4-mini",
+    provider,
+    command: effectiveCommandOverride || effectiveExplicitCommand || fallbackCommand,
+    model: normalizeStudioAgentModel(provider, modelOverride),
     cwd:
       cwdOverride ||
       explicitCwd ||
       (fs.existsSync(asciiWorkspaceRoot) ? asciiWorkspaceRoot : projectRoot),
+    apiKey: overrides?.apiKey?.trim() || process.env.KIMI_API_KEY?.trim() || "",
+    baseUrl: overrides?.baseUrl?.trim() || process.env.KIMI_BASE_URL?.trim() || DEFAULT_KIMI_BASE_URL,
   };
 }
 
@@ -189,6 +275,76 @@ function writePromptTrace(args: {
 }
 
 export async function testAgentConfig(agentConfig: StudioAgentConfig) {
+  if (agentConfig.provider === "kimi") {
+    const remote = await testKimiEnvironment({
+      apiKey: agentConfig.apiKey,
+      baseUrl: agentConfig.baseUrl,
+      model: agentConfig.model,
+    });
+    const localChecks: KimiEnvironmentCheck[] = [];
+
+    try {
+      const localProbe = await executeAgent({
+        runId: `studio-kimi-self-check-${Date.now()}`,
+        agent: {
+          id: "studio-kimi-self-check",
+          companyId: "studio",
+          name: "Studio Kimi Self Check",
+          adapterType: "cursor",
+          adapterConfig: null,
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: buildKimiExecutionConfig(agentConfig, {
+          selfCheck: true,
+          prompt: "Kimi self-check.",
+          timeoutSec: 20,
+        }),
+        context: {
+          surface: "studio_generate",
+          stage: "kimi-self-check",
+        },
+        onLog: async () => {},
+      });
+
+      if ((localProbe.exitCode ?? 1) === 0 && !localProbe.errorMessage) {
+        localChecks.push({
+          code: "kimi_local_probe_passed",
+          level: "info",
+          message: "Kimi local wrapper self-check succeeded.",
+          detail: `Command: ${agentConfig.command || process.execPath}`,
+        });
+      } else {
+        localChecks.push({
+          code: "kimi_local_probe_failed",
+          level: "error",
+          message: "Kimi local wrapper self-check failed.",
+          detail: localProbe.errorMessage ?? "Wrapper exited unsuccessfully.",
+          hint: "Verify the configured command can run the local Kimi wrapper script.",
+        });
+      }
+    } catch (error) {
+      localChecks.push({
+        code: "kimi_local_probe_failed",
+        level: "error",
+        message: "Kimi local wrapper self-check failed.",
+        detail: error instanceof Error ? error.message : String(error),
+        hint: "Verify the configured command and working directory for Kimi.",
+      });
+    }
+
+    const checks = [...remote.checks, ...localChecks];
+    return {
+      adapterType: "kimi" as const,
+      status: summarizeKimiStatus(checks),
+      checks,
+      testedAt: new Date().toISOString(),
+    };
+  }
   return testAgentEnvironment({
     companyId: "studio",
     adapterType: "cursor",
@@ -201,7 +357,21 @@ export async function testAgentConfig(agentConfig: StudioAgentConfig) {
   });
 }
 
-export function getBlockingAgentChecks(result: Awaited<ReturnType<typeof testAgentConfig>>) {
+export function getBlockingAgentChecks(
+  result: Awaited<ReturnType<typeof testAgentConfig>>,
+) {
+  if (result.adapterType === "kimi") {
+    return result.checks.filter(
+      (check) =>
+        check.level === "error" &&
+        (
+          check.code === "kimi_api_key_missing" ||
+          check.code === "kimi_base_url_missing" ||
+          check.code === "kimi_hello_probe_failed" ||
+          check.code === "kimi_local_probe_failed"
+        ),
+    );
+  }
   return result.checks.filter(
     (check) =>
       check.level === "error" &&
@@ -247,6 +417,8 @@ export async function executeStudioStage(args: {
   const stderrChunks: string[] = [];
   const streamedAssistantChunks: string[] = [];
   let stdoutBuffer = "";
+  const isKimi = args.agentConfig.provider === "kimi";
+
   const result = await executeAgent({
     runId: `${args.runId}-${args.stage}`,
     agent: {
@@ -263,13 +435,21 @@ export async function executeStudioStage(args: {
       taskKey: null,
     },
     config: {
-      command: args.agentConfig.command,
-      cwd: args.agentConfig.cwd,
-      model: args.agentConfig.model,
-      mode: "ask",
-      promptTemplate: args.prompt,
-      extraArgs: ["-c", 'model_reasoning_effort="low"', "-c", "mcp_servers={}"],
-      timeoutSec: resolveStageTimeoutSec(args.stage),
+      ...(isKimi
+        ? buildKimiExecutionConfig(args.agentConfig, {
+            prompt: args.prompt,
+            timeoutSec: resolveStageTimeoutSec(args.stage),
+          })
+        : {
+            command: args.agentConfig.command,
+            cwd: args.agentConfig.cwd,
+            model: args.agentConfig.model,
+            mode: "ask" as const,
+            promptTemplate: args.prompt,
+            extraArgs: ["-c", 'model_reasoning_effort="low"', "-c", "mcp_servers={}"],
+            env: undefined,
+            timeoutSec: resolveStageTimeoutSec(args.stage),
+          }),
     },
     context: {
       surface: "studio_generate",

@@ -19,6 +19,7 @@ import {
   HTML_REPORT_PAGE_WIDTH,
   type HtmlReportPagePreview,
 } from "./runtime-export-annotations";
+import { resolveCanvasPageViewportRadius } from "./runtime-report-view-math";
 import { StorylineStructureCanvas } from "./runtime-storyline";
 import type { StreamingReportPage } from "./runtime-types";
 
@@ -539,6 +540,7 @@ function HtmlReportCanvasFrame({
 
   const scaledWidth = Math.round(HTML_REPORT_PAGE_WIDTH * resolvedScale);
   const scaledHeight = Math.round(HTML_REPORT_PAGE_HEIGHT * resolvedScale);
+  const pageViewportRadius = resolveCanvasPageViewportRadius(resolvedScale);
   const workspaceWidth = Math.max(
     containerWidth,
     scaledWidth + HTML_REPORT_CANVAS_PADDING_X * 2,
@@ -648,7 +650,11 @@ function HtmlReportCanvasFrame({
                       ? "border-[rgba(0,242,255,0.32)] shadow-[0_0_0_1px_rgba(0,242,255,0.24),0_22px_56px_rgba(0,0,0,0.44)]"
                       : "border-[rgba(255,255,255,0.08)] shadow-[0_18px_42px_rgba(0,0,0,0.32)]",
                   ].join(" ")}
-                  style={{ width: `${scaledWidth}px`, height: `${scaledHeight}px` }}
+                  style={{
+                    width: `${scaledWidth}px`,
+                    height: `${scaledHeight}px`,
+                    borderRadius: `${pageViewportRadius}px`,
+                  }}
                 >
                   <HtmlReportPreviewFrame
                     htmlReportTitle={htmlReport.title}
@@ -736,6 +742,7 @@ function StreamingReportCanvasView({
 
   const scaledWidth = Math.round(HTML_REPORT_PAGE_WIDTH * fitScale);
   const scaledHeight = Math.round(HTML_REPORT_PAGE_HEIGHT * fitScale);
+  const pageViewportRadius = resolveCanvasPageViewportRadius(fitScale);
   const workspaceWidth = Math.max(
     containerWidth,
     scaledWidth + HTML_REPORT_CANVAS_PADDING_X * 2,
@@ -836,7 +843,11 @@ function StreamingReportCanvasView({
                         ? "border-[rgba(0,242,255,0.32)] shadow-[0_0_0_1px_rgba(0,242,255,0.24),0_22px_56px_rgba(0,0,0,0.44)]"
                         : "border-[rgba(255,255,255,0.08)] shadow-[0_18px_42px_rgba(0,0,0,0.32)]",
                     ].join(" ")}
-                    style={{ width: `${scaledWidth}px`, height: `${scaledHeight}px` }}
+                    style={{
+                      width: `${scaledWidth}px`,
+                      height: `${scaledHeight}px`,
+                      borderRadius: `${pageViewportRadius}px`,
+                    }}
                   >
                     {pagePreview ? (
                       <HtmlReportPreviewFrame

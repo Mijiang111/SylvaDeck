@@ -222,7 +222,17 @@ export function buildProjectPatchPayload(
   const payload: StudioPatchPayload = {};
 
   for (const field of fields) {
-    if (field === "projectName") {
+    if (field === "starterPackId") {
+      payload.starterPackId = project.starterPackId;
+    } else if (field === "starterThemeId") {
+      payload.starterThemeId = project.starterThemeId;
+    } else if (field === "starterBindings") {
+      payload.starterBindings = deepClone(project.starterBindings);
+    } else if (field === "starterApplicationMode") {
+      payload.starterApplicationMode = project.starterApplicationMode;
+    } else if (field === "htmlOutputMode") {
+      payload.htmlOutputMode = project.htmlOutputMode;
+    } else if (field === "projectName") {
       payload.projectName = project.projectName;
     } else if (field === "sourceText") {
       payload.sourceText = project.sourceText;
@@ -272,6 +282,11 @@ export function createImportedProject(project: WorkbenchProject) {
   return createProjectBundle({
     id: imported.id,
     templateId: project.templateId,
+    starterPackId: project.starterPackId,
+    starterThemeId: project.starterThemeId,
+    starterBindings: project.starterBindings,
+    starterApplicationMode: project.starterApplicationMode,
+    htmlOutputMode: project.htmlOutputMode,
     projectName: project.projectName,
     sourceText: project.sourceText,
     briefMessages: project.briefMessages,

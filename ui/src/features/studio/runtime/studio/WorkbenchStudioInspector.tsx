@@ -59,6 +59,18 @@ export type InspectorField =
     }
   | {
       id: string;
+      kind: "select";
+      label: string;
+      value: string;
+      description?: string;
+      options: Array<{
+        value: string;
+        label: string;
+      }>;
+      onChange: (value: string) => void;
+    }
+  | {
+      id: string;
       kind: "readonly";
       label: string;
       value: string;
@@ -310,6 +322,23 @@ function renderField(field: InspectorField): ReactNode {
           className="h-10 flex-1 border border-[var(--studio-line)] bg-[rgba(255,255,255,0.02)] px-3 text-[13px] text-[var(--studio-ink)] outline-none transition focus:border-[rgba(0,242,255,0.35)]"
         />
       </div>
+    );
+  }
+
+  if (field.kind === "select") {
+    return (
+      <select
+        value={field.value}
+        data-testid={`inspector-select-${field.id}`}
+        onChange={(event) => field.onChange(event.target.value)}
+        className="h-10 w-full border border-[var(--studio-line)] bg-[rgba(255,255,255,0.02)] px-3 text-[13px] text-[var(--studio-ink)] outline-none transition focus:border-[rgba(0,242,255,0.35)]"
+      >
+        {field.options.map((option) => (
+          <option key={`${field.id}-${option.value || "empty"}`} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
     );
   }
 

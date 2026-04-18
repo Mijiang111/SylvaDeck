@@ -34,13 +34,12 @@ import {
 } from "./working-memory.js";
 import {
   buildVisualThinkingLines,
-  findStudioPageMission,
 } from "./preflight.js";
 
 const workspacePromptMetaCache = new Map<string, StudioAiWorkspacePromptMeta>();
 
 const WORKSPACE_VISIBLE_TEXT_GUARDRAILS = [
-  "Workspace labels are instructions, not slide copy. Never render labels like Raw brief, AI understanding, Visual thinking, Current page mission, Active capability cards, Current working hypothesis, Unknowns and evidence boundary, User task brief, Task rigor brief, Renderer brief, Proof plan, Layout strategy, Private layout plan, Source material, Page intent, Selected template contract, Capability cards, Output rules, or Page argument contract.",
+  "Workspace labels are instructions, not slide copy. Never render labels like Raw brief, AI understanding, Visual thinking, Current page mission, Active capability cards, Current working hypothesis, Unknowns and evidence boundary, User task brief, Task rigor brief, Renderer brief, Proof plan, Layout strategy, Private layout plan, Source material, Page intent, Selected starter pack, Selected template contract, Capability cards, Output rules, or Page argument contract.",
   "Translate the page mission and AI understanding into audience-facing copy. Do not show scaffold labels such as Headline claim, Support bullet 1, Evidence callout, Brief digest, One-page thesis, layout plan, proof plan, visual thinking, reasoning, step 1, selected deep family, or supplied brief.",
 ];
 
@@ -143,6 +142,8 @@ function buildWorkspaceMeta(
     preflightSubject: workspace.preflight?.subject ?? null,
     preflightCoreTask: workspace.preflight?.coreTask ?? null,
     preflightEvidenceTier: workspace.preflight?.evidencePolicy.tier ?? null,
+    preflightIncludes3dActivation:
+      workspace.preflight?.capabilityActivations.some((item) => item.kind === "3d") ?? false,
   };
 }
 
@@ -403,13 +404,170 @@ export function isStudioThreeDimensionalTemplate(manifest: PublishedModuleManife
   ) || /(?:三维|立体|剖面|爆炸图|拆解图|芯片结构图|架构示意图|系统结构图)/.test(text);
 }
 
+export function isStudioStarterPackManifest(manifest: PublishedModuleManifest) {
+  return manifest.moduleId.startsWith("starter-pack.");
+}
+
+function parseStarterPackPromptHint(promptHint: string) {
+  if (!promptHint.startsWith("starter-pack::")) {
+    return null;
+  }
+
+  const raw = promptHint.slice("starter-pack::".length);
+  const entries = raw
+    .split(";")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => {
+      const [key, value] = item.split("=");
+      return [key?.trim() ?? "", value?.trim() ?? ""] as const;
+    });
+
+  const record = Object.fromEntries(entries);
+  return {
+    source: record.source || "html-ppt-skill",
+    application: record.application || "deck",
+    kind: record.kind || "deck",
+    starterId: record["starter-id"] || "",
+    theme: record.theme || "unknown",
+    pageFamily: record["page-family"] || "starter",
+    pageNumber:
+      Number.isInteger(Number.parseInt(record["page-number"] ?? "", 10)) &&
+      Number.parseInt(record["page-number"] ?? "", 10) >= 1
+        ? Number.parseInt(record["page-number"] ?? "", 10)
+        : null,
+    mappingStatus: record["mapping-status"] || "shell-only",
+  };
+}
+
+export function createStarterPackWorkspaceBlock(
+  manifests: PublishedModuleManifest[],
+  options?: { pageNumber?: number | null },
+): StudioAiWorkspaceBlock | null {
+  const starterManifests = manifests.filter((manifest) => isStudioStarterPackManifest(manifest));
+  if (starterManifests.length === 0) {
+    return null;
+  }
+
+  const parsedManifests = starterManifests.map((manifest) => ({
+    manifest,
+    parsed: parseStarterPackPromptHint(manifest.promptHint),
+  }));
+  const deckEntry =
+    parsedManifests.find((entry) => entry.parsed?.application === "deck") ??
+    parsedManifests.find((entry) => entry.parsed?.kind === "deck") ??
+    null;
+  const themeEntry =
+    parsedManifests.find((entry) => entry.parsed?.application === "theme") ?? null;
+  const pageEntry =
+    parsedManifests.find(
+      (entry) =>
+        entry.parsed?.application === "page" &&
+        (!options?.pageNumber || entry.parsed?.pageNumber === options.pageNumber),
+    ) ??
+    parsedManifests.find((entry) => entry.parsed?.application === "page") ??
+    null;
+
+  const lines: string[] = [];
+
+  if (themeEntry) {
+    const themeLine = themeEntry.manifest.template?.promptContract.find((line) =>
+      /^Starter pack theme /i.test(line),
+    );
+    lines.push(`Theme starter: ${themeEntry.manifest.label}.`);
+    lines.push(
+      `Theme mode: ${themeLine?.replace(/^Starter pack theme /i, "") ?? themeEntry.parsed?.theme ?? "starter theme"}.`,
+    );
+    lines.push("Theme-only mode changes token family and visual mood, not page order or deck cadence.");
+  }
+
+  if (deckEntry) {
+    const themeLine = deckEntry.manifest.template?.promptContract.find((line) =>
+      /^Starter pack theme /i.test(line),
+    );
+    const layoutLines =
+      deckEntry.manifest.template?.promptContract.filter((line) =>
+        /^Layout family /i.test(line),
+      ) ?? [];
+    const archetypeLines =
+      deckEntry.manifest.template?.promptContract.filter((line) =>
+        /^Starter archetype \d+:/i.test(line),
+      ) ?? [];
+    lines.push(`Deck starter: ${deckEntry.manifest.label}.`);
+    lines.push(`Source: ${deckEntry.parsed?.source ?? "html-ppt-skill"}.`);
+    lines.push(`Theme: ${themeLine?.replace(/^Starter pack theme /i, "") ?? deckEntry.parsed?.theme ?? "starter theme"}.`);
+    lines.push(`Page family: ${deckEntry.parsed?.pageFamily ?? "starter family"}.`);
+    if (layoutLines.length > 0) {
+      lines.push(`Preferred layout families: ${layoutLines.map((line) => line.replace(/^Layout family /i, "")).join(" | ")}.`);
+    }
+    if (archetypeLines.length > 0) {
+      lines.push(`Deck archetypes: ${archetypeLines.map((line) => line.replace(/^Starter archetype \d+:\s*/i, "")).join(" -> ")}.`);
+    }
+    lines.push(...deckEntry.manifest.outputContractSummary.slice(0, 3).map((line) => `Visual rule: ${line}`));
+  }
+
+  if (pageEntry) {
+    const layoutLines =
+      pageEntry.manifest.template?.promptContract.filter((line) =>
+        /^Layout family /i.test(line),
+      ) ?? [];
+    const operatorLine = pageEntry.manifest.template?.promptContract.find((line) =>
+      /^Starter operator /i.test(line),
+    );
+    const dominantGeometryLine = pageEntry.manifest.template?.promptContract.find((line) =>
+      /^Starter dominant geometry /i.test(line),
+    );
+    const secondaryZonesLine = pageEntry.manifest.template?.promptContract.find((line) =>
+      /^Starter secondary zones /i.test(line),
+    );
+    const copyDensityLine = pageEntry.manifest.template?.promptContract.find((line) =>
+      /^Starter copy density /i.test(line),
+    );
+    const avoidLines =
+      pageEntry.manifest.template?.promptContract.filter((line) =>
+        /^Starter avoid /i.test(line),
+      ) ?? [];
+    lines.push(`Current page starter: ${pageEntry.manifest.label}${pageEntry.parsed?.pageNumber ? ` for page ${pageEntry.parsed.pageNumber}` : ""}.`);
+    if (layoutLines.length > 0) {
+      lines.push(`Current page layout families: ${layoutLines.map((line) => line.replace(/^Layout family /i, "")).join(" | ")}.`);
+    }
+    if (operatorLine) {
+      lines.push(operatorLine.replace(/^Starter operator /i, "Starter operator: "));
+    }
+    if (dominantGeometryLine) {
+      lines.push(dominantGeometryLine.replace(/^Starter dominant geometry /i, "Dominant geometry: "));
+    }
+    if (secondaryZonesLine) {
+      lines.push(secondaryZonesLine.replace(/^Starter secondary zones /i, "Allowed secondary zones: "));
+    }
+    if (copyDensityLine) {
+      lines.push(copyDensityLine.replace(/^Starter copy density /i, "Copy density: "));
+    }
+    lines.push(...avoidLines.map((line) => line.replace(/^Starter avoid /i, "Avoid pattern: ")));
+    lines.push(...pageEntry.manifest.outputContractSummary.slice(0, 2).map((line) => `Page visual rule: ${line}`));
+  }
+
+  return {
+    id: "starter-pack",
+    title: "Selected starter pack",
+    lines: [
+      ...lines,
+      "Use this as a visual starting language only. The raw brief and current page mission still outrank the starter.",
+      "Do not copy starter labels verbatim. Translate the starter look into the user's current page mission.",
+    ],
+  };
+}
+
 export function selectStudioTemplateWorkspaceManifests(args: {
   moduleOptions: PublishedModuleManifest[];
   heroModelIntent?: HeroModelIntent | null;
   chartKind?: ModuleChartKind | null;
 }) {
   const allow3d = args.heroModelIntent?.enabled === true;
-  const non3dOptions = args.moduleOptions.filter(
+  const nonStarterOptions = args.moduleOptions.filter(
+    (manifest) => !isStudioStarterPackManifest(manifest),
+  );
+  const non3dOptions = nonStarterOptions.filter(
     (manifest) => allow3d || !isStudioThreeDimensionalTemplate(manifest),
   );
   const chartMatchedOptions =
@@ -554,6 +712,7 @@ export function buildStudioAiWorkspace(args: {
   freeformLayoutPlan?: FreeformLayoutPlan | null;
   pageIntentLines: string[];
   pageIntentRawText?: string | null;
+  starterPackManifests?: PublishedModuleManifest[] | null;
   templateManifests?: PublishedModuleManifest[];
   capabilityCards?: StudioCapabilityCard[];
   visualOperatorLines?: string[];
@@ -567,6 +726,12 @@ export function buildStudioAiWorkspace(args: {
   const workloadLane = args.workloadLane ?? "fast";
   const minimalRendererWorkspace =
     (args.stage === "page" || args.stage === "repair") && args.preflight;
+  const starterPackBlock =
+    args.starterPackManifests && args.starterPackManifests.length > 0
+      ? createStarterPackWorkspaceBlock(args.starterPackManifests, {
+          pageNumber: args.pageMission?.pageNumber ?? null,
+        })
+      : null;
   const blocks: StudioAiWorkspaceBlock[] =
     minimalRendererWorkspace
       ? [
@@ -608,14 +773,11 @@ export function buildStudioAiWorkspace(args: {
                   preflight: args.preflight!,
                   visualOperatorLines: args.visualOperatorLines,
                   freeformLayoutPlan: args.freeformLayoutPlan,
-                  preferredVisual:
-                    args.pageMission?.preferredVisual ??
-                    findStudioPageMission({
-                      preflight: args.preflight!,
-                      pageNumber: 1,
-                    }).preferredVisual,
+                  preferredVisual: args.pageMission?.preferredVisual ?? null,
+                  structureCue: args.pageMission?.structureCue ?? null,
                 }),
           ),
+          ...(starterPackBlock ? [starterPackBlock] : []),
           renderCapabilityCardsBlock(capabilityCards),
           {
             id: "output-rules",
@@ -690,6 +852,7 @@ export function buildStudioAiWorkspace(args: {
             lines: args.pageIntentLines,
             rawText: args.pageIntentRawText,
           },
+          ...(starterPackBlock ? [starterPackBlock] : []),
           createTemplateContractWorkspaceBlock(templateManifests),
           renderCapabilityCardsBlock(capabilityCards),
           {

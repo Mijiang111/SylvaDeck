@@ -1,5 +1,6 @@
 import type {
   GeneratedDraftAsset,
+  HtmlOutputMode,
   GenerationHistoryEntry,
   LayoutPage,
   PublishSnapshot,
@@ -75,6 +76,11 @@ export type StudioAssetRecord = StudioAssetRef & {
 export type StudioPatchPayload = Partial<
   Pick<
     WorkbenchProject,
+    | "starterPackId"
+    | "starterThemeId"
+    | "starterBindings"
+    | "starterApplicationMode"
+    | "htmlOutputMode"
     | "projectName"
     | "sourceText"
     | "generationMode"
@@ -168,6 +174,7 @@ export type StudioGenerationCommit = {
   sourceText: string;
   generationMode: WorkbenchProject["generationMode"];
   moduleUsageMode: WorkbenchProject["moduleUsageMode"];
+  htmlOutputMode: HtmlOutputMode;
   requestedPageCount: WorkbenchProject["requestedPageCount"];
   pages: LayoutPage[];
   generatedDraft: GeneratedDraftAsset;

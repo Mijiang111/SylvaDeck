@@ -478,13 +478,18 @@ test("planning prompt uses workspace order with user task before capability card
       pageCount: 2,
       generationMode: "standard",
       moduleUsageMode: "disabled",
+      htmlOutputMode: "static",
       agentConfig: {
+        provider: "codex",
         command: "",
         model: "",
         cwd: "",
+        apiKey: "",
+        baseUrl: "",
       },
       publishedModules: [],
       moduleManifestSignature: "",
+      attachments: [],
     },
     skill: mockAnalysisSkill,
     styleProfile: neutralStyleProfile,
@@ -801,7 +806,16 @@ test("explicit 3D page prompt may include one 3D template and 3D card", () => {
   });
 
   assert.ok(prompt.includes("Visual operator: explicit 3D hero page"));
-  assert.ok(prompt.includes("Keep the hero object primary; do not flatten it into a generic two-column explainer."));
+  assert.ok(prompt.includes("Craft direction:"));
+  assert.ok(prompt.includes("Explicit 3D:"));
+  assert.match(prompt, /crafted and premium|product-vision reveal|product-grade composition/i);
+  assert.match(prompt, /fabricated pseudo-3D hero object|fabricated object/i);
+  assert.match(prompt, /perspective, visible thickness, overlap or occlusion/i);
+  assert.match(prompt, /flat cards, glass panels, dashboard tiles/i);
+  assert.match(prompt, /Dominant visual anchor: one fabricated pseudo-3D hero object/i);
+  assert.match(prompt, /premium surface treatment|elegant compact annotations|crafted, premium/i);
+  assert.equal(prompt.includes("Keep the page light, restrained, and professional."), false);
+  assert.equal(prompt.includes("Freeform family:"), false);
   assert.equal(prompt.includes("## Private layout plan"), false);
 });
 
@@ -857,6 +871,162 @@ test("sparse OpenAI renderer prompt uses synthesis instead of fake evidence", ()
   );
   assert.equal(prompt.includes("page ppt for OpenAI: 1"), false);
   assert.equal(prompt.includes("Evidence callouts: page ppt for OpenAI: 1"), false);
+  assert.equal(prompt.includes("Craft direction:"), false);
+});
+
+test("single-page wow prompt adds positive craft direction without shifting ordinary rules globally", () => {
+  const brief =
+    "Create a single-page visually striking premium concept board about the future of AI-native work. Make it feel cinematic, product-grade, and beautifully crafted.";
+  const context = resolveDeckThinkingMode(brief, null);
+  const synthesis = buildStudioBriefSynthesis({
+    brief,
+    thinkingContext: context,
+    requestedPageCount: 1,
+  });
+  const prompt = buildPagePrompt({
+    brief,
+    deckTitle: "AI-native work",
+    page: {
+      pageNumber: 1,
+      pageTitle: "AI-native work",
+      goal: "What shift should the audience feel immediately?",
+      story: "AI-native work is becoming an intelligent operating layer, not another app.",
+    },
+    allPages: [
+      {
+        pageNumber: 1,
+        pageTitle: "AI-native work",
+        goal: "What shift should the audience feel immediately?",
+        story: "AI-native work is becoming an intelligent operating layer, not another app.",
+      },
+    ],
+    styleProfile: neutralStyleProfile,
+    heroSkill: mockHeroSkill,
+    heroModelIntent: neutralHeroIntent,
+    thinkingContext: context,
+    thinkingSkill: null,
+    moduleOptions: [],
+    chartPageIntent: neutralChartIntent,
+    briefSynthesis: synthesis,
+    pageArgument: {
+      pageQuestion: "What shift should the audience feel immediately?",
+      headlineClaim: "AI-native work is becoming an intelligent operating layer, not another app.",
+      supportBullets: [
+        "It sees context across workflows and tools.",
+        "It reasons and executes alongside the user.",
+      ],
+      evidenceCallouts: [],
+      takeaway: "Keep the page visually bold but disciplined.",
+    },
+  });
+
+  assert.ok(prompt.includes("Craft direction:"));
+  assert.match(prompt, /unmistakably crafted|product-grade composition|memorable and inevitable/i);
+  assert.match(prompt, /Density posture: crafted, deliberate, premium/i);
+  assert.match(prompt, /Craft note: refine typography tension, surface contrast, shadow discipline/i);
+  assert.equal(prompt.includes("Keep the page light, restrained, and professional."), false);
+});
+
+test("wow cue still survives a shape-first template when the page is clearly a hero opener", () => {
+  const brief =
+    "Create a single-page premium concept board opener about AI-native work with one hero visual gesture and a beautifully crafted product feel.";
+  const context = resolveDeckThinkingMode(brief, null);
+  const synthesis = buildStudioBriefSynthesis({
+    brief,
+    thinkingContext: context,
+    requestedPageCount: 1,
+  });
+  const prompt = buildPagePrompt({
+    brief,
+    deckTitle: "AI-native work",
+    page: {
+      pageNumber: 1,
+      pageTitle: "AI-native work",
+      goal: "Open with one hero visual that makes the system shift feel immediate.",
+      story: "AI-native work is becoming an intelligent operating layer, not another app.",
+    },
+    allPages: [
+      {
+        pageNumber: 1,
+        pageTitle: "AI-native work",
+        goal: "Open with one hero visual that makes the system shift feel immediate.",
+        story: "AI-native work is becoming an intelligent operating layer, not another app.",
+      },
+    ],
+    styleProfile: neutralStyleProfile,
+    heroSkill: mockHeroSkill,
+    heroModelIntent: neutralHeroIntent,
+    thinkingContext: context,
+    thinkingSkill: null,
+    moduleOptions: mockTemplateModules,
+    chartPageIntent: neutralChartIntent,
+    briefSynthesis: synthesis,
+    pageArgument: {
+      pageQuestion: "What shift should the audience feel immediately?",
+      headlineClaim: "AI-native work is becoming an intelligent operating layer, not another app.",
+      supportBullets: ["It sees context across workflows and tools."],
+      evidenceCallouts: [],
+      takeaway: "Keep the opener visual-first and spare.",
+    },
+  });
+
+  assert.ok(prompt.includes("Craft direction:"));
+  assert.equal(prompt.includes("Keep the page light, restrained, and professional."), false);
+});
+
+test("ordinary page does not become wow just because source material uses premium language", () => {
+  const brief = `Create a 2 page research presentation about enterprise workflow automation.
+\`\`\`
+This source text describes a premium, beautiful, cinematic product launch and a visually striking concept board.
+\`\`\``;
+  const context = resolveDeckThinkingMode(brief, null);
+  const synthesis = buildStudioBriefSynthesis({
+    brief,
+    thinkingContext: context,
+    requestedPageCount: 2,
+  });
+  const prompt = buildPagePrompt({
+    brief,
+    deckTitle: "Workflow automation",
+    page: {
+      pageNumber: 2,
+      pageTitle: "Result summary",
+      goal: "Summarize the workflow automation findings.",
+      story: "The research page should keep the evidence summary clear and neutral.",
+    },
+    allPages: [
+      {
+        pageNumber: 1,
+        pageTitle: "Question",
+        goal: "What is the research question?",
+        story: "The deck opens with the question.",
+      },
+      {
+        pageNumber: 2,
+        pageTitle: "Result summary",
+        goal: "Summarize the workflow automation findings.",
+        story: "The research page should keep the evidence summary clear and neutral.",
+      },
+    ],
+    styleProfile: neutralStyleProfile,
+    heroSkill: mockHeroSkill,
+    heroModelIntent: neutralHeroIntent,
+    thinkingContext: context,
+    thinkingSkill: null,
+    moduleOptions: [],
+    chartPageIntent: neutralChartIntent,
+    briefSynthesis: synthesis,
+    pageArgument: {
+      pageQuestion: "What result should the audience retain?",
+      headlineClaim: "The research page should keep the evidence summary clear and neutral.",
+      supportBullets: ["Separate result from interpretation."],
+      evidenceCallouts: [],
+      takeaway: "Keep the page analytical, not theatrical.",
+    },
+  });
+
+  assert.equal(prompt.includes("Craft direction:"), false);
+  assert.ok(prompt.includes("Keep the page light, restrained, and professional."));
 });
 
 test("no-template sparse brief keeps freeform layout internal and visible only as a compact visual operator", () => {

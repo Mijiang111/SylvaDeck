@@ -6,6 +6,7 @@ import {
   stripInstructionalLead,
   uniqueStrings,
 } from "./brief.js";
+import { extractRequestedDeckPageCount } from "./page-count.js";
 import type {
   DeckThinkingMode,
   SegmentedThinkingInputs,
@@ -146,25 +147,7 @@ function isPlausibleObject(text: string) {
 }
 
 function extractRequestedPageCount(taskText: string, requestedPageCount?: number | null) {
-  if (requestedPageCount && requestedPageCount > 0) {
-    return requestedPageCount;
-  }
-
-  const normalized = normalizeStudioText(taskText);
-  const numericMatch = normalized.match(/\b(\d+)\s*pages?\b/i);
-  if (numericMatch) {
-    return Number.parseInt(numericMatch[1] ?? "0", 10) || null;
-  }
-  if (/\bone\s+page\b/i.test(normalized)) {
-    return 1;
-  }
-  if (/\btwo\s+pages?\b/i.test(normalized)) {
-    return 2;
-  }
-  if (/\bthree\s+pages?\b/i.test(normalized)) {
-    return 3;
-  }
-  return null;
+  return extractRequestedDeckPageCount(taskText, requestedPageCount);
 }
 
 function deriveDeliverable(taskText: string, requestedPageCount?: number | null) {
@@ -281,6 +264,23 @@ function extractPrimaryObject(args: {
     value: "unknown object",
     confidence: "unknown",
   };
+}
+
+function detectBrainToDeck(taskText: string, brief: string): boolean {
+  const text = normalizeStudioText(taskText) || normalizeStudioText(brief);
+  if (text.length > 500) return true;
+  const hasBrainDumpCue =
+    /\b(?:brain\s+dump|messy\s+notes|scattered\s+ideas|meeting\s+notes|meeting\s+minutes|raw\s+thoughts|unstructured|organize\s+my\s+thoughts|turn\s+this\s+into\s+(?:a\s+)?(?:ppt|deck|presentation)|make\s+this\s+presentable|visualize\s+my\s+ideas|structure\s+this|create\s+a\s+deck\s+from|one-pager|summarize\s+and\s+visualize|use\s+this\s+style|learn\s+this\s+template|extract\s+(?:the\s+)?design\s+style|整合|结构化|可视化|按这个风格|提取风格|学习这个模板)\b/i.test(
+      text,
+    );
+  if (hasBrainDumpCue) return true;
+  if (text.length > 200) {
+    // If long and lacks a clear task shell (e.g., "1 page ppt of X"), treat as unstructured
+    const hasTaskShell =
+      /\b(?:\d+\s*pages?\s+(?:of|for|on|about)|\b(?:create|make|build)\s+a\s+(?:\d+\s*page\s+)?(?:ppt|deck|slides?|presentation)\s+(?:for|on|about))\b/i.test(text);
+    if (!hasTaskShell) return true;
+  }
+  return false;
 }
 
 function deriveUserOperation(taskText: string): {
@@ -721,12 +721,24 @@ export function buildStudioWorkingMemory(args: {
     sourceMaterialText: args.inputs.sourceMaterialText,
     audienceBar: audience.value,
   });
-  const operation = deriveUserOperation(taskText);
+  const isBrainToDeck = detectBrainToDeck(taskText, args.brief);
+  const baseOperation = deriveUserOperation(taskText);
+  const operation = isBrainToDeck
+    ? {
+        value: "synthesize" as StudioUserOperation,
+        confidence: "medium" as WorkingMemorySlotConfidence,
+        thinkingModeHint: "brain-to-deck" as DeckThinkingMode,
+      }
+    : baseOperation;
   const deliverable = deriveDeliverable(taskText, args.requestedPageCount);
   const evidence = deriveEvidenceRegime({
     inputs: args.inputs,
     primaryObject: object.value,
   });
+  const brainDumpDigest = isBrainToDeck ? compactDigest(args.brief, 10) : [];
+  const sourceMaterialDigest = isBrainToDeck
+    ? uniqueStrings([...brainDumpDigest, ...evidence.sourceMaterialDigest]).slice(0, 10)
+    : evidence.sourceMaterialDigest;
   const baseMemory = {
     rawBrief: args.brief,
     primaryObject: object.value,
@@ -758,7 +770,7 @@ export function buildStudioWorkingMemory(args: {
       audienceBar: audience.confidence,
       evidenceRegime: evidence.confidence,
     },
-    sourceMaterialDigest: evidence.sourceMaterialDigest,
+    sourceMaterialDigest,
     evidenceBoundary: evidence.evidenceBoundary,
     internalOperators: [
       buildTaskOperator(operation.value, object.value),
