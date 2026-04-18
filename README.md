@@ -16,6 +16,15 @@ Studio combines three workflows in one repo:
 ![Template library](docs/assets/template-library.png)
 ![Template workbench](docs/assets/template-workbench.png)
 
+## Demo
+
+![Demo picture 1](docs/assets/picture1.png)
+![Demo picture 2](docs/assets/picture2.png)
+
+<video src="https://github.com/Mijiang111/claw-design/raw/codex/animated-preview-manifest/docs/assets/videos/video1.mov" controls width="100%"></video>
+
+<video src="https://github.com/Mijiang111/claw-design/raw/codex/animated-preview-manifest/docs/assets/videos/video2.mov" controls width="100%"></video>
+
 ## What It Does
 
 - Generates slide-like HTML reports from a raw brief
