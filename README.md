@@ -12,18 +12,33 @@ Studio combines three workflows in one repo:
 
 ## Screenshots
 
-![Studio home](docs/assets/studio-home.png)
-![Template library](docs/assets/template-library.png)
-![Template workbench](docs/assets/template-workbench.png)
+<table>
+  <tr>
+    <td align="center"><b>首页界面</b></td>
+    <td align="center"><b>模板库</b></td>
+    <td align="center"><b>模板工作台</b></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/studio-home.png" alt="Studio home"></td>
+    <td><img src="docs/assets/template-library.png" alt="Template library"></td>
+    <td><img src="docs/assets/template-workbench.png" alt="Template workbench"></td>
+  </tr>
+</table>
 
-## Demo
+<table>
+  <tr>
+    <td align="center"><b>演示场景一</b></td>
+    <td align="center"><b>演示场景二</b></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/picture1.png" alt="Demo picture 1"></td>
+    <td><img src="docs/assets/picture2.png" alt="Demo picture 2"></td>
+  </tr>
+</table>
 
-![Demo picture 1](docs/assets/picture1.png)
-![Demo picture 2](docs/assets/picture2.png)
+https://github.com/user-attachments/assets/8e23be8b-eacd-4753-9fa6-65e1ee5f96ff
 
-[▶️ 观看 Demo Video 1](https://github.com/Mijiang111/claw-design/blob/main/docs/assets/videos/video1.mp4)
 
-[▶️ 观看 Demo Video 2](https://github.com/Mijiang111/claw-design/blob/main/docs/assets/videos/video2.mp4)
 
 ## What It Does
 
