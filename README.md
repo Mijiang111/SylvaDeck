@@ -21,9 +21,9 @@ Studio combines three workflows in one repo:
 ![Demo picture 1](docs/assets/picture1.png)
 ![Demo picture 2](docs/assets/picture2.png)
 
-<video src="https://github.com/Mijiang111/claw-design/raw/codex/animated-preview-manifest/docs/assets/videos/video1.mov" controls width="100%"></video>
+<video src="https://raw.githubusercontent.com/Mijiang111/claw-design/codex/animated-preview-manifest/docs/assets/videos/video1.mov" controls></video>
 
-<video src="https://github.com/Mijiang111/claw-design/raw/codex/animated-preview-manifest/docs/assets/videos/video2.mov" controls width="100%"></video>
+<video src="https://raw.githubusercontent.com/Mijiang111/claw-design/codex/animated-preview-manifest/docs/assets/videos/video2.mov" controls></video>
 
 ## What It Does
 
