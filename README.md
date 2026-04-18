@@ -1,5 +1,6 @@
 # Claw Design
-<img width="1376" height="768" alt="Claw-design" src="https://github.com/user-attachments/assets/574733ac-3581-42f1-b2c0-c6f334492d08" />
+<img width="800" height="800" alt="Claw-design" src="https://github.com/user-attachments/assets/574733ac-3581-42f1-b2c0-c6f334492d08" />
+
 I’m open-sourcing this in alpha, this is a vibe coding project from uni-student. 
 
 It already works, but it is still rough in places. Studio is a local-first AI presentation workbench for generating, refining, and authoring 16:9 HTML slide decks, and I’d really appreciate issues or feedback if you try it and hit something confusing.
