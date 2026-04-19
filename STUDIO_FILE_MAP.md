@@ -373,8 +373,3 @@
 | `Studio Text Layout` | 660 |
 | `UI Tests` | 766 |
 | `总代码行数` | 82,375 |
-
-备注：
-- 当前最大文件已经从“单个路由 + 单个 helper 巨石”转成“作者台 + server core + runtime shell”三类热点：
-  `server/src/lib/studio-engine/core.ts` (`6,342`)、`ui/src/features/studio/runtime/StudioShellPage.tsx` (`3,918`)、`ui/src/features/studio/authoring/ModuleAuthorWorkbenchPage.tsx` (`3,647`)。
-- 这份 audit 反映的是当前实现规模，不代表复杂度均匀分布；维护压力仍主要集中在作者台巨石与 `server/src/lib/studio-engine/core.ts` 附近，engine 内的 `evidence/planning/prompts` 簇仍是下一波合理拆分对象。
