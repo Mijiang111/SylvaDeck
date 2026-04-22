@@ -166,20 +166,43 @@ export function ModuleLibraryPage() {
               Template Platform
             </div>
             <h1 className="mt-3 text-3xl font-semibold tracking-[-0.04em] text-[var(--studio-ink)]">
-              Page templates, draft labs, and reusable shape contracts
+              One workbench for blank-canvas and PPTX-derived templates
             </h1>
             <p className="mt-3 max-w-3xl text-sm leading-7 text-[var(--studio-muted-strong)]">
-              Browse reusable page templates, judge their trust and chart support, and open the
-              author workspace only when you want to create or refine a shape.
+              Start from a blank page template, import one slide from a PPTX into the same canvas, or
+              open an existing template and keep editing it in place.
             </p>
           </div>
-          <Link
-            to="/templates/new"
-            className="inline-flex h-11 items-center gap-2 rounded-full border border-[rgba(0,242,255,0.3)] bg-[rgba(0,242,255,0.1)] px-5 text-sm font-semibold text-[var(--studio-ink)] transition hover:bg-[rgba(0,242,255,0.16)]"
-          >
-            <Plus className="h-4 w-4 text-[var(--studio-accent)]" />
-            New template
-          </Link>
+          <div className="flex flex-wrap items-center gap-3">
+            <Link
+              to="/templates/new"
+              className="inline-flex h-11 items-center gap-2 rounded-full border border-[rgba(0,242,255,0.3)] bg-[rgba(0,242,255,0.1)] px-5 text-sm font-semibold text-[var(--studio-ink)] transition hover:bg-[rgba(0,242,255,0.16)]"
+            >
+              <Plus className="h-4 w-4 text-[var(--studio-accent)]" />
+              New template
+            </Link>
+            <Link
+              to="/templates/new?import=1"
+              className="inline-flex h-11 items-center gap-2 rounded-full border border-[var(--studio-line)] px-5 text-sm font-semibold text-[var(--studio-ink)] transition hover:border-[rgba(0,242,255,0.22)] hover:bg-[rgba(0,242,255,0.06)]"
+            >
+              <Plus className="h-4 w-4 text-[var(--studio-muted)]" />
+              Import PPTX
+            </Link>
+          </div>
+        </div>
+
+        <div className="mt-8">
+          <div className="studio-terminal-panel border border-dashed border-[var(--studio-line)] px-5 py-6">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[var(--studio-muted)]">
+              Unified authoring flow
+            </div>
+            <div className="mt-3 max-w-4xl text-sm leading-7 text-[var(--studio-muted-strong)]">
+              PPTX import is no longer a separate asset library. Use <span className="text-[var(--studio-ink)]">Import PPTX</span> to
+              parse a full deck, pick one slide, and replace the current draft inside the same
+              single-page workbench. Unsupported imported objects stay visible as review placeholders
+              and block publish until you remove or replace them.
+            </div>
+          </div>
         </div>
 
         <div className="mt-8">
@@ -373,7 +396,11 @@ export function ModuleLibraryPage() {
                 </Link>
                 <div className="flex items-center gap-2">
                   <Link
-                    to={entry.scope === "core" ? `/templates/new?from=${encodeURIComponent(entry.id)}` : `/templates/${entry.id}/edit`}
+                      to={
+                        entry.scope === "core"
+                        ? `/templates/new?from=${encodeURIComponent(entry.id)}`
+                        : `/templates/${entry.id}/edit`
+                      }
                     className="inline-flex h-10 items-center gap-2 rounded-full border border-[rgba(0,242,255,0.3)] bg-[rgba(0,242,255,0.1)] px-4 text-sm font-semibold text-[var(--studio-ink)] transition hover:bg-[rgba(0,242,255,0.16)]"
                   >
                     {entry.scope === "core" ? "Fork into lab" : "Open template"}

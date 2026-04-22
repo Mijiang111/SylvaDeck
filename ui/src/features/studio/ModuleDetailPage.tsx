@@ -70,7 +70,7 @@ export function ModuleDetailPage({ moduleId }: { moduleId: string }) {
             }
             className="inline-flex h-10 items-center gap-2 rounded-full border border-[rgba(0,242,255,0.3)] bg-[rgba(0,242,255,0.1)] px-4 text-sm font-semibold text-[var(--studio-ink)] transition hover:bg-[rgba(0,242,255,0.16)]"
           >
-            {entry.scope === "core" ? "Fork into lab" : "Open template"}
+            {entry.scope === "core" ? "Fork into workbench" : "Open template"}
             <ArrowRight className="h-4 w-4 text-[var(--studio-accent)]" />
           </Link>
         </div>

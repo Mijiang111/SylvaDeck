@@ -128,6 +128,34 @@ function normalizeModuleRegistryEntry(
       label: field.label.trim(),
       description: field.description.trim(),
       example: field.example?.trim(),
+      imageAsset: field.imageAsset
+        ? {
+            assetId: field.imageAsset.assetId.trim(),
+            mimeType: field.imageAsset.mimeType.trim(),
+            size: field.imageAsset.size,
+            alt: field.imageAsset.alt?.trim(),
+          }
+        : undefined,
+      imageFit:
+        field.imageFit === "contain" || field.imageFit === "cover"
+          ? field.imageFit
+          : undefined,
+      importSource: field.importSource
+        ? {
+            imported: true,
+            sourceFileName: field.importSource.sourceFileName.trim(),
+            slideNumber: Math.max(1, Math.round(field.importSource.slideNumber)),
+            sourceObjectId: field.importSource.sourceObjectId.trim(),
+            sourceObjectKind: field.importSource.sourceObjectKind,
+            reviewState:
+              field.importSource.reviewState === "needs-review"
+                ? "needs-review"
+                : "ready",
+            reviewNote: field.importSource.reviewNote?.trim(),
+            sourceName: field.importSource.sourceName?.trim(),
+            sourcePath: field.importSource.sourcePath?.trim(),
+          }
+        : undefined,
       outputContract: field.outputContract
         ? {
             goal: field.outputContract.goal?.trim(),

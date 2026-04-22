@@ -753,6 +753,7 @@ function getFieldKindTone(field: ModuleTemplateField) {
   const kind = getCanvasObjectKind(field);
   if (kind === "data") return "Data";
   if (kind === "chart") return "Chart";
+  if (kind === "image") return "Image";
   if (isAiTextField(field)) return "AI Text";
   if (kind === "text") return "Locked Text";
   if (kind === "line") return "Line";
@@ -850,6 +851,28 @@ function createCanvasObject(
         fill: "#173043",
       },
       layout: { x: 24, y: 18, w: 38, h: 12 },
+    };
+  }
+
+  if (kind === "image") {
+    return {
+      id,
+      label: "Image",
+      type: "custom",
+      objectKind: "image",
+      aiState: "locked",
+      surface: "artboard",
+      description: "Imported or decorative image content that stays editable on the canvas.",
+      required: false,
+      imageFit: "cover",
+      style: {
+        fill: "#edf2f5",
+        stroke: "#9bb6c2",
+        strokeWidth: 1,
+        strokeStyle: "solid",
+        radius: "soft",
+      },
+      layout: { x: 24, y: 18, w: 38, h: 26 },
     };
   }
 
@@ -1015,6 +1038,7 @@ function getObjectKindLabel(kind: ModuleCanvasObjectKind) {
   if (kind === "rectangle") return "Rectangle";
   if (kind === "ellipse") return "Circle";
   if (kind === "line") return "Line";
+  if (kind === "image") return "Image";
   if (kind === "data") return "Data";
   if (kind === "chart") return "Chart";
   return "Locked Text";
@@ -1122,6 +1146,17 @@ function cloneEntryForAuthoring(
             }
           : undefined,
         chartSpec: field.chartSpec ? { ...field.chartSpec } : undefined,
+        imageAsset: field.imageAsset
+          ? {
+              ...field.imageAsset,
+            }
+          : undefined,
+        imageFit: field.imageFit,
+        importSource: field.importSource
+          ? {
+              ...field.importSource,
+            }
+          : undefined,
       })),
       entry.kind
     ),
@@ -1156,7 +1191,7 @@ function ensureDraftVisibleOnArtboard(
   const visibleFields = withFieldLayouts(
     entry.fields.map((field) => ({
       ...field,
-      surface: "artboard" as const,
+      surface: field.surface ?? ("artboard" as const),
     })),
     entry.kind
   );

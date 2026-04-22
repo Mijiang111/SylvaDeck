@@ -203,7 +203,17 @@ export type PageFitIssueCode =
   | "overflow-y"
   | "title-prompt-leak"
   | "title-truncated"
-  | "title-repeated-instruction";
+  | "title-repeated-instruction"
+  | "semantic-density";
+
+export type PageReviewSeverity = "pass" | "soft-warning" | "hard-fail";
+
+export type PageReviewReason = PageFitIssueCode;
+
+export type PageReviewDecision = {
+  severity: PageReviewSeverity;
+  reasons: PageReviewReason[];
+};
 
 export type PageOverflowCause =
   | "title"
@@ -582,6 +592,10 @@ function countLongTextBlocks(measurement: PageFitMeasurement) {
   ).length;
 }
 
+function isShortDeckReviewContext(pageCount?: number | null) {
+  return pageCount == null || pageCount < 10;
+}
+
 export function hasSemanticDensityFailure(
   measurement: PageFitMeasurement,
   pageCount?: number | null,
@@ -615,42 +629,99 @@ export function hasSemanticDensityFailure(
   );
 }
 
+export function resolvePageReviewDecision(
+  measurement: PageFitMeasurement,
+  pageCount?: number | null,
+): PageReviewDecision {
+  const reasons: PageReviewReason[] = [];
+  if (measurement.overflowX) {
+    reasons.push("overflow-x");
+  }
+  if (measurement.overflowY) {
+    reasons.push("overflow-y");
+  }
+  if (measurement.pageTitleQuality.promptLeak) {
+    reasons.push("title-prompt-leak");
+  }
+  if (measurement.pageTitleQuality.truncated) {
+    reasons.push("title-truncated");
+  }
+  if (measurement.pageTitleQuality.repeatedInstruction) {
+    reasons.push("title-repeated-instruction");
+  }
+
+  const semanticDensityFailure = hasSemanticDensityFailure(measurement, pageCount);
+  if (semanticDensityFailure) {
+    reasons.push("semantic-density");
+  }
+
+  const hasHardFailure = reasons.some((reason) => reason !== "semantic-density");
+  if (hasHardFailure) {
+    return {
+      severity: "hard-fail",
+      reasons,
+    };
+  }
+
+  if (semanticDensityFailure) {
+    return {
+      severity: isShortDeckReviewContext(pageCount) ? "soft-warning" : "hard-fail",
+      reasons,
+    };
+  }
+
+  return {
+    severity: "pass",
+    reasons,
+  };
+}
+
 export function hasPageFitFailure(
   measurement: PageFitMeasurement,
   pageCount?: number | null,
 ) {
-  return Boolean(
-    measurement.overflowX ||
-      measurement.overflowY ||
-      measurement.pageTitleQuality.promptLeak ||
-      measurement.pageTitleQuality.truncated ||
-      measurement.pageTitleQuality.repeatedInstruction ||
-      hasSemanticDensityFailure(measurement, pageCount),
+  return resolvePageReviewDecision(measurement, pageCount).severity === "hard-fail";
+}
+
+export function hasPageSoftWarning(
+  measurement: PageFitMeasurement,
+  pageCount?: number | null,
+) {
+  return resolvePageReviewDecision(measurement, pageCount).severity === "soft-warning";
+}
+
+export function hasPageReviewConcern(
+  measurement: PageFitMeasurement,
+  pageCount?: number | null,
+) {
+  return resolvePageReviewDecision(measurement, pageCount).severity !== "pass";
+}
+
+export function isTitleOnlyHardFail(
+  measurement: PageFitMeasurement,
+  pageCount?: number | null,
+) {
+  const decision = resolvePageReviewDecision(measurement, pageCount);
+  const hardReasons = decision.reasons.filter((reason) => reason !== "semantic-density");
+  return (
+    decision.severity === "hard-fail" &&
+    hardReasons.length > 0 &&
+    hardReasons.every((reason) => reason.startsWith("title-"))
   );
 }
 
-export function collectPageFitIssues(measurement: PageFitMeasurement): PageFitIssueCode[] {
-  const issues: PageFitIssueCode[] = [];
-  if (measurement.overflowX) {
-    issues.push("overflow-x");
-  }
-  if (measurement.overflowY) {
-    issues.push("overflow-y");
-  }
-  if (measurement.pageTitleQuality.promptLeak) {
-    issues.push("title-prompt-leak");
-  }
-  if (measurement.pageTitleQuality.truncated) {
-    issues.push("title-truncated");
-  }
-  if (measurement.pageTitleQuality.repeatedInstruction) {
-    issues.push("title-repeated-instruction");
-  }
-  return issues;
+export function collectPageFitIssues(
+  measurement: PageFitMeasurement,
+  pageCount?: number | null,
+): PageFitIssueCode[] {
+  return [...resolvePageReviewDecision(measurement, pageCount).reasons];
 }
 
-export function buildPageFitIssue(measurement: PageFitMeasurement): PageFitIssue | null {
-  const codes = collectPageFitIssues(measurement);
+export function buildPageFitIssue(
+  measurement: PageFitMeasurement,
+  pageCount?: number | null,
+): PageFitIssue | null {
+  const codes = collectPageFitIssues(measurement, pageCount);
   if (codes.length === 0) {
     return null;
   }
@@ -659,6 +730,342 @@ export function buildPageFitIssue(measurement: PageFitMeasurement): PageFitIssue
     codes,
     measurement,
   };
+}
+
+function normalizeInlineText(text: string) {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function stripInstructionalLead(text: string) {
+  return normalizeInlineText(text)
+    .replace(/^opening\s+/i, "")
+    .replace(
+      /^(?:\d+\s*(?:page|pages|slide|slides)\s+)?(?:ppt|presentation|deck|slide\s+deck)\s+(?:for|on|about)\s+/i,
+      "",
+    )
+    .replace(
+      /^(?:create|build|make|prepare|draft|write|design|generate)\s+(?:a|an|the)?\s*(?:\w+(?:-\w+)?\s+){0,5}deck\s+(?:on|for|about)\s+/i,
+      "",
+    )
+    .replace(/^use the following evidence:?\s*/i, "")
+    .replace(/^what the deck should do:?\s*/i, "")
+    .trim();
+}
+
+function isGenericStudioTitle(title: string) {
+  const normalized = stripInstructionalLead(title).toLowerCase();
+  return Boolean(
+    /^(?:core thesis|opening thesis|key pattern|what the evidence suggests)$/.test(normalized) ||
+      /^(?:evidence page|results page|support|supporting detail|supporting result|page)\s+\d+$/.test(normalized) ||
+      /^(?:synthesis|open questions)$/.test(normalized) ||
+      /^(?:core view|case view|decision view|research view|report review|case review|decision review|research review)$/.test(normalized) ||
+      /^the brief (?:points to|supports)\b/.test(normalized),
+  );
+}
+
+function assessGeneratedTitleQuality(title: string) {
+  const normalized = stripInstructionalLead(title).replace(/\s+/g, " ").trim();
+  const lower = normalized.toLowerCase();
+  const promptLeak =
+    /^(?:opening\s+)?(?:create|build|make|prepare|draft|write|design|generate)\b/i.test(title) ||
+    /\b(?:use the following evidence|what the deck should do)\b/i.test(title.toLowerCase()) ||
+    isGenericStudioTitle(title);
+  const repeatedInstruction =
+    /\b(?:use the following evidence|what the deck should do|tone)\b/i.test(lower);
+  const truncated =
+    normalized.length > 0 &&
+    /[\s:-](?:on|for|with|about|to)$/i.test(normalized);
+
+  return {
+    title: normalized,
+    promptLeak,
+    repeatedInstruction,
+    truncated,
+  };
+}
+
+function compactBoardTitle(text: string, fallback: string, maxWords = 6) {
+  const normalized = stripInstructionalLead(text)
+    .replace(/[.:;,-]+$/g, "")
+    .replace(/[\s:-](?:on|for|with|about|to)$/i, "")
+    .replace(/^["'`]+|["'`]+$/g, "");
+  if (!normalized) {
+    return fallback;
+  }
+
+  const words = normalized.split(/\s+/).slice(0, maxWords);
+  if (words.length === 0) {
+    return fallback;
+  }
+
+  const title = words.join(" ");
+  return title.length >= 4 ? title : fallback;
+}
+
+function isPrepositionalTopicFragment(text: string) {
+  return /^(?:on|for|with|about|to)\b/i.test(normalizeInlineText(text));
+}
+
+function sanitizeDeterministicReviewTitle(args: {
+  title: string;
+  fallbackSeeds: Array<string | null | undefined>;
+}) {
+  const trimmed = normalizeInlineText(args.title);
+  const cleaned = trimmed
+    .replace(/^(?:opening|create|build|make|prepare|draft|write|design|generate)\b[^A-Za-z0-9]+/i, "")
+    .replace(
+      /\b(?:a|an|the)?\s*(?:(?:board(?:-ready)?|leadership|executive|three-page|three page|one-page|one page)\s+){0,5}deck\b/gi,
+      "",
+    )
+    .replace(/\b(?:use the following evidence|what the deck should do|tone)\b.*$/i, "")
+    .replace(/^(?:a|an|the)\s+/i, "")
+    .replace(/^[\s:;-]+|[\s:;-]+$/g, "");
+
+  const cleanedQuality = assessGeneratedTitleQuality(cleaned);
+  if (
+    cleaned &&
+    !isPrepositionalTopicFragment(cleaned) &&
+    !cleanedQuality.promptLeak &&
+    !cleanedQuality.repeatedInstruction &&
+    !cleanedQuality.truncated
+  ) {
+    return cleaned;
+  }
+
+  for (const seed of args.fallbackSeeds) {
+    const compacted = compactBoardTitle(seed ?? "", "", 6);
+    if (!compacted) {
+      continue;
+    }
+    const quality = assessGeneratedTitleQuality(compacted);
+    if (!quality.promptLeak && !quality.repeatedInstruction && !quality.truncated) {
+      return quality.title;
+    }
+  }
+
+  return "Opening focus";
+}
+
+function createSerializableHtml(document: Document) {
+  const doctype = document.doctype
+    ? `<!DOCTYPE ${document.doctype.name}>`
+    : "<!DOCTYPE html>";
+  return `${doctype}\n${document.documentElement.outerHTML}`;
+}
+
+function collectPageTitlesFromHtml(args: {
+  html: string;
+  fallbackTitles: string[];
+}) {
+  if (typeof DOMParser === "undefined") {
+    return args.fallbackTitles;
+  }
+
+  const parser = new DOMParser();
+  const document = parser.parseFromString(args.html, "text/html");
+  const pages = Array.from(document.querySelectorAll("section.page"));
+  if (pages.length === 0) {
+    return args.fallbackTitles;
+  }
+
+  return pages.map((page, index) =>
+    normalizeInlineText(
+      page.getAttribute("data-page-title") ||
+        page.querySelector("h1, h2")?.textContent ||
+        args.fallbackTitles[index] ||
+        `Page ${index + 1}`,
+    ) || args.fallbackTitles[index] || `Page ${index + 1}`,
+  );
+}
+
+function createTitleRepairMeasurement(
+  pageNumber: number,
+  title: string,
+): PageFitMeasurement | null {
+  const quality = assessGeneratedTitleQuality(title);
+  if (!quality.promptLeak && !quality.repeatedInstruction && !quality.truncated) {
+    return null;
+  }
+
+  return {
+    pageNumber,
+    scrollHeight: 900,
+    clientHeight: 900,
+    scrollWidth: 1600,
+    clientWidth: 1600,
+    overflowX: false,
+    overflowY: false,
+    semanticModuleCount: 0,
+    textCharacterCount: 0,
+    chartRegionCount: 0,
+    dominantOverflowRegion: "title",
+    footerHeight: 0,
+    rightRailHeight: 0,
+    longestBlockHeight: 0,
+    topLevelRegions: [],
+    suspectElements: [],
+    compositionFingerprint: {
+      family: "mixed-editorial",
+      columnCount: 1,
+      hasHero: true,
+      hasChart: false,
+      hasRightRail: false,
+      hasFooter: false,
+      primaryEvidenceRegion: "text",
+    },
+    pageTitleQuality: {
+      ...quality,
+      reason: quality.promptLeak
+        ? "title looks like leaked prompt text"
+        : quality.truncated
+          ? "title appears truncated"
+          : quality.repeatedInstruction
+            ? "title repeats instruction language"
+            : null,
+    },
+    textMeasurements: [],
+    predictedTextOverflow: false,
+    predictedOverflowRoots: [],
+  };
+}
+
+function applyDeterministicTitleRepairIfNeeded(report: GeneratedHtmlReport) {
+  const measurements = report.pageTitles
+    .map((title, index) => createTitleRepairMeasurement(index + 1, title))
+    .filter((measurement): measurement is PageFitMeasurement => Boolean(measurement));
+
+  if (measurements.length === 0) {
+    return null;
+  }
+
+  return applyDeterministicTitleRepairToReport({
+    report,
+    measurements,
+  });
+}
+
+export function applyDeterministicTitleRepairToReport(args: {
+  report: GeneratedHtmlReport;
+  measurements: PageFitMeasurement[];
+}): {
+  report: GeneratedHtmlReport;
+  repairedPageNumbers: number[];
+} | null {
+  if (typeof DOMParser === "undefined") {
+    return null;
+  }
+
+  const parser = new DOMParser();
+  const document = parser.parseFromString(args.report.html, "text/html");
+  const pages = Array.from(document.querySelectorAll("section.page"));
+  const repairedPageNumbers: number[] = [];
+
+  for (const measurement of args.measurements) {
+    const page = pages[measurement.pageNumber - 1];
+    if (!(page instanceof HTMLElement)) {
+      continue;
+    }
+
+    const currentTitle =
+      page.getAttribute("data-page-title")?.trim() ||
+      args.report.pageTitles[measurement.pageNumber - 1] ||
+      "";
+    const fallbackSeeds = [
+      page.querySelector("p, h3, h4, li")?.textContent,
+      page.textContent,
+    ];
+    const nextTitle = sanitizeDeterministicReviewTitle({
+      title: currentTitle,
+      fallbackSeeds,
+    });
+
+    if (!nextTitle || nextTitle === currentTitle) {
+      continue;
+    }
+
+    page.setAttribute("data-page-title", nextTitle);
+    const heading = page.querySelector("h1, h2");
+    if (heading) {
+      heading.textContent = nextTitle;
+    }
+    repairedPageNumbers.push(measurement.pageNumber);
+  }
+
+  if (repairedPageNumbers.length === 0) {
+    return null;
+  }
+
+  const html = createSerializableHtml(document);
+  const nextPageTitles = collectPageTitlesFromHtml({
+    html,
+    fallbackTitles: args.report.pageTitles,
+  });
+  const structure = ensureHtmlEditableStructure({
+    html,
+    pageTitles: nextPageTitles,
+    structure: args.report.structure,
+  });
+  const pageTitles =
+    structure.pages.length > 0
+      ? structure.pages.map((page) => page.title)
+      : nextPageTitles;
+  const visualStructure = ensureHtmlVisualStructure({
+    html,
+    pageTitles,
+    visualStructure: args.report.visualStructure,
+  });
+  const layoutStructure = ensureHtmlLayoutStructure({
+    html,
+    pageTitles,
+    layoutStructure: args.report.layoutStructure,
+  });
+
+  return {
+    repairedPageNumbers,
+    report: {
+      ...args.report,
+      html,
+      pageTitles,
+      structure,
+      visualStructure,
+      layoutStructure,
+      canvasOverrides: pruneGeneratedHtmlReportCanvasOverrides({
+        overrides: args.report.canvasOverrides,
+        structure,
+        visualStructure,
+      }),
+    },
+  };
+}
+
+function measureOverflowPixels(measurement: PageFitMeasurement) {
+  return (
+    Math.max(0, measurement.scrollHeight - measurement.clientHeight) +
+    Math.max(0, measurement.scrollWidth - measurement.clientWidth)
+  );
+}
+
+export function didPageReviewImprove(args: {
+  before: PageFitMeasurement;
+  after: PageFitMeasurement;
+  pageCount?: number | null;
+}) {
+  const beforeDecision = resolvePageReviewDecision(args.before, args.pageCount);
+  const afterDecision = resolvePageReviewDecision(args.after, args.pageCount);
+
+  if (beforeDecision.severity === "hard-fail" && afterDecision.severity !== "hard-fail") {
+    return true;
+  }
+
+  const beforeHardReasonCount =
+    beforeDecision.severity === "hard-fail" ? beforeDecision.reasons.length : 0;
+  const afterHardReasonCount =
+    afterDecision.severity === "hard-fail" ? afterDecision.reasons.length : 0;
+  if (afterHardReasonCount < beforeHardReasonCount) {
+    return true;
+  }
+
+  return measureOverflowPixels(args.after) < measureOverflowPixels(args.before);
 }
 
 export function buildDeckCompositionDiversityReport(
@@ -1339,6 +1746,19 @@ export async function streamGenerateHtmlReport(
       notes: shrinkResult.pages.map((p) => `Page ${p.pageNumber}: ${p.notes.join("; ")}`),
     });
   }
+  const titleRepairResult = applyDeterministicTitleRepairIfNeeded(finalReport);
+  if (titleRepairResult) {
+    finalReport.html = titleRepairResult.report.html;
+    finalReport.pageTitles = titleRepairResult.report.pageTitles;
+    finalReport.structure = titleRepairResult.report.structure;
+    finalReport.visualStructure = titleRepairResult.report.visualStructure;
+    finalReport.layoutStructure = titleRepairResult.report.layoutStructure;
+    finalReport.canvasOverrides = titleRepairResult.report.canvasOverrides;
+    workbenchDebugLog("html_report_title_cleanup_applied", {
+      pageCount: finalReport.pageCount,
+      repairedPages: titleRepairResult.repairedPageNumbers,
+    });
+  }
 
   return buildHtmlReportGenerationResultFromReport({
     report: finalReport,
@@ -1347,7 +1767,37 @@ export async function streamGenerateHtmlReport(
   });
 }
 
-async function consumeStudioStreamResponse(
+function applyStudioStreamEvent(
+  event: StudioGenerateStreamEvent,
+  onEvent: ((event: StudioGenerateStreamEvent) => void) | undefined,
+  current: {
+    finalReport: GeneratedHtmlReport | null;
+    model: string | null;
+    failureReason: string | undefined;
+  },
+) {
+  onEvent?.(event);
+
+  if (event.type === "final_report") {
+    current.finalReport = normalizeRemoteHtmlReport(event.report);
+    current.model = event.model;
+  }
+
+  if (event.type === "error") {
+    current.failureReason = event.reason;
+  }
+}
+
+function parseStudioStreamEvent(line: string) {
+  try {
+    return JSON.parse(line) as StudioGenerateStreamEvent;
+  } catch (error) {
+    console.warn("Malformed Studio NDJSON line:", line.slice(0, 200), error);
+    return null;
+  }
+}
+
+export async function consumeStudioStreamResponse(
   response: Response,
   onEvent?: (event: StudioGenerateStreamEvent) => void,
 ) {
@@ -1358,54 +1808,54 @@ async function consumeStudioStreamResponse(
 
   const decoder = new TextDecoder();
   let buffer = "";
-  let finalReport: GeneratedHtmlReport | null = null;
-  let model: string | null = null;
-  let failureReason: string | undefined;
+  const current = {
+    finalReport: null as GeneratedHtmlReport | null,
+    model: null as string | null,
+    failureReason: undefined as string | undefined,
+  };
 
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) {
-      break;
-    }
-
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) {
-        continue;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
       }
 
-      const event = JSON.parse(trimmed) as StudioGenerateStreamEvent;
-      onEvent?.(event);
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
 
-      if (event.type === "final_report") {
-        finalReport = normalizeRemoteHtmlReport(event.report);
-        model = event.model;
-      }
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          continue;
+        }
 
-      if (event.type === "error") {
-        failureReason = event.reason;
+        const event = parseStudioStreamEvent(trimmed);
+        if (!event) {
+          continue;
+        }
+        applyStudioStreamEvent(event, onEvent, current);
       }
     }
+
+    const trailing = buffer.trim();
+    if (trailing) {
+      const event = parseStudioStreamEvent(trailing);
+      if (event) {
+        applyStudioStreamEvent(event, onEvent, current);
+      }
+    }
+
+    return current;
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // The stream may already be closed or canceled.
+    }
+    reader.releaseLock();
   }
-
-  const trailing = buffer.trim();
-  if (trailing) {
-    const event = JSON.parse(trailing) as StudioGenerateStreamEvent;
-    onEvent?.(event);
-    if (event.type === "final_report") {
-      finalReport = normalizeRemoteHtmlReport(event.report);
-      model = event.model;
-    }
-    if (event.type === "error") {
-      failureReason = event.reason;
-    }
-  }
-
-  return { finalReport, model, failureReason };
 }
 
 export async function streamReviseHtmlReport(
@@ -1433,11 +1883,15 @@ export async function streamReviseHtmlReport(
       starterBindings: options?.starterBindings ?? [],
     },
   );
+  const reviewDecisions = pageMeasurements.map((measurement) =>
+    resolvePageReviewDecision(measurement, payload.report.pageCount),
+  );
 
   workbenchDebugLog("html_report_revise_stream_started", {
     briefLength: payload.brief.length,
     pageCount: payload.report.pageCount,
-    failingPageCount: pageMeasurements.filter(hasPageFitFailure).length,
+    hardFailCount: reviewDecisions.filter((decision) => decision.severity === "hard-fail").length,
+    softConcernCount: reviewDecisions.filter((decision) => decision.severity === "soft-warning").length,
   });
 
   const response = await fetch(buildStreamUrl("/studio/revise-html/stream"), {
@@ -1489,6 +1943,19 @@ export async function streamReviseHtmlReport(
       changedPages: shrinkResult.pages.filter((p) => p.success && p.scaleRatio < 1).length,
       failedPages: shrinkResult.pages.filter((p) => !p.success).length,
       notes: shrinkResult.pages.map((p) => `Page ${p.pageNumber}: ${p.notes.join("; ")}`),
+    });
+  }
+  const titleRepairResult = applyDeterministicTitleRepairIfNeeded(finalReport);
+  if (titleRepairResult) {
+    finalReport.html = titleRepairResult.report.html;
+    finalReport.pageTitles = titleRepairResult.report.pageTitles;
+    finalReport.structure = titleRepairResult.report.structure;
+    finalReport.visualStructure = titleRepairResult.report.visualStructure;
+    finalReport.layoutStructure = titleRepairResult.report.layoutStructure;
+    finalReport.canvasOverrides = titleRepairResult.report.canvasOverrides;
+    workbenchDebugLog("html_report_revise_title_cleanup_applied", {
+      pageCount: finalReport.pageCount,
+      repairedPages: titleRepairResult.repairedPageNumbers,
     });
   }
 

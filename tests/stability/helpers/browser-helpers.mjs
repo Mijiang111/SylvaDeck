@@ -62,3 +62,18 @@ export async function selectFilmstripPage(page, pageNumber) {
   await page.getByTestId(`filmstrip-page-${pageNumber}`).click();
   await expect(page.getByTestId("optimize-current-page")).toContainText(String(pageNumber));
 }
+
+export async function dragLocatorBy(page, locator, deltaX, deltaY, options = {}) {
+  const box = await locator.boundingBox();
+  if (!box) {
+    throw new Error("Locator is not visible enough to drag.");
+  }
+
+  const startX = box.x + box.width / 2;
+  const startY = box.y + box.height / 2;
+  const steps = Number.isFinite(options.steps) ? Math.max(1, Math.round(options.steps)) : 12;
+  await page.mouse.move(startX, startY);
+  await page.mouse.down();
+  await page.mouse.move(startX + deltaX, startY + deltaY, { steps });
+  await page.mouse.up();
+}

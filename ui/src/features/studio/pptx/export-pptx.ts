@@ -897,7 +897,13 @@ async function waitForFrameReady(iframe: HTMLIFrameElement) {
 }
 
 async function collectExportPageFrames(reportRoot: HTMLElement) {
-  const frames = Array.from(reportRoot.querySelectorAll("iframe"));
+  const frames = Array.from(
+    reportRoot.querySelectorAll<HTMLIFrameElement>("[data-ppt-export-page-frame]"),
+  ).sort((left, right) => {
+    const leftPage = Number.parseInt(left.getAttribute("data-ppt-export-page-frame") ?? "", 10);
+    const rightPage = Number.parseInt(right.getAttribute("data-ppt-export-page-frame") ?? "", 10);
+    return leftPage - rightPage;
+  });
   await Promise.all(frames.map((frame) => waitForFrameReady(frame)));
 
   return frames

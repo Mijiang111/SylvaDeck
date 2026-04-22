@@ -752,6 +752,21 @@ export type LoadedStudio3dHeroSkill = {
 
 export type LongFormPageClass = "opening-core" | "proof-analysis" | "synthesis-support";
 
+export type PageReviewSeverity = "pass" | "soft-warning" | "hard-fail";
+
+export type PageReviewReason =
+  | "overflow-x"
+  | "overflow-y"
+  | "title-prompt-leak"
+  | "title-truncated"
+  | "title-repeated-instruction"
+  | "semantic-density";
+
+export type PageReviewDecision = {
+  severity: PageReviewSeverity;
+  reasons: PageReviewReason[];
+};
+
 export type PageDensityBudget = {
   maxMajorRegions: number;
   maxSupportBullets: number;

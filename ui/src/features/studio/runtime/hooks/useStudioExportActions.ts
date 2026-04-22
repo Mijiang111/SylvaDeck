@@ -12,7 +12,6 @@ import {
   useStudioProjectState,
   useWorkbenchStudioStore,
 } from "../studio/store";
-import { waitForRenderableSurface } from "../studio/export";
 
 function buildProjectBundle(project: WorkbenchProject) {
   return JSON.stringify(project, null, 2);
@@ -139,22 +138,12 @@ export function useStudioExportActions(args: UseStudioExportActionsArgs) {
   }, [bundleInput, importBundle, setStatusLine]);
 
   const downloadCurrentHtml = useCallback(async () => {
-    if (!project || !generatedHtmlReport || !draft) {
+    if (!project || !generatedHtmlReport) {
       return;
     }
-
-    const reportRoot = document.querySelector(
-      "[data-ppt-report-root='studio-main']",
-    ) as HTMLElement | null;
-    if (!reportRoot) {
-      setStatusLine("The report surface is not ready for export yet.");
-      return;
-    }
-
-    await waitForRenderableSurface(reportRoot);
     downloadPublishedHtml({
       document,
-      reportRoot,
+      htmlReport: generatedHtmlReport,
       projectName: project.projectName,
       publishedUrl: publishUrl,
     });
@@ -162,7 +151,6 @@ export function useStudioExportActions(args: UseStudioExportActionsArgs) {
     await flushStudioSnapshot();
     setStatusLine("Downloaded standalone HTML.");
   }, [
-    draft,
     flushStudioSnapshot,
     generatedHtmlReport,
     project,

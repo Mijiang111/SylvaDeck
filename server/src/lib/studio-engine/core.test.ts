@@ -26,6 +26,17 @@ test("resolveStandardHeuristicRecipePageCount keeps standard decks capped below 
   );
 });
 
+test("resolveStandardHeuristicRecipePageCount honors preflight single-page intent when payload pageCount is absent", () => {
+  assert.equal(
+    resolveStandardHeuristicRecipePageCount({
+      requestedPageCount: null,
+      preflightPageCount: 1,
+      defaultPageCount: 2,
+    }),
+    1,
+  );
+});
+
 test("buildAnimatedPreviewOutputRuleLines only adds animation reference guidance in animated mode", () => {
   assert.deepEqual(buildAnimatedPreviewOutputRuleLines("static"), []);
 
@@ -33,6 +44,8 @@ test("buildAnimatedPreviewOutputRuleLines only adds animation reference guidance
   assert.ok(lines.some((line) => line.includes("data-anim-anchor")));
   assert.ok(lines.some((line) => line.includes("data-studio-animation-manifest")));
   assert.ok(lines.some((line) => line.includes('"startMode":"entry-then-loop"')));
+  assert.ok(lines.some((line) => line.includes("Canonical manifest example")));
+  assert.ok(lines.some((line) => line.includes("stringified numbers")));
 });
 
 test("buildAnimatedPreviewRepairRuleLines only adds repair-specific animation guidance in animated mode", () => {
@@ -42,4 +55,5 @@ test("buildAnimatedPreviewRepairRuleLines only adds repair-specific animation gu
   assert.ok(lines.some((line) => line.includes("Preserve valid data-anim-* attributes")));
   assert.ok(lines.some((line) => line.includes("data-anim-anchor")));
   assert.ok(lines.some((line) => line.includes("data-studio-animation-manifest")));
+  assert.ok(lines.some((line) => line.includes("Repair toward this canonical manifest shape")));
 });

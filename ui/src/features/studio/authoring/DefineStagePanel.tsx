@@ -11,7 +11,9 @@ type DefineStagePanelProps = {
   frameOutsideCount: number;
   moduleFrame: Pick<ModuleFrameLayout, "w" | "h">;
   isReady: boolean;
+  importStatus?: string | null;
   onOpenLibrary: () => void;
+  onImportPptx: () => void;
   onCreateFromBlank: () => void;
   onLabelChange: (value: string) => void;
   onSemanticRoleChange: (value: string) => void;
@@ -26,7 +28,9 @@ export function DefineStagePanel({
   frameOutsideCount,
   moduleFrame,
   isReady,
+  importStatus,
   onOpenLibrary,
+  onImportPptx,
   onCreateFromBlank,
   onLabelChange,
   onSemanticRoleChange,
@@ -54,7 +58,7 @@ export function DefineStagePanel({
               "Choose a base template or start blank, then rewrite the job for this authoring pass."}
           </div>
         </div>
-        <div className="mt-3 grid grid-cols-2 gap-2">
+        <div className="mt-3 grid gap-2">
           <button
             type="button"
             onClick={onOpenLibrary}
@@ -64,12 +68,24 @@ export function DefineStagePanel({
           </button>
           <button
             type="button"
+            onClick={onImportPptx}
+            className="inline-flex h-10 items-center justify-center rounded-full border border-[rgba(0,242,255,0.22)] bg-[rgba(0,242,255,0.08)] px-3 text-sm font-semibold text-white transition hover:bg-[rgba(0,242,255,0.14)]"
+          >
+            Import PPTX
+          </button>
+          <button
+            type="button"
             onClick={onCreateFromBlank}
             className="inline-flex h-10 items-center justify-center rounded-full border border-white/10 bg-white/[0.03] px-3 text-sm font-semibold text-white transition hover:bg-white/[0.08]"
           >
             Start blank
           </button>
         </div>
+        {importStatus ? (
+          <div className="mt-3 rounded-[16px] border border-[rgba(0,242,255,0.16)] bg-[rgba(0,242,255,0.06)] px-3 py-3 text-[12px] leading-5 text-[#b9d4df]">
+            {importStatus}
+          </div>
+        ) : null}
         <div className="mt-4 grid gap-2">
           {[
             {
@@ -87,6 +103,10 @@ export function DefineStagePanel({
             {
               label: "Shape / Line",
               detail: "Pure structure and decoration for dividers, containers, and callouts.",
+            },
+            {
+              label: "Imported slide",
+              detail: "Bring one PPTX slide into this same canvas, then keep editing the translated objects directly.",
             },
           ].map((item) => (
             <div

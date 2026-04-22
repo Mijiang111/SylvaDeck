@@ -14,6 +14,8 @@ test.describe("Studio stability full matrix", () => {
     const htmlText = await readDownloadedText(htmlDownload);
     expect(htmlText).toContain("Referral release timing is now the main throughput governor");
     expect(htmlText).toContain("<title>Clinic throughput still stalls in coordination logic</title>");
+    expect(htmlText).not.toContain('data-ppt-report-root="studio-main"');
+    expect(htmlText).not.toContain("bg-[#040404]");
   });
 
   test("architecture words alone do not render a 3D hero page", async ({ page }) => {
@@ -72,19 +74,54 @@ test.describe("Studio stability full matrix", () => {
     expect(await pageThree.locator("li").count()).toBeLessThanOrEqual(2);
   });
 
-  test("semantic density review triggers repair before editing unlocks", async ({ page }) => {
+  test("semantic density review stays as a simplification warning without AI repair", async ({ page }) => {
     const fixture = await installStudioFixtureRoutes(page, "dense-semantic-review");
+    await generateDeckFromPrompt(page, fixture.scenario.prompt);
+    await expect.poll(() => fixture.state.reviseCalls.length).toBe(0);
+    await expect(page.getByText(/may still benefit from manual simplification/i).first()).toBeVisible();
+    await expect(page.getByTestId("filmstrip-page-1")).toContainText(
+      "The deck is readable, but page 1 is still too dense to stay clear",
+    );
+  });
+
+  test("title-only review repairs locally without a revise request", async ({ page }) => {
+    const fixture = await installStudioFixtureRoutes(page, "title-only-review");
+    await generateDeckFromPrompt(page, fixture.scenario.prompt);
+    await expect.poll(() => fixture.state.reviseCalls.length).toBe(0);
+    await expect(page.getByTestId("filmstrip-page-1")).toContainText(
+      "Coordination logic remains the constraint",
+    );
+  });
+
+  test("overflow fixture still routes through true auto-repair", async ({ page }) => {
+    const fixture = await installStudioFixtureRoutes(page, "overflow-auto-repair");
     await generateDeckFromPrompt(page, fixture.scenario.prompt);
     await expect.poll(() => fixture.state.reviseCalls.length).toBe(1);
     const revisePayload = fixture.state.reviseCalls[0];
-    const repairedMeasurement = revisePayload?.pageMeasurements?.find(
-      (measurement) => measurement.pageNumber === 1,
+    expect(revisePayload?.pageMeasurements?.map((measurement) => measurement.pageNumber)).toEqual([2]);
+    await expect(page.getByTestId("filmstrip-page-2")).toContainText(
+      "Action sequencing absorbs the residual delay before the queue peaks",
     );
-    expect(repairedMeasurement).toBeTruthy();
-    expect(repairedMeasurement.overflowX).toBe(false);
-    expect(repairedMeasurement.overflowY).toBe(false);
+  });
+
+  test("mixed title leak and overflow only sends the overflow page through revise", async ({ page }) => {
+    const fixture = await installStudioFixtureRoutes(page, "mixed-hard-and-title-review");
+    await generateDeckFromPrompt(page, fixture.scenario.prompt);
+    await expect.poll(() => fixture.state.reviseCalls.length).toBe(1);
+    const revisePayload = fixture.state.reviseCalls[0];
+    expect(revisePayload?.pageMeasurements?.map((measurement) => measurement.pageNumber)).toEqual([2]);
     await expect(page.getByTestId("filmstrip-page-1")).toContainText(
-      "Coordination logic remains the single binding constraint on throughput",
+      "Coordination logic remains the constraint",
+    );
+  });
+
+  test("auto-review does not trigger a second pass after an unproductive first repair", async ({ page }) => {
+    const fixture = await installStudioFixtureRoutes(page, "second-pass-no-improvement");
+    await generateDeckFromPrompt(page, fixture.scenario.prompt);
+    await expect.poll(() => fixture.state.reviseCalls.length).toBe(1);
+    await expect(page.getByText(/did not materially improve/i).first()).toBeVisible();
+    await expect(page.getByTestId("filmstrip-page-1")).toContainText(
+      "Coordination logic, not staffing, is now the core throughput constraint",
     );
   });
 
@@ -162,5 +199,6 @@ test.describe("Studio stability full matrix", () => {
     const htmlDownload = await downloadFromActions(page, "action-export-html");
     const htmlText = await readDownloadedText(htmlDownload);
     expect(htmlText).toContain("Operating storyline page 10");
+    expect(htmlText).not.toContain('data-ppt-report-root="studio-main"');
   });
 });

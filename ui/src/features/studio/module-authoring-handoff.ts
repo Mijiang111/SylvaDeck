@@ -1,11 +1,13 @@
 import { MODULE_AUTHORING_HANDOFF_STORAGE_KEY } from "./config";
 import type {
   BlockKind,
+  DeckTemplatePackPage,
   HtmlEditableBlock,
   HtmlLayoutZone,
   HtmlPageVisualStyle,
   HtmlVisualContentNode,
   HtmlVisualNode,
+  ImportedSourceObject,
   ModuleChartKind,
   ModuleRegistryCategory,
   ModuleRegistryEntry,
@@ -406,6 +408,126 @@ export function createModuleAuthoringHandoffFromLayoutZone(
     }),
     preferredStage: "compose",
     sourceLabel: `Extracted from a selected ${args.zone.kind} layout zone on page ${args.pageNumber}.`,
+  };
+}
+
+function inferDraftKindFromPackPage(page: DeckTemplatePackPage): BlockKind {
+  const chartObject = page.sourceObjects.find((item) => item.kind === "chart");
+  if (chartObject?.kind === "chart") {
+    if (chartObject.chartKind === "line") {
+      return "line";
+    }
+    if (chartObject.chartKind === "waterfall") {
+      return "gantt";
+    }
+    return "bars";
+  }
+
+  if (page.pageRole === "closing") {
+    return "phases";
+  }
+  if (page.pageRole === "section") {
+    return "flow";
+  }
+  return "matrix";
+}
+
+function describePackSlotObject(
+  object: ImportedSourceObject | null | undefined,
+  slotKind: DeckTemplatePackPage["semanticSlots"][number]["kind"],
+) {
+  if (!object) {
+    return slotKind === "chart"
+      ? "Recovered chart region from the imported slide."
+      : "Recovered text region from the imported slide.";
+  }
+
+  if (object.kind === "chart") {
+    return object.title
+      ? `Recovered chart region for ${object.title}.`
+      : "Recovered chart region from the imported slide.";
+  }
+
+  if (object.kind === "text") {
+    const sample = trimText(object.text);
+    return sample
+      ? `Recovered text region seeded by "${truncate(sample, 56)}".`
+      : "Recovered text region from the imported slide.";
+  }
+
+  if (object.kind === "image") {
+    return object.asset.alt
+      ? `Recovered image-backed region from ${object.asset.alt}.`
+      : "Recovered image-backed region from the imported slide.";
+  }
+
+  return "Recovered region from the imported slide.";
+}
+
+export function createModuleAuthoringHandoffFromDeckTemplatePackPage(args: {
+  packLabel: string;
+  page: DeckTemplatePackPage;
+}): ModuleAuthoringHandoff {
+  const kind = inferDraftKindFromPackPage(args.page);
+  const pageObjects = new Map(args.page.sourceObjects.map((item) => [item.id, item] as const));
+  const fields = args.page.semanticSlots.map((slot, index) => {
+    const primaryObject =
+      slot.sourceObjectIds.map((id) => pageObjects.get(id)).find(Boolean) ?? null;
+    const chartKind =
+      primaryObject?.kind === "chart" && slot.kind === "chart"
+        ? primaryObject.chartKind
+        : undefined;
+
+    return buildField({
+      id: `field-${slugify(slot.label) || `pack-slot-${index + 1}`}`,
+      label: slot.label,
+      type: slot.kind === "chart" ? "custom" : "page-goal",
+      objectKind: slot.kind === "chart" ? "chart" : "slot",
+      required: slot.required,
+      chartKind,
+      description:
+        slot.notes ||
+        describePackSlotObject(primaryObject, slot.kind),
+      outputGoal:
+        slot.kind === "chart"
+          ? "Preserve the chart role while letting downstream content and data shift."
+          : "Preserve the semantic job of this imported text region while allowing the wording to adapt.",
+    });
+  });
+
+  const fallbackFields =
+    fields.length > 0
+      ? fields
+      : [
+          buildField({
+            id: "field-primary-message",
+            label: "Primary message",
+            objectKind: "slot",
+            description: "Main semantic region extracted from the imported page.",
+            outputGoal: "Carry the main semantic job of the imported page into a reusable legacy template.",
+          }),
+        ];
+
+  return {
+    draft: createBaseDraft({
+      kind,
+      label: truncate(args.page.title || `${args.packLabel} page`, 42),
+      semanticRole: `Reusable page fragment extracted from imported deck "${args.packLabel}" page ${args.page.pageNumber}.`,
+      description: `Created from page ${args.page.pageNumber} of imported deck "${args.packLabel}". Use it when this semantic page shape should become a legacy reusable template.`,
+      promptHint:
+        args.page.briefHint ||
+        "Use this template when the page needs to preserve the imported structure while allowing content to be regenerated.",
+      useCases: [
+        `Turn page ${args.page.pageNumber} of "${args.packLabel}" into a reusable legacy template.`,
+        "Bridge an imported deck page into the existing single-page template lab.",
+      ],
+      searchTerms: [args.packLabel, args.page.title, args.page.pageRole, args.page.reusablePattern]
+        .map(slugify)
+        .filter(Boolean),
+      fields: fallbackFields,
+    }),
+    preferredStage: "compose",
+    sourceLabel: `Extracted from imported page ${args.page.pageNumber} of ${args.packLabel}.`,
   };
 }
 

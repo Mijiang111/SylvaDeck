@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { MouseEvent as ReactMouseEvent } from "react";
-import type { PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type {
+  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
+} from "react";
 import { Textarea } from "@/components/ui/textarea";
 import {
   clampCanvasFrameToPage,
@@ -20,7 +22,9 @@ import {
 } from "@/features/studio/generation";
 import type {
   HtmlCanvasFrame,
-  HtmlLayoutZoneKind,
+  HtmlCanvasTransform,
+  HtmlEditableBlockKind,
+  HtmlFitParticipation,
   HtmlVisualNodeKind,
 } from "@/features/studio/types";
 import type { TextLayoutWhiteSpace } from "@/features/studio/text-layout/text-layout-types";
@@ -31,8 +35,13 @@ import {
   type HtmlReportPagePreview,
 } from "./runtime-export-annotations";
 import { HTML_REPORT_PAGE_RADIUS } from "./runtime-report-view-math";
+import type { PreviewSelectionPreference } from "./preview-selection";
+import {
+  resolvePreviewBlockSizingBehavior,
+  type PreviewBlockSizingBehavior,
+} from "./preview-transform-policy";
 
-type PreviewInteractionMode = "idle" | "selected" | "editing-text" | "arranging";
+type PreviewInteractionMode = "idle" | "selected" | "editing-text";
 type PreviewTransformMode =
   | "move"
   | "resize-nw"
@@ -43,10 +52,11 @@ type PreviewTransformSession = {
   target: "block" | "visual";
   id: string;
   mode: PreviewTransformMode;
+  pointerId: number;
   initialFrame: HtmlCanvasFrame;
   initialFontSize?: number;
   blockTextLayout?: {
-    kind: string;
+    kind: HtmlEditableBlockKind;
     text: string;
     items: string[];
     baseFontSizePx: number;
@@ -56,18 +66,33 @@ type PreviewTransformSession = {
     lineHeightPx: number;
     whiteSpace: TextLayoutWhiteSpace;
   };
+  linkedVisualNodeId?: string | null;
+  sizingBehavior: PreviewBlockSizingBehavior;
   originClientX: number;
   originClientY: number;
   anchorX: number;
   anchorY: number;
 };
 
+const SELECTION_MOVE_GRIP_MIN_WIDTH = 52;
+const SELECTION_MOVE_GRIP_MAX_WIDTH = 92;
+const SELECTION_MOVE_GRIP_HEIGHT = 20;
+
+function isDomHTMLElement(value: unknown): value is HTMLElement {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      "nodeType" in value &&
+      (value as Node).nodeType === Node.ELEMENT_NODE,
+  );
+}
+
 function enrichMeasurementWithTextLayout(
   iframe: HTMLIFrameElement | null,
   measurement: PageFitMeasurement,
 ): PageFitMeasurement {
   const pageRoot = iframe?.contentDocument?.querySelector("section.page");
-  if (!(pageRoot instanceof HTMLElement)) {
+  if (!isDomHTMLElement(pageRoot)) {
     return measurement;
   }
 
@@ -78,6 +103,22 @@ function enrichMeasurementWithTextLayout(
     predictedTextOverflow: textPrediction.predictedTextOverflow,
     predictedOverflowRoots: textPrediction.predictedOverflowRoots,
   };
+}
+
+function normalizeFitParticipation(
+  value: string | null | undefined,
+): HtmlFitParticipation | null {
+  return value === "content" || value === "decorative" ? value : null;
+}
+
+function buildQuickEditInitialValue(args: {
+  kind: HtmlEditableBlockKind;
+  items?: string[];
+  text?: string;
+}) {
+  return args.kind === "list"
+    ? (args.items ?? []).join("\n")
+    : (args.text ?? "").replace(/\s+/g, " ").trim();
 }
 
 function resolveAutoSizedBlockFrame(args: {
@@ -128,6 +169,70 @@ function resolveAutoSizedBlockFrame(args: {
   return clampCanvasFrameToPage(nextFrame);
 }
 
+function findPreviewSemanticElement(args: {
+  document: Document;
+  target: "block" | "visual";
+  id: string;
+}) {
+  const selector =
+    args.target === "block"
+      ? `[data-html-block-id="${args.id}"]`
+      : `[data-html-visual-id="${args.id}"]`;
+
+  const matches = Array.from(args.document.querySelectorAll(selector)).filter(
+    (element): element is HTMLElement =>
+      isDomHTMLElement(element) &&
+      element.getAttribute("data-html-canvas-placeholder") !== "true" &&
+      element.getAttribute("data-html-transform-preview-placeholder") !== "true",
+  );
+  if (matches.length === 0) {
+    return null;
+  }
+
+  const scoredMatches = matches.map((element) => {
+    const rect = element.getBoundingClientRect();
+    return {
+      element,
+      freeformRank: element.getAttribute("data-html-freeform") === "true" ? 0 : 1,
+      area: Math.max(1, rect.width * rect.height),
+    };
+  });
+
+  return scoredMatches.sort((left, right) => {
+    if (left.freeformRank !== right.freeformRank) {
+      return left.freeformRank - right.freeformRank;
+    }
+
+    return left.area - right.area;
+  })[0]?.element ?? null;
+}
+
+function scaleFrameToPreviewRect(frame: HtmlCanvasFrame, previewScale: number) {
+  return {
+    top: frame.y * previewScale,
+    left: frame.x * previewScale,
+    width: frame.w * previewScale,
+    height: frame.h * previewScale,
+  };
+}
+
+function buildSelectionMoveGripStyle(args: {
+  frame: HtmlCanvasFrame;
+  previewScale: number;
+}) {
+  const width = args.frame.w * args.previewScale;
+  const gripWidth = Math.max(
+    SELECTION_MOVE_GRIP_MIN_WIDTH,
+    Math.min(SELECTION_MOVE_GRIP_MAX_WIDTH, width * 0.36),
+  );
+  return {
+    top: "-12px",
+    left: `${Math.max(8, (width - gripWidth) / 2)}px`,
+    width: `${gripWidth}px`,
+    height: `${SELECTION_MOVE_GRIP_HEIGHT}px`,
+  };
+}
+
 function HtmlReportPreviewFrame({
   htmlReportTitle,
   pagePreview,
@@ -136,16 +241,20 @@ function HtmlReportPreviewFrame({
   interactive = true,
   onSelectBlock,
   onSelectVisualNode,
-  onSelectLayoutZone,
-  onCommitLayoutZone,
   onQuickEditBlock,
   onCommitBlockTransform,
   onCommitVisualTransform,
+  onReturnBlockToFlow,
+  onReturnVisualToFlow,
+  onShiftBlockLayer,
+  onShiftVisualLayer,
   onPageOverflow,
   onPageMeasurement,
+  preferredSelectionType = "page",
   selectedBlockId,
+  selectedBlockTransform,
   selectedVisualNodeId,
-  selectedLayoutZoneId,
+  selectedVisualTransform,
 }: {
   htmlReportTitle: string;
   pagePreview: HtmlReportPagePreview;
@@ -157,16 +266,6 @@ function HtmlReportPreviewFrame({
     pageNumber: number,
     nodeId: string,
     kind: HtmlVisualNodeKind,
-  ) => void;
-  onSelectLayoutZone?: (
-    pageNumber: number,
-    zoneId: string,
-    kind: HtmlLayoutZoneKind,
-  ) => void;
-  onCommitLayoutZone?: (
-    pageNumber: number,
-    zoneId: string,
-    splitPercent: number,
   ) => void;
   onQuickEditBlock?: (
     pageNumber: number,
@@ -184,30 +283,41 @@ function HtmlReportPreviewFrame({
     nodeId: string,
     frame: HtmlCanvasFrame,
   ) => void;
+  onReturnBlockToFlow?: (pageNumber: number, blockId: string) => void;
+  onReturnVisualToFlow?: (pageNumber: number, nodeId: string) => void;
+  onShiftBlockLayer?: (
+    pageNumber: number,
+    blockId: string,
+    direction: "forward" | "backward",
+    frame: HtmlCanvasFrame,
+    fontSize?: number,
+  ) => void;
+  onShiftVisualLayer?: (
+    pageNumber: number,
+    nodeId: string,
+    direction: "forward" | "backward",
+    frame: HtmlCanvasFrame,
+  ) => void;
   onPageOverflow?: (pageNumber: number, overflows: boolean) => void;
   onPageMeasurement?: (measurement: PageFitMeasurement) => void;
+  preferredSelectionType?: PreviewSelectionPreference;
   selectedBlockId?: string | null;
+  selectedBlockTransform?: HtmlCanvasTransform | null;
   selectedVisualNodeId?: string | null;
-  selectedLayoutZoneId?: string | null;
+  selectedVisualTransform?: HtmlCanvasTransform | null;
 }) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const frameContainerRef = useRef<HTMLDivElement | null>(null);
   const quickEditorRef = useRef<HTMLTextAreaElement | null>(null);
   const [frameEpoch, setFrameEpoch] = useState(0);
   const [isFrameVisible, setIsFrameVisible] = useState(false);
-  const [selectedLayoutRect, setSelectedLayoutRect] = useState<null | {
-    top: number;
-    left: number;
-    width: number;
-    height: number;
-  }>(null);
   const [selectedBlockRect, setSelectedBlockRect] = useState<null | {
     top: number;
     left: number;
     width: number;
     height: number;
     fontSize?: number;
-    blockKind: string;
+    blockKind: HtmlEditableBlockKind;
     text: string;
     items: string[];
     fontFamily: string;
@@ -215,6 +325,11 @@ function HtmlReportPreviewFrame({
     fontStyle: string;
     lineHeightPx: number;
     whiteSpace: TextLayoutWhiteSpace;
+    linkedVisualNodeId?: string | null;
+    linkedVisualKind?: HtmlVisualNodeKind | null;
+    linkedVisualFitParticipation?: HtmlFitParticipation | null;
+    sharesSource: boolean;
+    sizingBehavior: PreviewBlockSizingBehavior;
   }>(null);
   const [selectedVisualRect, setSelectedVisualRect] = useState<null | {
     top: number;
@@ -222,7 +337,6 @@ function HtmlReportPreviewFrame({
     width: number;
     height: number;
   }>(null);
-  const [layoutPreviewSplit, setLayoutPreviewSplit] = useState<number | null>(null);
   const [quickEditor, setQuickEditor] = useState<null | {
     blockId: string;
     kind: string;
@@ -232,6 +346,11 @@ function HtmlReportPreviewFrame({
     width: number;
     height: number;
   }>(null);
+  const [pendingQuickEdit, setPendingQuickEdit] = useState<null | {
+    blockId: string;
+    kind: string;
+    value: string;
+  }>(null);
   const [transformPreview, setTransformPreview] = useState<null | {
     target: "block" | "visual";
     id: string;
@@ -240,15 +359,19 @@ function HtmlReportPreviewFrame({
   }>(null);
   const [interactionMode, setInteractionMode] = useState<PreviewInteractionMode>("idle");
   const [transformSession, setTransformSession] = useState<PreviewTransformSession | null>(null);
+  const [selectionMeasureVersion, setSelectionMeasureVersion] = useState(0);
   const previewBridgeTargetRef = useRef<string | null>(null);
-  const suppressNextArrangeClickRef = useRef(false);
+  const transformPreviewRafRef = useRef<number | null>(null);
+  const transformLatestPointerRef = useRef<null | { clientX: number; clientY: number }>(null);
+  const transformPointerCaptureTargetRef = useRef<HTMLElement | null>(null);
+  const transformPointerIdRef = useRef<number | null>(null);
+  const selectedBlockIdRef = useRef<string | null>(selectedBlockId ?? null);
+  const selectedVisualNodeIdRef = useRef<string | null>(selectedVisualNodeId ?? null);
+  const quickEditorOpenRef = useRef(Boolean(quickEditor));
+  const selectedBlockRectRef = useRef<typeof selectedBlockRect>(null);
 
   const scaledWidth = Math.round(HTML_REPORT_PAGE_WIDTH * previewScale);
   const scaledHeight = Math.round(HTML_REPORT_PAGE_HEIGHT * previewScale);
-  const selectedLayoutZone = useMemo(
-    () => pagePreview.layoutPage?.zones.find((zone) => zone.id === selectedLayoutZoneId) ?? null,
-    [pagePreview.layoutPage, selectedLayoutZoneId],
-  );
 
   function postPreviewCommand(payload: Record<string, unknown>) {
     iframeRef.current?.contentWindow?.postMessage(
@@ -261,7 +384,48 @@ function HtmlReportPreviewFrame({
     );
   }
 
+  const clearTransformPreviewRaf = useCallback(() => {
+    if (typeof window !== "undefined" && transformPreviewRafRef.current !== null) {
+      window.cancelAnimationFrame(transformPreviewRafRef.current);
+    }
+    transformPreviewRafRef.current = null;
+    transformLatestPointerRef.current = null;
+  }, []);
+
+  const releaseTransformPointerCapture = useCallback((pointerId?: number | null) => {
+    const captureTarget = transformPointerCaptureTargetRef.current;
+    const resolvedPointerId = pointerId ?? transformPointerIdRef.current;
+    if (
+      captureTarget &&
+      resolvedPointerId != null &&
+      typeof captureTarget.releasePointerCapture === "function"
+    ) {
+      try {
+        if (captureTarget.hasPointerCapture(resolvedPointerId)) {
+          captureTarget.releasePointerCapture(resolvedPointerId);
+        }
+      } catch {
+        // Ignore capture release failures when the pointer was already lost.
+      }
+    }
+    transformPointerCaptureTargetRef.current = null;
+    transformPointerIdRef.current = null;
+  }, []);
+
+  const scheduleSelectionRemeasure = useCallback(() => {
+    if (typeof window === "undefined") {
+      setSelectionMeasureVersion((current) => current + 1);
+      return;
+    }
+
+    window.requestAnimationFrame(() => {
+      setSelectionMeasureVersion((current) => current + 1);
+    });
+  }, []);
+
   function queueTransformCancel(nextMode: PreviewInteractionMode = "selected") {
+    releaseTransformPointerCapture(transformSession?.pointerId ?? null);
+    clearTransformPreviewRaf();
     if (previewBridgeTargetRef.current) {
       postPreviewCommand({
         action: "transform-preview-cancel",
@@ -273,8 +437,59 @@ function HtmlReportPreviewFrame({
     setInteractionMode(nextMode);
   }
 
-  function suppressNextArrangeClick() {
-    suppressNextArrangeClickRef.current = true;
+  function openQuickEditorFromInteraction(args: {
+    blockId: string;
+    kind: HtmlEditableBlockKind;
+    value: string;
+  }) {
+    const measuredRect = (() => {
+      if (
+        selectedBlockIdRef.current === args.blockId &&
+        selectedBlockRectRef.current
+      ) {
+        return selectedBlockRectRef.current;
+      }
+
+      const document = iframeRef.current?.contentDocument;
+      if (!document) {
+        return null;
+      }
+
+      const element = findPreviewSemanticElement({
+        document,
+        target: "block",
+        id: args.blockId,
+      });
+      if (!element) {
+        return null;
+      }
+
+      const rect = element.getBoundingClientRect();
+      return {
+        top: rect.top * previewScale,
+        left: rect.left * previewScale,
+        width: rect.width * previewScale,
+        height: rect.height * previewScale,
+      };
+    })();
+
+    if (!measuredRect) {
+      return false;
+    }
+
+    setQuickEditor({
+      blockId: args.blockId,
+      kind: args.kind,
+      value: args.value,
+      top: Math.max(12, measuredRect.top),
+      left: Math.max(12, measuredRect.left),
+      width: Math.min(measuredRect.width + 12, scaledWidth - 24),
+      height: Math.max(measuredRect.height, args.kind === "list" ? 120 : 88),
+    });
+    setPendingQuickEdit(null);
+    quickEditorOpenRef.current = true;
+    setInteractionMode("editing-text");
+    return true;
   }
 
   useEffect(() => {
@@ -324,6 +539,42 @@ function HtmlReportPreviewFrame({
     };
   }, [pagePreview.pageNumber, pagePreview.srcDoc, previewScale]);
 
+  useLayoutEffect(() => {
+    if (frameEpoch < 1) {
+      return;
+    }
+
+    postPreviewCommand({
+      action: "selection-context",
+      preferredSelectionType,
+      selectedBlockId,
+      selectedVisualNodeId,
+    });
+  }, [
+    frameEpoch,
+    pagePreview.pageNumber,
+    preferredSelectionType,
+    selectedBlockId,
+    selectedVisualNodeId,
+  ]);
+
+  useEffect(() => {
+    if (frameEpoch < 1) {
+      return;
+    }
+
+    scheduleSelectionRemeasure();
+  }, [
+    frameEpoch,
+    pagePreview.srcDoc,
+    previewScale,
+    selectedBlockId,
+    selectedBlockTransform,
+    selectedVisualNodeId,
+    selectedVisualTransform,
+    scheduleSelectionRemeasure,
+  ]);
+
   useEffect(() => {
     if (frameEpoch < 1) {
       return;
@@ -351,6 +602,22 @@ function HtmlReportPreviewFrame({
   );
 
   useEffect(() => {
+    selectedBlockIdRef.current = selectedBlockId ?? null;
+  }, [selectedBlockId]);
+
+  useEffect(() => {
+    selectedVisualNodeIdRef.current = selectedVisualNodeId ?? null;
+  }, [selectedVisualNodeId]);
+
+  useEffect(() => {
+    quickEditorOpenRef.current = Boolean(quickEditor);
+  }, [quickEditor]);
+
+  useEffect(() => {
+    selectedBlockRectRef.current = selectedBlockRect;
+  }, [selectedBlockRect]);
+
+  useEffect(() => {
     if (!quickEditor) {
       return;
     }
@@ -372,14 +639,34 @@ function HtmlReportPreviewFrame({
     }
 
     if (
-      selectedVisualNodeId ||
-      selectedLayoutZoneId ||
-      !selectedBlockId ||
-      selectedBlockId !== quickEditor.blockId
+      selectedVisualNodeId || !selectedBlockId || selectedBlockId !== quickEditor.blockId
     ) {
       setQuickEditor(null);
     }
-  }, [quickEditor, selectedBlockId, selectedLayoutZoneId, selectedVisualNodeId]);
+  }, [quickEditor, selectedBlockId, selectedVisualNodeId]);
+
+  useEffect(() => {
+    if (!pendingQuickEdit || !selectedBlockId || selectedBlockId !== pendingQuickEdit.blockId) {
+      return;
+    }
+    if (!selectedBlockRect) {
+      return;
+    }
+
+    setQuickEditor({
+      blockId: pendingQuickEdit.blockId,
+      kind: pendingQuickEdit.kind,
+      value: pendingQuickEdit.value,
+      top: Math.max(12, selectedBlockRect.top),
+      left: Math.max(12, selectedBlockRect.left),
+      width: Math.min(selectedBlockRect.width + 12, scaledWidth - 24),
+      height: Math.max(
+        selectedBlockRect.height,
+        pendingQuickEdit.kind === "list" ? 120 : 88,
+      ),
+    });
+    setPendingQuickEdit(null);
+  }, [pendingQuickEdit, scaledWidth, selectedBlockId, selectedBlockRect]);
 
   useEffect(() => {
     if (quickEditor) {
@@ -387,13 +674,13 @@ function HtmlReportPreviewFrame({
       return;
     }
 
-    if (!selectedBlockId && !selectedVisualNodeId && !selectedLayoutZoneId) {
+    if (!selectedBlockId && !selectedVisualNodeId) {
       setInteractionMode("idle");
       return;
     }
 
-    setInteractionMode((current) => (current === "arranging" ? current : "selected"));
-  }, [quickEditor, selectedBlockId, selectedLayoutZoneId, selectedVisualNodeId]);
+    setInteractionMode("selected");
+  }, [quickEditor, selectedBlockId, selectedVisualNodeId]);
 
   useEffect(() => {
     const iframe = iframeRef.current;
@@ -431,21 +718,22 @@ function HtmlReportPreviewFrame({
         action?: "select" | "edit" | "inspect" | "background";
         pageNumber: number;
         blockId: string;
-        blockKind: string;
+        blockKind: HtmlEditableBlockKind;
         fontSize?: number;
         fontFamily?: string;
         fontWeight?: string;
         fontStyle?: string;
         lineHeight?: number;
+        linkedVisualNodeId?: string;
+        linkedVisualKind?: HtmlVisualNodeKind;
+        linkedVisualFitParticipation?: HtmlFitParticipation;
+        sharesSource?: boolean;
+        sizingBehavior?: PreviewBlockSizingBehavior;
         whiteSpace?: TextLayoutWhiteSpace;
         visualNodeId?: string;
         visualKind?: HtmlVisualNodeKind;
-        layoutZoneId?: string;
-        layoutKind?: HtmlLayoutZoneKind;
-        splitPercent?: number;
         text?: string;
         items?: string[];
-        rect?: { top: number; left: number; width: number; height: number };
       };
 
       if (payload.action === "background") {
@@ -454,40 +742,16 @@ function HtmlReportPreviewFrame({
       }
 
       if (payload.visualNodeId && payload.visualKind) {
+        selectedBlockIdRef.current = null;
+        selectedVisualNodeIdRef.current = payload.visualNodeId;
+        quickEditorOpenRef.current = false;
         onSelectVisualNode?.(payload.pageNumber, payload.visualNodeId, payload.visualKind);
         queueTransformCancel("selected");
         setInteractionMode("selected");
-        if (payload.rect) {
-          setSelectedVisualRect({
-            top: payload.rect.top * previewScale,
-            left: payload.rect.left * previewScale,
-            width: payload.rect.width * previewScale,
-            height: payload.rect.height * previewScale,
-          });
-        }
-        setSelectedBlockRect(null);
-        return;
-      }
-
-      if (payload.layoutZoneId && payload.layoutKind) {
-        onSelectLayoutZone?.(payload.pageNumber, payload.layoutZoneId, payload.layoutKind);
-        queueTransformCancel("selected");
-        setInteractionMode("selected");
-        if (payload.rect) {
-          setSelectedLayoutRect({
-            top: payload.rect.top * previewScale,
-            left: payload.rect.left * previewScale,
-            width: payload.rect.width * previewScale,
-            height: payload.rect.height * previewScale,
-          });
-        }
-        if (payload.action === "select") {
-          setLayoutPreviewSplit(
-            Number.isFinite(payload.splitPercent) ? Number(payload.splitPercent) : null,
-          );
-        }
-        setSelectedBlockRect(null);
+        setPendingQuickEdit(null);
         setSelectedVisualRect(null);
+        setSelectedBlockRect(null);
+        scheduleSelectionRemeasure();
         return;
       }
 
@@ -495,60 +759,71 @@ function HtmlReportPreviewFrame({
         return;
       }
 
+      const quickEditValue = buildQuickEditInitialValue({
+        kind: payload.blockKind,
+        items: payload.items,
+        text: payload.text,
+      });
+
       if (payload.action === "select") {
+        if (
+          payload.blockId === selectedBlockIdRef.current &&
+          !selectedVisualNodeIdRef.current &&
+          !quickEditorOpenRef.current &&
+          onQuickEditBlock
+        ) {
+          if (
+            !openQuickEditorFromInteraction({
+              blockId: payload.blockId,
+              kind: payload.blockKind,
+              value: quickEditValue,
+            })
+          ) {
+            setPendingQuickEdit({
+              blockId: payload.blockId,
+              kind: payload.blockKind,
+              value: quickEditValue,
+            });
+          }
+          queueTransformCancel("editing-text");
+          return;
+        }
+
+        selectedBlockIdRef.current = payload.blockId;
+        selectedVisualNodeIdRef.current = null;
+        quickEditorOpenRef.current = false;
         onSelectBlock?.(payload.pageNumber, payload.blockId);
         queueTransformCancel("selected");
         setInteractionMode("selected");
-        if (payload.rect) {
-          setSelectedBlockRect({
-            top: payload.rect.top * previewScale,
-            left: payload.rect.left * previewScale,
-            width: payload.rect.width * previewScale,
-            height: payload.rect.height * previewScale,
-            fontSize:
-              Number.isFinite(payload.fontSize) && (payload.fontSize ?? 0) > 0
-                ? payload.fontSize
-                : undefined,
-            blockKind: payload.blockKind,
-            text: payload.text ?? "",
-            items: payload.items ?? [],
-            fontFamily: payload.fontFamily ?? "Arial",
-            fontWeight: payload.fontWeight ?? "400",
-            fontStyle: payload.fontStyle ?? "normal",
-            lineHeightPx:
-              Number.isFinite(payload.lineHeight) && (payload.lineHeight ?? 0) > 0
-                ? Number(payload.lineHeight)
-                : (Number.isFinite(payload.fontSize) && (payload.fontSize ?? 0) > 0
-                    ? Number(payload.fontSize) * 1.2
-                    : 19.2),
-            whiteSpace: payload.whiteSpace === "pre-wrap" ? "pre-wrap" : "normal",
-          });
-        }
+        setPendingQuickEdit(null);
+        setSelectedBlockRect(null);
         setSelectedVisualRect(null);
+        scheduleSelectionRemeasure();
       }
 
-      if (payload.action !== "edit" || !onQuickEditBlock || !payload.rect) {
+      if (payload.action !== "edit" || !onQuickEditBlock) {
         return;
       }
 
+      selectedBlockIdRef.current = payload.blockId;
+      selectedVisualNodeIdRef.current = null;
       onSelectBlock?.(payload.pageNumber, payload.blockId);
 
-      const initialValue =
-        payload.blockKind === "list"
-          ? (payload.items ?? []).join("\n")
-          : (payload.text ?? "").replace(/\s+/g, " ").trim();
-
-      setQuickEditor({
-        blockId: payload.blockId,
-        kind: payload.blockKind,
-        value: initialValue,
-        top: Math.max(12, payload.rect.top * previewScale),
-        left: Math.max(12, payload.rect.left * previewScale),
-        width: Math.min(payload.rect.width * previewScale + 12, scaledWidth - 24),
-        height: Math.max(payload.rect.height * previewScale, payload.blockKind === "list" ? 120 : 88),
-      });
+      if (
+        !openQuickEditorFromInteraction({
+          blockId: payload.blockId,
+          kind: payload.blockKind,
+          value: quickEditValue,
+        })
+      ) {
+        setPendingQuickEdit({
+          blockId: payload.blockId,
+          kind: payload.blockKind,
+          value: quickEditValue,
+        });
+      }
       queueTransformCancel("editing-text");
-      setInteractionMode("editing-text");
+      scheduleSelectionRemeasure();
     };
 
     window.addEventListener("message", handleMessage);
@@ -556,16 +831,12 @@ function HtmlReportPreviewFrame({
       window.removeEventListener("message", handleMessage);
     };
   }, [
-    onCommitLayoutZone,
     onPageMeasurement,
     onPageOverflow,
     onQuickEditBlock,
     onSelectBlock,
-    onSelectLayoutZone,
     onSelectVisualNode,
-    previewScale,
-    scaledHeight,
-    scaledWidth,
+    scheduleSelectionRemeasure,
   ]);
 
   useEffect(() => {
@@ -583,16 +854,29 @@ function HtmlReportPreviewFrame({
       return;
     }
 
-    const selectedElement = document.querySelector(
-      `[data-html-block-id="${selectedBlockId}"]`,
-    ) as HTMLElement | null;
+    const selectedElement = findPreviewSemanticElement({
+      document,
+      target: "block",
+      id: selectedBlockId,
+    });
     if (selectedElement) {
       selectedElement.setAttribute("data-html-block-selected", "true");
       const rect = selectedElement.getBoundingClientRect();
-      const computed = window.getComputedStyle(selectedElement);
+      const measureWindow = selectedElement.ownerDocument.defaultView ?? window;
+      const computed = measureWindow.getComputedStyle(selectedElement);
       const fontSize = Number.parseFloat(computed.fontSize ?? "");
       const lineHeight = Number.parseFloat(computed.lineHeight ?? "");
-      const blockKind = selectedElement.getAttribute("data-html-block-kind") ?? "paragraph";
+      const blockKind =
+        (selectedElement.getAttribute("data-html-block-kind") as HtmlEditableBlockKind | null) ??
+        "paragraph";
+      const linkedVisualNodeId = selectedElement.getAttribute("data-html-visual-id") ?? null;
+      const linkedVisualKind =
+        (selectedElement.getAttribute("data-html-visual-kind") as HtmlVisualNodeKind | null) ??
+        null;
+      const linkedVisualFitParticipation = normalizeFitParticipation(
+        selectedElement.getAttribute("data-html-fit-role"),
+      );
+      const sharesSource = Boolean(linkedVisualNodeId);
       const items =
         blockKind === "list"
           ? Array.from(selectedElement.querySelectorAll(":scope li"))
@@ -611,10 +895,23 @@ function HtmlReportPreviewFrame({
         fontFamily: computed.fontFamily || "Arial",
         fontWeight: computed.fontWeight || "400",
         fontStyle: computed.fontStyle || "normal",
+        linkedVisualNodeId,
+        linkedVisualKind,
+        linkedVisualFitParticipation,
+        sharesSource,
+        sizingBehavior: resolvePreviewBlockSizingBehavior({
+          blockKind,
+          linkedVisualNodeId,
+          linkedVisualKind,
+          linkedVisualFitParticipation,
+          sharesSource,
+        }),
         lineHeightPx:
           Number.isFinite(lineHeight) && lineHeight > 0
             ? lineHeight
-            : (Number.isFinite(fontSize) && fontSize > 0 ? fontSize * 1.2 : 19.2),
+            : Number.isFinite(fontSize) && fontSize > 0
+              ? fontSize * 1.2
+              : 19.2,
         whiteSpace:
           computed.whiteSpace === "pre-wrap" || computed.whiteSpace === "pre-line"
             ? "pre-wrap"
@@ -623,7 +920,14 @@ function HtmlReportPreviewFrame({
     } else {
       setSelectedBlockRect(null);
     }
-  }, [frameEpoch, previewScale, selectedBlockId, pagePreview.srcDoc]);
+  }, [
+    frameEpoch,
+    previewScale,
+    selectedBlockId,
+    selectedBlockTransform,
+    pagePreview.srcDoc,
+    selectionMeasureVersion,
+  ]);
 
   useEffect(() => {
     const document = iframeRef.current?.contentDocument;
@@ -640,9 +944,11 @@ function HtmlReportPreviewFrame({
       return;
     }
 
-    const selectedElement = document.querySelector(
-      `[data-html-visual-id="${selectedVisualNodeId}"]`,
-    ) as HTMLElement | null;
+    const selectedElement = findPreviewSemanticElement({
+      document,
+      target: "visual",
+      id: selectedVisualNodeId,
+    });
     if (selectedElement) {
       selectedElement.setAttribute("data-html-visual-selected", "true");
       const rect = selectedElement.getBoundingClientRect();
@@ -655,62 +961,14 @@ function HtmlReportPreviewFrame({
     } else {
       setSelectedVisualRect(null);
     }
-  }, [frameEpoch, previewScale, selectedVisualNodeId, pagePreview.srcDoc]);
-
-  useEffect(() => {
-    const document = iframeRef.current?.contentDocument;
-    if (!document) {
-      return;
-    }
-
-    document.querySelectorAll("[data-html-layout-selected='true']").forEach((element) => {
-      element.removeAttribute("data-html-layout-selected");
-    });
-
-    if (!selectedLayoutZoneId) {
-      setSelectedLayoutRect(null);
-      return;
-    }
-
-    const selectedElement = document.querySelector(
-      `[data-html-layout-id="${selectedLayoutZoneId}"]`,
-    ) as HTMLElement | null;
-    if (selectedElement) {
-      selectedElement.setAttribute("data-html-layout-selected", "true");
-      const rect = selectedElement.getBoundingClientRect();
-      setSelectedLayoutRect({
-        top: rect.top * previewScale,
-        left: rect.left * previewScale,
-        width: rect.width * previewScale,
-        height: rect.height * previewScale,
-      });
-      if (layoutPreviewSplit === null) {
-        const splitPercent = Number.parseFloat(selectedElement.getAttribute("data-layout-split") ?? "");
-        if (Number.isFinite(splitPercent)) {
-          setLayoutPreviewSplit(splitPercent);
-        }
-      }
-    } else {
-      setSelectedLayoutRect(null);
-    }
-  }, [frameEpoch, layoutPreviewSplit, previewScale, selectedLayoutZoneId, pagePreview.srcDoc]);
-
-  useEffect(() => {
-    if (!selectedLayoutZoneId) {
-      setLayoutPreviewSplit(null);
-      return;
-    }
-
-    if (!selectedLayoutZone) {
-      setSelectedLayoutRect(null);
-      setLayoutPreviewSplit(null);
-      return;
-    }
-
-    if (layoutPreviewSplit === null) {
-      setLayoutPreviewSplit(selectedLayoutZone.splitPercent);
-    }
-  }, [layoutPreviewSplit, selectedLayoutZone, selectedLayoutZoneId]);
+  }, [
+    frameEpoch,
+    previewScale,
+    selectedVisualNodeId,
+    selectedVisualTransform,
+    pagePreview.srcDoc,
+    selectionMeasureVersion,
+  ]);
 
   useEffect(() => {
     setTransformPreview((current) => {
@@ -729,11 +987,12 @@ function HtmlReportPreviewFrame({
 
   useEffect(() => {
     if (!transformSession) {
-      return;
+      releaseTransformPointerCapture(null);
     }
+  }, [releaseTransformPointerCapture, transformSession]);
 
-    if (interactionMode !== "arranging") {
-      queueTransformCancel("selected");
+  useEffect(() => {
+    if (!transformSession) {
       return;
     }
 
@@ -743,7 +1002,7 @@ function HtmlReportPreviewFrame({
     ) {
       queueTransformCancel("selected");
     }
-  }, [interactionMode, selectedBlockId, selectedVisualNodeId, transformSession]);
+  }, [selectedBlockId, selectedVisualNodeId, transformSession]);
 
   function applyQuickEdit() {
     if (!quickEditor || !onQuickEditBlock) {
@@ -783,10 +1042,11 @@ function HtmlReportPreviewFrame({
       return;
     }
 
-    const initialValue =
-      selectedBlock.kind === "list"
-        ? (selectedBlock.items ?? []).join("\n")
-        : (selectedBlock.text ?? "").replace(/\s+/g, " ").trim();
+    const initialValue = buildQuickEditInitialValue({
+      kind: selectedBlock.kind,
+      items: selectedBlock.items,
+      text: selectedBlock.text,
+    });
 
     setQuickEditor({
       blockId: selectedBlock.id,
@@ -800,57 +1060,24 @@ function HtmlReportPreviewFrame({
     setInteractionMode("editing-text");
   }
 
-  function postLayoutPreview(zoneId: string, splitPercent: number) {
-    iframeRef.current?.contentWindow?.postMessage(
-      {
-        type: "ppt-html-preview-command",
-        action: "layout-preview",
-        pageNumber: pagePreview.pageNumber,
-        zoneId,
-        splitPercent,
-      },
-      "*",
-    );
-  }
-
-  function beginLayoutDrag(event: ReactPointerEvent<HTMLButtonElement>) {
-    if (!selectedLayoutZone || !selectedLayoutRect || !frameContainerRef.current) {
-      return;
+  function openQuickEditorForActiveSelection() {
+    if (selectedBlockId && selectedBlockRect && onQuickEditBlock) {
+      if (
+        openQuickEditorFromInteraction({
+          blockId: selectedBlockId,
+          kind: selectedBlockRect.blockKind,
+          value: buildQuickEditInitialValue({
+            kind: selectedBlockRect.blockKind,
+            items: selectedBlockRect.items,
+            text: selectedBlockRect.text,
+          }),
+        })
+      ) {
+        return;
+      }
     }
 
-    event.preventDefault();
-    event.stopPropagation();
-
-    const containerRect = frameContainerRef.current.getBoundingClientRect();
-    const zoneRect = selectedLayoutRect;
-
-    const computeSplit = (clientX: number) => {
-      const localX = clientX - containerRect.left - zoneRect.left;
-      const next = (localX / Math.max(1, zoneRect.width)) * 100;
-      return Math.max(28, Math.min(72, Math.round(next)));
-    };
-
-    const applyPreview = (clientX: number) => {
-      const nextSplit = computeSplit(clientX);
-      setLayoutPreviewSplit(nextSplit);
-      postLayoutPreview(selectedLayoutZone.id, nextSplit);
-      return nextSplit;
-    };
-
-    let lastSplit = applyPreview(event.clientX);
-
-    const handlePointerMove = (moveEvent: PointerEvent) => {
-      lastSplit = applyPreview(moveEvent.clientX);
-    };
-
-    const handlePointerUp = () => {
-      window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerup", handlePointerUp);
-      onCommitLayoutZone?.(pagePreview.pageNumber, selectedLayoutZone.id, lastSplit);
-    };
-
-    window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("pointerup", handlePointerUp);
+    openQuickEditorForSelectedBlock();
   }
 
   function snapFrame(frame: HtmlCanvasFrame) {
@@ -905,7 +1132,7 @@ function HtmlReportPreviewFrame({
 
     const minSize = 32;
     let finalFrame = transformPreview?.frame ?? transformSession.initialFrame;
-    let finalFontSize = transformSession.initialFontSize;
+    let finalFontSize = transformPreview?.fontSize ?? transformSession.initialFontSize;
 
     const computeFrame = (clientX: number, clientY: number) => {
       const deltaX = (clientX - transformSession.originClientX) / previewScale;
@@ -982,45 +1209,22 @@ function HtmlReportPreviewFrame({
       return snapFrame(nextFrame);
     };
 
-    const commitTransform = () => {
-      postPreviewCommand({
-        action: "transform-preview-commit",
-        target: transformSession.target,
-        targetId: transformSession.id,
-        frame: finalFrame,
-        fontSize: finalFontSize,
-      });
-      previewBridgeTargetRef.current = null;
-      suppressNextArrangeClick();
-      setTransformPreview(null);
-      setTransformSession(null);
-      setInteractionMode("arranging");
+    const applyTransformPreviewFromPointer = (clientX: number, clientY: number) => {
+      finalFrame = computeFrame(clientX, clientY);
       if (transformSession.target === "block") {
-        onCommitBlockTransform?.(
-          pagePreview.pageNumber,
-          transformSession.id,
-          finalFrame,
-          finalFontSize,
-        );
-      } else {
-        onCommitVisualTransform?.(pagePreview.pageNumber, transformSession.id, finalFrame);
-      }
-    };
-
-    const cancelTransform = () => {
-      queueTransformCancel("selected");
-    };
-
-    const handlePointerMove = (moveEvent: PointerEvent) => {
-      finalFrame = computeFrame(moveEvent.clientX, moveEvent.clientY);
-      if (transformSession.target === "block") {
-        const baseFontSize = transformSession.initialFontSize ?? transformSession.blockTextLayout?.baseFontSizePx ?? 16;
-        const scaleRatio = Math.max(
-          0.55,
-          Math.min(2.4, finalFrame.w / Math.max(1, transformSession.initialFrame.w)),
-        );
-        finalFontSize = Math.max(10, Math.round(baseFontSize * scaleRatio));
-        if (transformSession.blockTextLayout) {
+        if (
+          transformSession.sizingBehavior === "text-auto" &&
+          transformSession.blockTextLayout
+        ) {
+          const baseFontSize =
+            transformSession.initialFontSize ??
+            transformSession.blockTextLayout.baseFontSizePx ??
+            16;
+          const scaleRatio = Math.max(
+            0.55,
+            Math.min(2.4, finalFrame.w / Math.max(1, transformSession.initialFrame.w)),
+          );
+          finalFontSize = Math.max(10, Math.round(baseFontSize * scaleRatio));
           finalFrame = resolveAutoSizedBlockFrame({
             frame: finalFrame,
             mode: transformSession.mode,
@@ -1028,7 +1232,11 @@ function HtmlReportPreviewFrame({
             fontSizePx: finalFontSize,
             initialFrame: transformSession.initialFrame,
           });
+        } else {
+          finalFontSize = undefined;
         }
+      } else {
+        finalFontSize = undefined;
       }
 
       const previewKey = `${transformSession.target}:${transformSession.id}`;
@@ -1051,8 +1259,96 @@ function HtmlReportPreviewFrame({
       previewBridgeTargetRef.current = previewKey;
     };
 
-    const handlePointerDown = () => {
+    const flushPendingTransformPreview = () => {
+      if (typeof window !== "undefined" && transformPreviewRafRef.current !== null) {
+        window.cancelAnimationFrame(transformPreviewRafRef.current);
+      }
+      transformPreviewRafRef.current = null;
+      const latestPointer = transformLatestPointerRef.current;
+      if (latestPointer) {
+        applyTransformPreviewFromPointer(latestPointer.clientX, latestPointer.clientY);
+      }
+      transformLatestPointerRef.current = null;
+    };
+
+    const commitTransform = () => {
+      flushPendingTransformPreview();
+      releaseTransformPointerCapture(transformSession.pointerId);
+      postPreviewCommand({
+        action: "transform-preview-commit",
+        target: transformSession.target,
+        targetId: transformSession.id,
+        frame: finalFrame,
+        fontSize: finalFontSize,
+      });
+      previewBridgeTargetRef.current = null;
+      setTransformPreview(null);
+      setTransformSession(null);
+      setInteractionMode("selected");
+      scheduleSelectionRemeasure();
+      if (transformSession.target === "block") {
+        setSelectedBlockRect((current) => {
+          if (!current) {
+            return current;
+          }
+          return {
+            ...current,
+            ...scaleFrameToPreviewRect(finalFrame, previewScale),
+            fontSize: finalFontSize ?? current.fontSize,
+          };
+        });
+      } else {
+        setSelectedVisualRect(scaleFrameToPreviewRect(finalFrame, previewScale));
+      }
+      if (transformSession.target === "block") {
+        onCommitBlockTransform?.(
+          pagePreview.pageNumber,
+          transformSession.id,
+          finalFrame,
+          finalFontSize,
+        );
+      } else {
+        onCommitVisualTransform?.(pagePreview.pageNumber, transformSession.id, finalFrame);
+      }
+    };
+
+    const cancelTransform = () => {
+      queueTransformCancel("selected");
+    };
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId !== transformSession.pointerId) {
+        return;
+      }
+      transformLatestPointerRef.current = {
+        clientX: moveEvent.clientX,
+        clientY: moveEvent.clientY,
+      };
+      if (transformPreviewRafRef.current !== null || typeof window === "undefined") {
+        return;
+      }
+      transformPreviewRafRef.current = window.requestAnimationFrame(() => {
+        transformPreviewRafRef.current = null;
+        const latestPointer = transformLatestPointerRef.current;
+        if (!latestPointer) {
+          return;
+        }
+        applyTransformPreviewFromPointer(latestPointer.clientX, latestPointer.clientY);
+      });
+    };
+
+    const handlePointerUp = (upEvent: PointerEvent) => {
+      if (upEvent.pointerId !== transformSession.pointerId) {
+        return;
+      }
       commitTransform();
+    };
+
+    const handlePointerCancel = (cancelEvent: PointerEvent) => {
+      if (cancelEvent.pointerId !== transformSession.pointerId) {
+        return;
+      }
+      cancelTransform();
     };
 
     const handleKeyDown = (keyEvent: KeyboardEvent) => {
@@ -1064,43 +1360,31 @@ function HtmlReportPreviewFrame({
     };
 
     window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("pointerdown", handlePointerDown, true);
+    window.addEventListener("pointerup", handlePointerUp, true);
+    window.addEventListener("pointercancel", handlePointerCancel, true);
     window.addEventListener("keydown", handleKeyDown);
 
     return () => {
+      clearTransformPreviewRaf();
       window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerdown", handlePointerDown, true);
+      window.removeEventListener("pointerup", handlePointerUp, true);
+      window.removeEventListener("pointercancel", handlePointerCancel, true);
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [
+    clearTransformPreviewRaf,
     onCommitBlockTransform,
     onCommitVisualTransform,
     pagePreview.pageNumber,
     previewScale,
+    scheduleSelectionRemeasure,
     transformSession,
   ]);
-
-  useEffect(() => {
-    if (interactionMode !== "arranging" || transformSession) {
-      return;
-    }
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") {
-        return;
-      }
-      event.preventDefault();
-      setInteractionMode("selected");
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [interactionMode, transformSession]);
 
   function beginTransformInteraction(
     target: "block" | "visual",
     mode: PreviewTransformMode,
-    event: ReactMouseEvent<HTMLButtonElement | HTMLDivElement>,
+    event: ReactPointerEvent<HTMLButtonElement | HTMLDivElement>,
     options?: { centerOnPointer?: boolean },
   ) {
     const targetRect = target === "block" ? selectedBlockRect : selectedVisualRect;
@@ -1110,13 +1394,24 @@ function HtmlReportPreviewFrame({
       return;
     }
 
-    if (suppressNextArrangeClickRef.current) {
-      suppressNextArrangeClickRef.current = false;
-      return;
-    }
-
     event.preventDefault();
     event.stopPropagation();
+    if (
+      isDomHTMLElement(event.currentTarget) &&
+      typeof event.currentTarget.setPointerCapture === "function"
+    ) {
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+        transformPointerCaptureTargetRef.current = event.currentTarget;
+        transformPointerIdRef.current = event.pointerId;
+      } catch {
+        transformPointerCaptureTargetRef.current = null;
+        transformPointerIdRef.current = null;
+      }
+    } else {
+      transformPointerCaptureTargetRef.current = null;
+      transformPointerIdRef.current = null;
+    }
 
     const initialFrame: HtmlCanvasFrame = {
       x: Math.round(targetRect.left / previewScale),
@@ -1153,7 +1448,7 @@ function HtmlReportPreviewFrame({
           })
         : initialFrame;
 
-    setInteractionMode("arranging");
+    setInteractionMode("selected");
     setTransformPreview({
       target,
       id: targetId,
@@ -1172,10 +1467,13 @@ function HtmlReportPreviewFrame({
       target,
       id: targetId,
       mode,
+      pointerId: event.pointerId,
       initialFrame,
       initialFontSize,
       blockTextLayout:
-        target === "block" && selectedBlockRect
+        target === "block" &&
+        selectedBlockRect &&
+        selectedBlockRect.sizingBehavior === "text-auto"
           ? {
               kind: selectedBlockRect.blockKind,
               text: selectedBlockRect.text,
@@ -1188,26 +1486,24 @@ function HtmlReportPreviewFrame({
               whiteSpace: selectedBlockRect.whiteSpace,
             }
           : undefined,
+      linkedVisualNodeId:
+        target === "block" ? selectedBlockRect?.linkedVisualNodeId ?? null : null,
+      sizingBehavior:
+        target === "block"
+          ? selectedBlockRect?.sizingBehavior ??
+            resolvePreviewBlockSizingBehavior({
+              blockKind: selectedBlockRect?.blockKind ?? null,
+              linkedVisualNodeId: selectedBlockRect?.linkedVisualNodeId ?? null,
+              linkedVisualKind: selectedBlockRect?.linkedVisualKind ?? null,
+              linkedVisualFitParticipation:
+                selectedBlockRect?.linkedVisualFitParticipation ?? null,
+              sharesSource: selectedBlockRect?.sharesSource ?? false,
+            })
+          : "frame-only",
       originClientX: event.clientX,
       originClientY: event.clientY,
       anchorX,
       anchorY,
-    });
-  }
-
-  function beginSelectedObjectArrangement(event: ReactMouseEvent<HTMLButtonElement>) {
-    if (interactionMode === "arranging") {
-      queueTransformCancel("selected");
-      return;
-    }
-
-    setQuickEditor(null);
-    if (!selectionChrome) {
-      return;
-    }
-
-    beginTransformInteraction(selectionChrome.target, "move", event, {
-      centerOnPointer: true,
     });
   }
 
@@ -1276,14 +1572,77 @@ function HtmlReportPreviewFrame({
     const left = selectionChrome.frame.x * previewScale;
     const width = selectionChrome.frame.w * previewScale;
     const toolbarTop = top > 42 ? top - 38 : Math.min(scaledHeight - 34, top + 6);
-    const toolbarLeft = Math.max(8, Math.min(left, scaledWidth - 220));
+    const toolbarLeft = Math.max(8, Math.min(left, scaledWidth - 340));
 
     return {
       top: `${toolbarTop}px`,
       left: `${toolbarLeft}px`,
-      maxWidth: `${Math.max(160, Math.min(width, 220))}px`,
+      maxWidth: `${Math.max(200, Math.min(width + 140, 340))}px`,
     };
   }, [previewScale, scaledHeight, scaledWidth, selectionChrome]);
+
+  const blockMoveGripStyle = useMemo(
+    () =>
+      activeBlockFrame ? buildSelectionMoveGripStyle({ frame: activeBlockFrame.frame, previewScale }) : null,
+    [activeBlockFrame, previewScale],
+  );
+  const visualMoveGripStyle = useMemo(
+    () =>
+      activeVisualFrame
+        ? buildSelectionMoveGripStyle({ frame: activeVisualFrame.frame, previewScale })
+        : null,
+    [activeVisualFrame, previewScale],
+  );
+
+  function handleReturnToFlow() {
+    if (selectionChrome?.target === "block" && selectedBlockId && selectedBlockTransform) {
+      onReturnBlockToFlow?.(pagePreview.pageNumber, selectedBlockId);
+      return;
+    }
+
+    if (selectionChrome?.target === "visual" && selectedVisualNodeId && selectedVisualTransform) {
+      onReturnVisualToFlow?.(pagePreview.pageNumber, selectedVisualNodeId);
+    }
+  }
+
+  function handleShiftLayer(direction: "forward" | "backward") {
+    if (selectionChrome?.target === "block" && selectedBlockId && activeBlockFrame) {
+      onShiftBlockLayer?.(
+        pagePreview.pageNumber,
+        selectedBlockId,
+        direction,
+        activeBlockFrame.frame,
+        selectedBlockRect?.sizingBehavior === "frame-only"
+          ? undefined
+          : activeBlockFrame.fontSize,
+      );
+      return;
+    }
+
+    if (selectionChrome?.target === "visual" && selectedVisualNodeId && activeVisualFrame) {
+      onShiftVisualLayer?.(
+        pagePreview.pageNumber,
+        selectedVisualNodeId,
+        direction,
+        activeVisualFrame.frame,
+      );
+    }
+  }
+
+  function handleSelectedBlockFrameClick(event: ReactMouseEvent<HTMLDivElement>) {
+    if (interactionMode === "editing-text") {
+      return;
+    }
+
+    if (event.target !== event.currentTarget) {
+      return;
+    }
+
+    event.stopPropagation();
+    openQuickEditorForActiveSelection();
+  }
+
+  const isTransforming = Boolean(transformSession);
 
   return (
     <div
@@ -1295,6 +1654,7 @@ function HtmlReportPreviewFrame({
         ref={iframeRef}
         title={`${htmlReportTitle} - page ${pagePreview.pageNumber}`}
         srcDoc={pagePreview.srcDoc}
+        data-ppt-export-page-frame={pagePreview.pageNumber}
         data-testid={`report-page-frame-${pagePreview.pageNumber}`}
         onLoad={() => {
           previewBridgeTargetRef.current = null;
@@ -1314,51 +1674,9 @@ function HtmlReportPreviewFrame({
         }}
       />
 
-      {interactionMode === "arranging" ? (
-        <button
-          type="button"
-          className="absolute inset-0 z-[7] cursor-crosshair bg-transparent"
-          onClick={() => {
-            if (suppressNextArrangeClickRef.current) {
-              suppressNextArrangeClickRef.current = false;
-              return;
-            }
-            if (transformSession) {
-              return;
-            }
-            setInteractionMode("selected");
-          }}
-          aria-label="Canvas arrange surface"
-        />
-      ) : null}
-
-      {selectedLayoutZone && selectedLayoutRect ? (
-        <div
-          className="pointer-events-none absolute z-[9] rounded-[14px] border border-[rgba(198,153,74,0.34)] bg-[rgba(198,153,74,0.06)]"
-          style={{
-            top: `${selectedLayoutRect.top}px`,
-            left: `${selectedLayoutRect.left}px`,
-            width: `${selectedLayoutRect.width}px`,
-            height: `${selectedLayoutRect.height}px`,
-          }}
-        >
-          <button
-            type="button"
-            onPointerDown={beginLayoutDrag}
-            className="pointer-events-auto absolute top-1/2 z-10 h-[42px] w-[18px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-[rgba(198,153,74,0.46)] bg-[rgba(255,250,241,0.94)] shadow-[0_10px_20px_rgba(15,23,31,0.12)] transition hover:bg-white"
-            style={{
-              left: `${((layoutPreviewSplit ?? selectedLayoutZone.splitPercent) / 100) * selectedLayoutRect.width}px`,
-            }}
-            aria-label={`Adjust ${selectedLayoutZone.kind} split`}
-            title={`Drag to rebalance the ${selectedLayoutZone.kind} columns`}
-          >
-            <span className="mx-auto block h-5 w-[2px] rounded-full bg-[rgba(198,153,74,0.82)]" />
-          </button>
-        </div>
-      ) : null}
-
       {selectionChrome && selectionToolbarStyle && interactionMode !== "editing-text" ? (
         <div
+          data-testid={`preview-selection-toolbar-${pagePreview.pageNumber}`}
           className="absolute z-[12] flex items-center gap-1 rounded-full border border-[rgba(15,23,31,0.18)] bg-[rgba(255,255,255,0.92)] px-1.5 py-1 shadow-[0_10px_24px_rgba(15,23,31,0.14)] backdrop-blur-sm"
           style={selectionToolbarStyle}
           onClick={(event) => event.stopPropagation()}
@@ -1366,37 +1684,48 @@ function HtmlReportPreviewFrame({
           {selectionChrome.target === "block" ? (
             <button
               type="button"
-              onClick={() => openQuickEditorForSelectedBlock()}
+              onClick={() => openQuickEditorForActiveSelection()}
               className="rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#173748] transition hover:bg-[rgba(15,23,31,0.08)]"
             >
               Edit
             </button>
           ) : null}
+          {(selectionChrome.target === "block" ? selectedBlockTransform : selectedVisualTransform) ? (
+            <button
+              type="button"
+              onClick={handleReturnToFlow}
+              className="rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#50626d] transition hover:bg-[rgba(15,23,31,0.08)]"
+            >
+              Return to flow
+            </button>
+          ) : null}
           <button
             type="button"
-            onClick={beginSelectedObjectArrangement}
-            className="rounded-full border border-[rgba(15,23,31,0.12)] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#102838] transition hover:bg-[rgba(15,23,31,0.08)]"
+            onClick={() => handleShiftLayer("forward")}
+            className="rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#173748] transition hover:bg-[rgba(15,23,31,0.08)]"
           >
-            {interactionMode === "arranging" ? "Done" : "Arrange"}
+            Bring forward
           </button>
-          {interactionMode === "arranging" ? (
-            <div className="px-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-[#6f7b84]">
-              {transformSession
-                ? "Click again to place"
-                : "Click object to move or a corner to resize"}
-            </div>
-          ) : null}
+          <button
+            type="button"
+            onClick={() => handleShiftLayer("backward")}
+            className="rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#173748] transition hover:bg-[rgba(15,23,31,0.08)]"
+          >
+            Send backward
+          </button>
         </div>
       ) : null}
 
       {activeBlockFrame ? (
         <div
+          data-testid={`preview-selection-block-frame-${pagePreview.pageNumber}`}
           className={[
-            "pointer-events-none absolute z-[10] rounded-[12px] border",
-            interactionMode === "arranging"
+            "pointer-events-auto absolute z-[10] rounded-[12px] border",
+            isTransforming
               ? "border-[rgba(0,242,255,0.82)] bg-[rgba(0,242,255,0.08)]"
               : "border-[rgba(0,242,255,0.46)] bg-[rgba(0,242,255,0.03)]",
           ].join(" ")}
+          onClick={handleSelectedBlockFrameClick}
           style={{
             top: `${activeBlockFrame.frame.y * previewScale}px`,
             left: `${activeBlockFrame.frame.x * previewScale}px`,
@@ -1404,15 +1733,20 @@ function HtmlReportPreviewFrame({
             height: `${activeBlockFrame.frame.h * previewScale}px`,
           }}
         >
-          {interactionMode === "arranging" ? (
-            <>
-              <button
-                type="button"
-                onClick={(event) => beginTransformInteraction("block", "move", event)}
-                className="pointer-events-auto absolute inset-0 cursor-move rounded-[12px]"
-                aria-label="Move text block"
-              />
-              {[
+          {interactionMode !== "editing-text" ? (
+            <button
+              type="button"
+              onPointerDown={(event) => beginTransformInteraction("block", "move", event)}
+              data-testid={`preview-move-block-${pagePreview.pageNumber}`}
+              className="pointer-events-auto absolute inline-flex cursor-move items-center justify-center rounded-full border border-[rgba(0,242,255,0.58)] bg-[rgba(10,27,34,0.82)] text-[8px] font-semibold uppercase tracking-[0.22em] text-[rgba(235,252,255,0.94)] shadow-[0_8px_18px_rgba(0,0,0,0.22)]"
+              style={blockMoveGripStyle ?? undefined}
+              aria-label="Move text block"
+            >
+              Move
+            </button>
+          ) : null}
+          {interactionMode !== "editing-text"
+            ? [
                 ["resize-nw", "-left-2 -top-2 cursor-nwse-resize"],
                 ["resize-ne", "-right-2 -top-2 cursor-nesw-resize"],
                 ["resize-se", "-bottom-2 -right-2 cursor-nwse-resize"],
@@ -1421,30 +1755,31 @@ function HtmlReportPreviewFrame({
                 <button
                   key={mode}
                   type="button"
-                  onClick={(event) =>
+                  onPointerDown={(event) =>
                     beginTransformInteraction(
                       "block",
                       mode as "resize-nw" | "resize-ne" | "resize-se" | "resize-sw",
                       event,
                     )
                   }
+                  data-testid={`preview-resize-block-${mode}-${pagePreview.pageNumber}`}
                   className={[
-                    "pointer-events-auto absolute h-4 w-4 rounded-full border border-[rgba(0,242,255,0.92)] bg-white shadow-[0_0_14px_rgba(0,242,255,0.24)]",
+                    "pointer-events-auto absolute h-5 w-5 rounded-full border border-[rgba(0,242,255,0.92)] bg-white shadow-[0_0_14px_rgba(0,242,255,0.24)]",
                     className,
                   ].join(" ")}
                   aria-label={`Resize text block ${mode}`}
                 />
-              ))}
-            </>
-          ) : null}
+              ))
+            : null}
         </div>
       ) : null}
 
       {activeVisualFrame ? (
         <div
+          data-testid={`preview-selection-visual-frame-${pagePreview.pageNumber}`}
           className={[
             "pointer-events-none absolute z-[10] rounded-[12px] border",
-            interactionMode === "arranging"
+            isTransforming
               ? "border-[rgba(255,255,255,0.82)] bg-[rgba(255,255,255,0.06)]"
               : "border-[rgba(255,255,255,0.42)] bg-[rgba(255,255,255,0.02)]",
           ].join(" ")}
@@ -1455,15 +1790,20 @@ function HtmlReportPreviewFrame({
             height: `${activeVisualFrame.frame.h * previewScale}px`,
           }}
         >
-          {interactionMode === "arranging" ? (
-            <>
-              <button
-                type="button"
-                onClick={(event) => beginTransformInteraction("visual", "move", event)}
-                className="pointer-events-auto absolute inset-0 cursor-move rounded-[12px]"
-                aria-label="Move visual element"
-              />
-              {[
+          {interactionMode !== "editing-text" ? (
+            <button
+              type="button"
+              onPointerDown={(event) => beginTransformInteraction("visual", "move", event)}
+              data-testid={`preview-move-visual-${pagePreview.pageNumber}`}
+              className="pointer-events-auto absolute inline-flex cursor-move items-center justify-center rounded-full border border-white/52 bg-[rgba(15,23,32,0.88)] text-[8px] font-semibold uppercase tracking-[0.22em] text-[rgba(255,255,255,0.92)] shadow-[0_8px_18px_rgba(0,0,0,0.28)]"
+              style={visualMoveGripStyle ?? undefined}
+              aria-label="Move visual element"
+            >
+              Move
+            </button>
+          ) : null}
+          {interactionMode !== "editing-text"
+            ? [
                 ["resize-nw", "-left-2 -top-2 cursor-nwse-resize"],
                 ["resize-ne", "-right-2 -top-2 cursor-nesw-resize"],
                 ["resize-se", "-bottom-2 -right-2 cursor-nwse-resize"],
@@ -1472,22 +1812,22 @@ function HtmlReportPreviewFrame({
                 <button
                   key={mode}
                   type="button"
-                  onClick={(event) =>
+                  onPointerDown={(event) =>
                     beginTransformInteraction(
                       "visual",
                       mode as "resize-nw" | "resize-ne" | "resize-se" | "resize-sw",
                       event,
                     )
                   }
+                  data-testid={`preview-resize-visual-${mode}-${pagePreview.pageNumber}`}
                   className={[
-                    "pointer-events-auto absolute h-4 w-4 rounded-full border border-white bg-[#0f1720] shadow-[0_0_14px_rgba(0,0,0,0.34)]",
+                    "pointer-events-auto absolute h-5 w-5 rounded-full border border-white bg-[#0f1720] shadow-[0_0_14px_rgba(0,0,0,0.34)]",
                     className,
                   ].join(" ")}
                   aria-label={`Resize visual element ${mode}`}
                 />
-              ))}
-            </>
-          ) : null}
+              ))
+            : null}
         </div>
       ) : null}
 

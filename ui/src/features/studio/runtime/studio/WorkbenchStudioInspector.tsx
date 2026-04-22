@@ -404,7 +404,7 @@ export function WorkbenchStudioInspector({
           <div className="text-[14px] font-semibold text-[var(--studio-ink)]">Nothing selected</div>
         </div>
         <div className="pt-3 text-[13px] leading-6 text-[var(--studio-muted-strong)]">
-          Pick a page, block, visual module, or layout zone to edit it here.
+          Pick a page, block, or visual module to edit it here.
         </div>
       </div>
     );

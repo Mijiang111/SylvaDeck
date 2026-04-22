@@ -100,7 +100,6 @@ export function useStudioProjectActions() {
       selectPage: state.selectPage,
       selectHtmlBlock: state.selectHtmlBlock,
       selectVisualNode: state.selectVisualNode,
-      selectLayoutZone: state.selectLayoutZone,
       clearSelection: state.clearSelection,
       recordHtmlOverflow: state.recordHtmlOverflow,
       undo: state.undo,

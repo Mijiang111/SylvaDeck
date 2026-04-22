@@ -27,6 +27,7 @@ import {
 } from "../../server/src/lib/studio-engine/render.js";
 import {
   measurementNeedsRepair,
+  resolvePageReviewDecision,
 } from "../../server/src/lib/studio-engine/repair.js";
 import {
   getStudioAiWorkspacePromptMeta,
@@ -907,16 +908,38 @@ async function runScenarioVariant(args) {
   const reviewMetrics = measurements.length
     ? {
         measurements,
-        failingPages: measurements.filter((measurement) => measurementNeedsRepair(measurement, report?.pageCount)).map(
-          (measurement) => measurement.pageNumber,
-        ),
-        repairCount: measurements.filter((measurement) => measurementNeedsRepair(measurement, report?.pageCount)).length,
+        failingPages: measurements
+          .filter((measurement) => measurementNeedsRepair(measurement, report?.pageCount))
+          .map((measurement) => measurement.pageNumber),
+        repairCount: measurements.filter((measurement) =>
+          measurementNeedsRepair(measurement, report?.pageCount),
+        ).length,
+        softConcernPages: measurements
+          .filter(
+            (measurement) =>
+              resolvePageReviewDecision(measurement, {
+                pageCount: report?.pageCount,
+              }).severity === "soft-warning",
+          )
+          .map((measurement) => measurement.pageNumber),
+        softConcernCount: measurements.filter(
+          (measurement) =>
+            resolvePageReviewDecision(measurement, {
+              pageCount: report?.pageCount,
+            }).severity === "soft-warning",
+        ).length,
+        deterministicFixCount: 0,
+        secondPassTriggered: 0,
         diversity: scoreCompositionDiversity(measurements.map((measurement) => measurement.compositionFingerprint)),
       }
     : {
         measurements: [],
         failingPages: [],
         repairCount: 0,
+        softConcernPages: [],
+        softConcernCount: 0,
+        deterministicFixCount: 0,
+        secondPassTriggered: 0,
         diversity: scoreCompositionDiversity([]),
       };
 
@@ -928,7 +951,10 @@ async function runScenarioVariant(args) {
   const disciplineIssues = [...offlineWorkspaceIssues.disciplineIssues];
 
   if (reviewMetrics.repairCount > 0) {
-    disciplineIssues.push(`${reviewMetrics.repairCount} page(s) would enter repair`);
+    disciplineIssues.push(`${reviewMetrics.repairCount} page(s) would enter AI repair`);
+  }
+  if (reviewMetrics.softConcernCount > 0) {
+    disciplineIssues.push(`${reviewMetrics.softConcernCount} page(s) would only raise simplification warnings`);
   }
   if (reviewMetrics.diversity.largestRepeatRun > 2) {
     disciplineIssues.push(`deck repeated one family ${reviewMetrics.diversity.largestRepeatRun} pages in a row`);

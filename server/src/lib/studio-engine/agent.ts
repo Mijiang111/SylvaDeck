@@ -226,6 +226,32 @@ function getPromptLogDirectory() {
   return override || path.resolve(process.cwd(), "..", ".logs", "prompt-traces");
 }
 
+function safeJsonStringify(value: unknown, space?: number) {
+  const seen = new WeakSet<object>();
+  try {
+    return JSON.stringify(
+      value,
+      (_key, currentValue) => {
+        if (typeof currentValue === "bigint") {
+          return currentValue.toString();
+        }
+        if (currentValue && typeof currentValue === "object") {
+          if (seen.has(currentValue)) {
+            return "[Circular]";
+          }
+          seen.add(currentValue);
+        }
+        return currentValue;
+      },
+      space,
+    );
+  } catch (error) {
+    const reason =
+      error instanceof Error ? error.message : "Unknown JSON serialization failure";
+    return JSON.stringify({ __studioSerializationError: reason }, null, space);
+  }
+}
+
 function writePromptTrace(args: {
   prompt: string;
   payload: unknown;
@@ -253,12 +279,12 @@ function writePromptTrace(args: {
     "",
     "## Trace metadata",
     "```json",
-    JSON.stringify(args.traceMeta ?? {}, null, 2),
+    safeJsonStringify(args.traceMeta ?? {}, 2),
     "```",
     "",
     "## Payload",
     "```json",
-    JSON.stringify(args.payload, null, 2),
+    safeJsonStringify(args.payload, 2),
     "```",
     "",
     "## Prompt",
@@ -384,7 +410,11 @@ export function createStreamWriter(res: Response) {
     if (res.writableEnded) {
       return;
     }
-    res.write(`${JSON.stringify(event)}\n`);
+    try {
+      res.write(`${safeJsonStringify(event)}\n`);
+    } catch {
+      // The client may have disconnected after the writableEnded check.
+    }
   };
 }
 
@@ -401,7 +431,7 @@ export async function executeStudioStage(args: {
   signal?: AbortSignal;
 }) {
   const stageStartedAt = Date.now();
-  const payloadChars = JSON.stringify(args.payload).length;
+  const payloadChars = safeJsonStringify(args.payload).length;
   const promptTrace = writePromptTrace({
     prompt: args.prompt,
     payload: args.payload,

@@ -196,6 +196,24 @@ const BASE_STYLES = `
     padding: 20px 22px;
     box-shadow: inset 0 1px 0 rgba(255,255,255,0.28);
   }
+  .hero-band {
+    margin-bottom: 24px;
+    min-height: 88px;
+    border: 1px solid rgba(15,23,31,0.1);
+    border-radius: 24px;
+    background:
+      radial-gradient(circle at top right, rgba(181,86,56,0.12), transparent 38%),
+      linear-gradient(180deg, rgba(255,255,255,0.88), rgba(248,242,234,0.92));
+  }
+  .closing-strip-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 18px;
+    margin-top: 38px;
+  }
+  .closing-strip-card {
+    min-height: 170px;
+  }
   .surface-grid {
     display: grid;
     gap: 18px;
@@ -859,6 +877,211 @@ const denseSemanticRepairedPages = [
 ];
 const denseSemanticRepairedReport = createReport("Semantic density repair fixture", denseSemanticRepairedPages);
 
+const titleOnlyPages = [
+  {
+    title: "Create the board-ready leadership deck about clinic throughput",
+    markup: pageSection({
+      title: "Create the board-ready leadership deck about clinic throughput",
+      eyebrow: "Title stress",
+      left: `
+        <h1>Create the board-ready leadership deck about clinic throughput.</h1>
+        <p class="lede">Coordination logic remains the constraint.</p>
+        ${bullets([
+          "The page should keep one operational answer in view.",
+          "Only the title is intentionally broken in this fixture.",
+        ])}
+      `,
+      right: `
+        <div class="support-rail">
+          <div class="annotation-card">
+            <span class="label">Intent</span>
+            <p class="dense">Review should fix the leaked title without escalating to AI repair.</p>
+          </div>
+        </div>
+      `,
+      footer: "This fixture should be fixed by deterministic title cleanup only.",
+    }),
+  },
+  singleClaimPages[1],
+  singleClaimPages[2],
+];
+const titleOnlyReport = createReport("Title cleanup fixture", titleOnlyPages);
+
+const titleOnlyRepairedPages = [
+  {
+    title: "Coordination logic remains the constraint",
+    markup: pageSection({
+      title: "Coordination logic remains the constraint",
+      eyebrow: "Title repaired",
+      left: `
+        <h1>Coordination logic remains the constraint.</h1>
+        <p class="lede">Coordination logic remains the constraint.</p>
+        ${bullets([
+          "The page keeps the same answer after title cleanup.",
+          "The fix should not require a model repair pass.",
+        ])}
+      `,
+      right: `
+        <div class="support-rail">
+          <div class="annotation-card">
+            <span class="label">Intent</span>
+            <p class="dense">The page keeps its content and only normalizes the title.</p>
+          </div>
+        </div>
+      `,
+      footer: "Deterministically repaired title-only fixture.",
+    }),
+  },
+  singleClaimPages[1],
+  singleClaimPages[2],
+];
+const titleOnlyRepairedReport = createReport("Title cleanup fixture", titleOnlyRepairedPages);
+
+const iframeParityPages = [
+  {
+    title: "Coordination logic remains the constraint on executive throughput",
+    markup: pageSection({
+      title: "Coordination logic remains the constraint on executive throughput",
+      eyebrow: "Iframe parity",
+      left: `
+        <div class="hero-band" data-html-visual-kind="surface" aria-hidden="true"></div>
+        <h1>Coordination logic remains the constraint on executive throughput.</h1>
+        <p class="lede">The title should behave like a text box first: click once to select, click again to edit, and never drag a decorative wrapper by accident.</p>
+        ${bullets([
+          "Decorative surfaces should stay out of page-mode selection unless the user explicitly switches into Visual editing.",
+          "The closing strip below exists to test whitespace clicks on structural surface cards.",
+        ])}
+        <div class="closing-strip-grid">
+          ${visualCard(
+            "What changed",
+            "The iframe now treats the title and closing strip like PPT text and shape layers instead of one blended background target.",
+            "surface",
+            "closing-strip-card",
+          )}
+          ${visualCard(
+            "Why it matters",
+            "Editors can adjust a claim quickly without pulling the surrounding chrome or resizing an unrelated container.",
+            "surface",
+            "closing-strip-card",
+          )}
+          ${visualCard(
+            "Editing goal",
+            "Visual mode should still expose the closing cards as surfaces when the user intentionally wants the container.",
+            "surface",
+            "closing-strip-card",
+          )}
+        </div>
+      `,
+    }),
+  },
+  singleClaimPages[1],
+  singleClaimPages[2],
+];
+const iframeParityReport = createReport("Iframe parity fixture", iframeParityPages);
+
+const overflowRepairPages = [
+  singleClaimPages[0],
+  {
+    title: "Overflow stress: coordination detail still spills below the fold",
+    markup: pageSection({
+      title: "Overflow stress: coordination detail still spills below the fold",
+      eyebrow: "Overflow stress",
+      left: `
+        <h1>Overflow stress: coordination detail still spills below the fold.</h1>
+        <p class="lede">This page intentionally overloads the evidence column so auto-review has to repair a real layout failure rather than a soft density warning.</p>
+        ${bullets([
+          "Referral release still bunches work into the same first-wave queue and forces downstream reprioritization during the peak.",
+          "Prep windows remain misaligned with the release decision, so the system spends extra time waiting on decisions that should land earlier.",
+          "Exception routing improves only after the queue already spikes, which makes late fixes look like staffing gains rather than coordination gains.",
+          "Supervisors still read the page as a labor problem because too many equal-weight proof fragments compete with the main operating answer.",
+          "The morning queue peak is still visible in the operational sequence even after adjacent metrics improve, so the story should collapse around one answer.",
+          "Every extra support block on this fixture should make the page more likely to overflow and require structural cleanup.",
+          "A seventh long support bullet ensures the page carries more proof than the 1600 by 900 canvas can comfortably hold without revision.",
+          "An eighth long support bullet keeps the left column visibly over budget even before the footer and annotation rail consume the remaining height.",
+          "A ninth support bullet adds another full sentence of explanation so shrink-to-fit alone can no longer rescue the page without meaningful content removal.",
+          "A tenth support bullet forces the story to carry more operational context than the template can present cleanly in one pass.",
+          "An eleventh support bullet intentionally repeats the same queue mechanics in different words so the page stays physically over budget after deterministic shrinking.",
+          "A twelfth support bullet keeps the evidence stack long enough that the page should still trigger a true hard-fail review instead of only a simplification warning.",
+        ])}
+        <p class="dense" style="font-size:24px;line-height:1.62;">The copy is intentionally long so the page overflows and must route through true repair rather than manual simplification only.</p>
+        <p class="dense" style="font-size:24px;line-height:1.62;">This extra paragraph keeps the layout physically broken in a way that simple density scoring alone cannot explain away.</p>
+        <p class="dense" style="font-size:24px;line-height:1.62;">A third oversized paragraph makes the fixture survive the first deterministic shrink and remain visibly beyond the page budget.</p>
+        <p class="dense" style="font-size:24px;line-height:1.62;">A fourth oversized paragraph leaves too much narrative weight on the page for the preview to resolve without an explicit repair pass.</p>
+        <div style="margin-top:18px;">
+          ${Array.from({ length: 40 }, (_, index) => `
+            <p class="dense" style="font-size:13px;line-height:18px;margin-top:${index === 0 ? 0 : 8}px;">Micro-proof ${index + 1}: release timing, exception routing, and prep-window misalignment all stayed long enough to preserve true overflow after deterministic shrinking.</p>
+          `).join("")}
+        </div>
+      `,
+      right: `
+        <div class="annotation-rail">
+          <div class="annotation-card">
+            <span class="label">Why it overflows</span>
+            <p class="dense">Two long annotation blocks plus a long left column push the page beyond the available canvas height.</p>
+          </div>
+          <div class="annotation-card">
+            <span class="label">Expected repair</span>
+            <p class="dense">The system should shorten secondary copy and compress the support list until the page fits again.</p>
+          </div>
+          <div class="annotation-card">
+            <span class="label">Secondary pressure</span>
+            <p class="dense">The fixture keeps enough explanation to remain useful, but not enough room to carry every detail at once.</p>
+          </div>
+          <div class="annotation-card">
+            <span class="label">Overflow proof</span>
+            <p class="dense">A fourth annotation card keeps the page beyond the vertical budget so the test exercises real repair routing.</p>
+          </div>
+          <div class="annotation-card">
+            <span class="label">Still too tall</span>
+            <p class="dense">A fifth annotation card adds enough retained explanation that shrink-to-fit should still leave measurable overflow on the page.</p>
+          </div>
+          <div class="annotation-card">
+            <span class="label">Escalation gate</span>
+            <p class="dense">A sixth annotation card ensures the deck cannot clear review by typography compression alone and must escalate to AI repair.</p>
+          </div>
+        </div>
+      `,
+      footer: "This overflow fixture should trigger true auto-repair because the page is physically too tall to fit the canvas without removing secondary content, simplifying the support stack, and tightening the right-rail explanation.",
+    }),
+  },
+  singleClaimPages[2],
+];
+const overflowRepairReport = createReport("Overflow repair fixture", overflowRepairPages);
+
+const overflowRepairRepairedPages = [
+  singleClaimPages[0],
+  singleClaimOptimizedPages[1],
+  singleClaimPages[2],
+];
+const overflowRepairRepairedReport = createReport(
+  "Overflow repair fixture",
+  overflowRepairRepairedPages,
+);
+
+const mixedRepairPages = [
+  titleOnlyPages[0],
+  overflowRepairPages[1],
+  singleClaimPages[2],
+];
+const mixedRepairReport = createReport("Mixed repair fixture", mixedRepairPages);
+
+const mixedRepairRepairedPages = [
+  titleOnlyRepairedPages[0],
+  singleClaimOptimizedPages[1],
+  singleClaimPages[2],
+];
+const mixedRepairRepairedReport = createReport("Mixed repair fixture", mixedRepairRepairedPages);
+
+const secondPassStillBrokenPages = [
+  singleClaimPages[0],
+  overflowRepairPages[1],
+  singleClaimPages[2],
+];
+const secondPassStillBrokenReport = createReport(
+  "Second pass gating fixture",
+  secondPassStillBrokenPages,
+);
+
 const caseStudyPages = createSectionPages([
   {
     title: "Case overview: release timing, not staffing, caused the warehouse delay",
@@ -1357,6 +1580,41 @@ const scenarioMap = {
       "Create a 3-page executive deck on throughput constraints, but leave page 1 overloaded enough that review should simplify it before editing.",
     report: denseSemanticReport,
     reviseReports: [denseSemanticRepairedReport],
+  },
+  "title-only-review": {
+    id: "title-only-review",
+    prompt:
+      "Create a 3-page executive deck on clinic throughput, but leave page 1 with a prompt-leak title that deterministic review should clean up locally.",
+    report: titleOnlyReport,
+    reviseReports: [titleOnlyRepairedReport],
+  },
+  "iframe-opening-closing-selection": {
+    id: "iframe-opening-closing-selection",
+    prompt:
+      "Create a 3-page executive deck with one opening title page and a decorative closing strip so iframe editing can be tested against PPT-like behavior.",
+    report: iframeParityReport,
+    reviseReports: [],
+  },
+  "overflow-auto-repair": {
+    id: "overflow-auto-repair",
+    prompt:
+      "Create a 3-page executive deck on clinic throughput and leave page 2 genuinely overflowing so auto-repair must fix it.",
+    report: overflowRepairReport,
+    reviseReports: [overflowRepairRepairedReport],
+  },
+  "mixed-hard-and-title-review": {
+    id: "mixed-hard-and-title-review",
+    prompt:
+      "Create a 3-page executive deck where page 1 only has a leaked title and page 2 has a real overflow, so only the overflow page should go through AI repair.",
+    report: mixedRepairReport,
+    reviseReports: [mixedRepairRepairedReport],
+  },
+  "second-pass-no-improvement": {
+    id: "second-pass-no-improvement",
+    prompt:
+      "Create a 3-page executive deck where the first auto-repair pass still leaves page 2 badly overflowing without measurable progress.",
+    report: overflowRepairReport,
+    reviseReports: [secondPassStillBrokenReport],
   },
   "case-study-3page": {
     id: "case-study-3page",

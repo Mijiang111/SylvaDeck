@@ -11,7 +11,11 @@ import type {
   HtmlOutputMode,
   PageRecipe,
 } from "./contracts.js";
-import { htmlPageAnimationManifestSchema } from "./schemas.js";
+import {
+  htmlEntryTrackSchema,
+  htmlLoopEffectSchema,
+  htmlPageAnimationManifestSchema,
+} from "./schemas.js";
 import {
   assessGeneratedTitleQuality,
   compactBoardTitle,
@@ -27,16 +31,115 @@ function stripCodeFences(text: string) {
     .trim();
 }
 
+function indexOfCaseInsensitive(text: string, search: string, fromIndex = 0) {
+  return text.toLowerCase().indexOf(search.toLowerCase(), fromIndex);
+}
+
+function findTagEnd(html: string, startIndex: number) {
+  let activeQuote: '"' | "'" | null = null;
+  for (let index = startIndex; index < html.length; index += 1) {
+    const char = html[index];
+    if (activeQuote) {
+      if (char === activeQuote) {
+        activeQuote = null;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      activeQuote = char;
+      continue;
+    }
+    if (char === ">") {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function isAttributeBoundary(char: string | undefined) {
+  return !char || /\s|<|>|\/|=/.test(char);
+}
+
+function readTagAttribute(tag: string, attributeName: string) {
+  const lowerTag = tag.toLowerCase();
+  const lowerName = attributeName.toLowerCase();
+  let searchIndex = 0;
+
+  while (searchIndex < lowerTag.length) {
+    const attributeIndex = lowerTag.indexOf(lowerName, searchIndex);
+    if (attributeIndex < 0) {
+      return null;
+    }
+
+    const beforeChar = lowerTag[attributeIndex - 1];
+    const afterNameChar = lowerTag[attributeIndex + lowerName.length];
+    if (!isAttributeBoundary(beforeChar) || !isAttributeBoundary(afterNameChar)) {
+      searchIndex = attributeIndex + lowerName.length;
+      continue;
+    }
+
+    let valueStart = attributeIndex + lowerName.length;
+    while (valueStart < tag.length && /\s/.test(tag[valueStart] ?? "")) {
+      valueStart += 1;
+    }
+    if (tag[valueStart] !== "=") {
+      searchIndex = attributeIndex + lowerName.length;
+      continue;
+    }
+    valueStart += 1;
+    while (valueStart < tag.length && /\s/.test(tag[valueStart] ?? "")) {
+      valueStart += 1;
+    }
+
+    const quote = tag[valueStart];
+    if (quote === '"' || quote === "'") {
+      const valueEnd = tag.indexOf(quote, valueStart + 1);
+      if (valueEnd < 0) {
+        return null;
+      }
+      return tag.slice(valueStart + 1, valueEnd);
+    }
+
+    let valueEnd = valueStart;
+    while (valueEnd < tag.length && !/[\s>]/.test(tag[valueEnd] ?? "")) {
+      valueEnd += 1;
+    }
+    return tag.slice(valueStart, valueEnd);
+  }
+
+  return null;
+}
+
+function tagHasClassToken(tag: string, classToken: string) {
+  const classValue = readTagAttribute(tag, "class");
+  if (!classValue) {
+    return false;
+  }
+  return classValue
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean)
+    .includes(classToken);
+}
+
 export function extractHtmlDocument(text: string) {
   const cleaned = stripCodeFences(text);
-  const doctypeIndex = cleaned.search(/<!DOCTYPE html>/i);
-  const htmlIndex = cleaned.search(/<html[\s>]/i);
-  const startIndex = doctypeIndex >= 0 ? doctypeIndex : htmlIndex >= 0 ? htmlIndex : 0;
-  const endMatch = cleaned.match(/<\/html>\s*$/i);
-  if (!endMatch) {
+  const lowered = cleaned.toLowerCase();
+  const doctypeIndex = indexOfCaseInsensitive(cleaned, "<!doctype html>");
+  const htmlIndex = indexOfCaseInsensitive(cleaned, "<html");
+  const startIndex =
+    doctypeIndex >= 0 ? doctypeIndex : htmlIndex >= 0 ? htmlIndex : 0;
+  const bodyClosingIndex = lowered.lastIndexOf("</body>");
+  const htmlClosingSearchStart =
+    bodyClosingIndex >= startIndex ? bodyClosingIndex + "</body>".length : startIndex;
+  const relativeClosingIndex = lowered.indexOf("</html>", htmlClosingSearchStart);
+  const fallbackClosingIndex = lowered.lastIndexOf("</html>");
+  const closingIndex =
+    relativeClosingIndex >= 0 ? relativeClosingIndex : fallbackClosingIndex;
+  if (closingIndex < 0) {
     return cleaned.slice(startIndex).trim();
   }
-  return cleaned.slice(startIndex, endMatch.index! + endMatch[0].length).trim();
+  return cleaned.slice(startIndex, closingIndex + "</html>".length).trim();
 }
 
 export function extractJsonDocument(text: string) {
@@ -82,10 +185,31 @@ export function extractTextBeforeJson(text: string) {
 }
 
 export function extractPageTitles(html: string) {
-  const matches = html.matchAll(
-    /<section[^>]*class=["'][^"']*\bpage\b[^"']*["'][^>]*data-page-title=["']([^"']+)["'][^>]*>/gi,
-  );
-  return Array.from(matches, (match) => match[1]?.trim()).filter(Boolean);
+  const titles: string[] = [];
+  let searchIndex = 0;
+
+  while (searchIndex < html.length) {
+    const sectionIndex = indexOfCaseInsensitive(html, "<section", searchIndex);
+    if (sectionIndex < 0) {
+      break;
+    }
+    const tagEnd = findTagEnd(html, sectionIndex);
+    if (tagEnd < 0) {
+      break;
+    }
+
+    const tag = html.slice(sectionIndex, tagEnd + 1);
+    if (tagHasClassToken(tag, "page")) {
+      const pageTitle = readTagAttribute(tag, "data-page-title")?.trim();
+      if (pageTitle) {
+        titles.push(pageTitle);
+      }
+    }
+
+    searchIndex = tagEnd + 1;
+  }
+
+  return titles;
 }
 
 export function extractDocumentTitle(html: string) {
@@ -190,6 +314,283 @@ const ALLOWED_ANIMATION_ENTERS = new Set([
 const ANIMATION_ANCHOR_ATTR = "data-anim-anchor";
 const ANIMATION_MANIFEST_ATTR = "data-studio-animation-manifest";
 const ANIMATION_ANCHOR_PATTERN = /^[a-z][a-z0-9-]{0,39}$/;
+const SUPPORTED_LOOP_EFFECT_KINDS = new Set(["rotate", "ticker", "typewriter", "pulse", "orbit"]);
+
+function buildAnimationManifestFieldError(pageNumber: number, fieldPath: string) {
+  return new Error(
+    `Page ${pageNumber} returned an invalid animation manifest field: ${fieldPath}.`,
+  );
+}
+
+function parseAnimationManifestIntegerLike(value: unknown) {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const normalized = value.trim();
+  if (!/^\d+$/.test(normalized)) {
+    return value;
+  }
+
+  return Number.parseInt(normalized, 10);
+}
+
+function normalizeAnimationManifestAnchor(args: {
+  pageNumber: number;
+  fieldPath: string;
+  value: unknown;
+}) {
+  if (args.value === undefined || args.value === null) {
+    return args.value;
+  }
+  if (typeof args.value !== "string") {
+    throw buildAnimationManifestFieldError(args.pageNumber, args.fieldPath);
+  }
+
+  const normalized = args.value.trim();
+  if (!ANIMATION_ANCHOR_PATTERN.test(normalized)) {
+    throw new Error(
+      `Page ${args.pageNumber} returned an invalid animation anchor: ${normalized}.`,
+    );
+  }
+  return normalized;
+}
+
+function normalizeAnimationManifestEntryTrack(args: {
+  pageNumber: number;
+  value: unknown;
+  index: number;
+}) {
+  if (!args.value || typeof args.value !== "object" || Array.isArray(args.value)) {
+    return null;
+  }
+
+  const candidate = args.value as Record<string, unknown>;
+  const normalized = {
+    ...candidate,
+    ...(candidate.anchor !== undefined
+      ? {
+          anchor: normalizeAnimationManifestAnchor({
+            pageNumber: args.pageNumber,
+            fieldPath: `entryTracks[${args.index}].anchor`,
+            value: candidate.anchor,
+          }),
+        }
+      : {}),
+    ...(typeof candidate.preset === "string" ? { preset: candidate.preset.trim() } : {}),
+    ...(candidate.delayMs !== undefined
+      ? { delayMs: parseAnimationManifestIntegerLike(candidate.delayMs) }
+      : {}),
+    ...(candidate.durationMs !== undefined
+      ? { durationMs: parseAnimationManifestIntegerLike(candidate.durationMs) }
+      : {}),
+    ...(candidate.order !== undefined
+      ? { order: parseAnimationManifestIntegerLike(candidate.order) }
+      : {}),
+  };
+  const parsed = htmlEntryTrackSchema.safeParse(normalized);
+  if (!parsed.success) {
+    return null;
+  }
+  return parsed.data;
+}
+
+function normalizeAnimationManifestLoopEffect(args: {
+  pageNumber: number;
+  value: unknown;
+  index: number;
+}) {
+  if (!args.value || typeof args.value !== "object" || Array.isArray(args.value)) {
+    return null;
+  }
+
+  const candidate = args.value as Record<string, unknown>;
+  const rawKind =
+    typeof candidate.kind === "string" ? candidate.kind.trim() : candidate.kind;
+  if (rawKind !== undefined && rawKind !== null) {
+    if (typeof rawKind !== "string") {
+      return null;
+    }
+    if (!SUPPORTED_LOOP_EFFECT_KINDS.has(rawKind)) {
+      throw new Error(
+        `Page ${args.pageNumber} used an unsupported animation loop kind: ${rawKind}.`,
+      );
+    }
+  }
+
+  const normalizedBase = {
+    ...candidate,
+    ...(rawKind !== undefined ? { kind: rawKind } : {}),
+    ...(candidate.anchor !== undefined
+      ? {
+          anchor: normalizeAnimationManifestAnchor({
+            pageNumber: args.pageNumber,
+            fieldPath: `loopEffects[${args.index}].anchor`,
+            value: candidate.anchor,
+          }),
+        }
+      : {}),
+  };
+  const normalized = (() => {
+    if (rawKind === "rotate") {
+      return {
+        ...normalizedBase,
+        ...(candidate.durationMs !== undefined
+          ? { durationMs: parseAnimationManifestIntegerLike(candidate.durationMs) }
+          : {}),
+        ...(typeof candidate.direction === "string"
+          ? { direction: candidate.direction.trim() }
+          : {}),
+        ...(candidate.angleDeg !== undefined
+          ? { angleDeg: parseAnimationManifestIntegerLike(candidate.angleDeg) }
+          : {}),
+      };
+    }
+    if (rawKind === "ticker") {
+      return {
+        ...normalizedBase,
+        ...(candidate.items !== undefined ? { items: candidate.items } : {}),
+        ...(candidate.stepMs !== undefined
+          ? { stepMs: parseAnimationManifestIntegerLike(candidate.stepMs) }
+          : {}),
+      };
+    }
+    if (rawKind === "typewriter") {
+      return {
+        ...normalizedBase,
+        ...(candidate.items !== undefined ? { items: candidate.items } : {}),
+        ...(candidate.typeMs !== undefined
+          ? { typeMs: parseAnimationManifestIntegerLike(candidate.typeMs) }
+          : {}),
+        ...(candidate.holdMs !== undefined
+          ? { holdMs: parseAnimationManifestIntegerLike(candidate.holdMs) }
+          : {}),
+        ...(candidate.deleteMs !== undefined
+          ? { deleteMs: parseAnimationManifestIntegerLike(candidate.deleteMs) }
+          : {}),
+      };
+    }
+    if (rawKind === "pulse") {
+      return {
+        ...normalizedBase,
+        ...(candidate.durationMs !== undefined
+          ? { durationMs: parseAnimationManifestIntegerLike(candidate.durationMs) }
+          : {}),
+        ...(candidate.scaleFrom !== undefined ? { scaleFrom: candidate.scaleFrom } : {}),
+        ...(candidate.scaleTo !== undefined ? { scaleTo: candidate.scaleTo } : {}),
+        ...(candidate.opacityFrom !== undefined ? { opacityFrom: candidate.opacityFrom } : {}),
+        ...(candidate.opacityTo !== undefined ? { opacityTo: candidate.opacityTo } : {}),
+      };
+    }
+    if (rawKind === "orbit") {
+      return {
+        ...normalizedBase,
+        ...(candidate.durationMs !== undefined
+          ? { durationMs: parseAnimationManifestIntegerLike(candidate.durationMs) }
+          : {}),
+        ...(candidate.radiusPx !== undefined
+          ? { radiusPx: parseAnimationManifestIntegerLike(candidate.radiusPx) }
+          : {}),
+        ...(typeof candidate.axis === "string" ? { axis: candidate.axis.trim() } : {}),
+      };
+    }
+    return normalizedBase;
+  })();
+  const parsed = htmlLoopEffectSchema.safeParse(normalized);
+  if (!parsed.success) {
+    return null;
+  }
+  return parsed.data;
+}
+
+function normalizeAnimationManifestCandidate(args: {
+  pageNumber: number;
+  value: unknown;
+}) {
+  if (!args.value || typeof args.value !== "object" || Array.isArray(args.value)) {
+    throw new Error(
+      `Page ${args.pageNumber} returned an invalid animation manifest shape: manifest must be an object.`,
+    );
+  }
+
+  const candidate = args.value as Record<string, unknown>;
+  const version =
+    candidate.version === undefined
+      ? 1
+      : parseAnimationManifestIntegerLike(candidate.version);
+  if (version !== 1) {
+    throw buildAnimationManifestFieldError(args.pageNumber, "version");
+  }
+
+  const startMode =
+    candidate.startMode === undefined
+      ? "entry-then-loop"
+      : typeof candidate.startMode === "string"
+        ? candidate.startMode.trim()
+        : candidate.startMode;
+  if (startMode !== "entry-then-loop") {
+    throw buildAnimationManifestFieldError(args.pageNumber, "startMode");
+  }
+
+  if (candidate.entryTracks !== undefined && !Array.isArray(candidate.entryTracks)) {
+    throw buildAnimationManifestFieldError(args.pageNumber, "entryTracks");
+  }
+  if (candidate.loopEffects !== undefined && !Array.isArray(candidate.loopEffects)) {
+    throw buildAnimationManifestFieldError(args.pageNumber, "loopEffects");
+  }
+  const rawEntryTracks = Array.isArray(candidate.entryTracks) ? candidate.entryTracks : null;
+  const rawLoopEffects = Array.isArray(candidate.loopEffects) ? candidate.loopEffects : null;
+  if ((rawEntryTracks?.length ?? 0) > 6) {
+    throw buildAnimationManifestFieldError(args.pageNumber, "entryTracks");
+  }
+  if ((rawLoopEffects?.length ?? 0) > 4) {
+    throw buildAnimationManifestFieldError(args.pageNumber, "loopEffects");
+  }
+
+  const entryTracks = rawEntryTracks
+    ? rawEntryTracks
+        .map((track, index) =>
+          normalizeAnimationManifestEntryTrack({
+            pageNumber: args.pageNumber,
+            value: track,
+            index,
+          }),
+        )
+        .filter(
+          (
+            track,
+          ): track is NonNullable<HtmlPageAnimationManifest["entryTracks"]>[number] => Boolean(track),
+        )
+    : [];
+  const loopEffects = rawLoopEffects
+    ? rawLoopEffects
+        .map((effect, index) =>
+          normalizeAnimationManifestLoopEffect({
+            pageNumber: args.pageNumber,
+            value: effect,
+            index,
+          }),
+        )
+        .filter(
+          (
+            effect,
+          ): effect is NonNullable<HtmlPageAnimationManifest["loopEffects"]>[number] => Boolean(effect),
+        )
+    : [];
+
+  const parsed = htmlPageAnimationManifestSchema.safeParse({
+    version: 1,
+    startMode: "entry-then-loop",
+    ...(entryTracks.length > 0 ? { entryTracks } : {}),
+    ...(loopEffects.length > 0 ? { loopEffects } : {}),
+  });
+  if (!parsed.success) {
+    const pathLabel = parsed.error.issues[0]?.path.join(".") || "manifest";
+    throw buildAnimationManifestFieldError(args.pageNumber, pathLabel);
+  }
+
+  return parsed.data;
+}
 
 function parseAnimationTimingMetadata(
   attrName: "data-anim-delay" | "data-anim-duration" | "data-anim-order",
@@ -373,13 +774,13 @@ function sanitizeAnimationPageSection(args: {
       throw new Error(`Page ${args.pageNumber} returned an invalid animation manifest JSON.`);
     }
 
-    const parsedResult = htmlPageAnimationManifestSchema.safeParse(parsedManifest);
-    if (!parsedResult.success) {
-      throw new Error(`Page ${args.pageNumber} returned an invalid animation manifest shape.`);
-    }
+    const normalizedManifest = normalizeAnimationManifestCandidate({
+      pageNumber: args.pageNumber,
+      value: parsedManifest,
+    });
 
     const entryAnchors = new Set<string>();
-    for (const track of parsedResult.data.entryTracks ?? []) {
+    for (const track of normalizedManifest.entryTracks ?? []) {
       if (!uniqueAnchors.includes(track.anchor)) {
         throw new Error(
           `Page ${args.pageNumber} animation manifest referenced a missing anchor: ${track.anchor}.`,
@@ -394,7 +795,7 @@ function sanitizeAnimationPageSection(args: {
     }
 
     const loopEffectKeys = new Set<string>();
-    for (const effect of parsedResult.data.loopEffects ?? []) {
+    for (const effect of normalizedManifest.loopEffects ?? []) {
       if (!uniqueAnchors.includes(effect.anchor)) {
         throw new Error(
           `Page ${args.pageNumber} animation manifest referenced a missing anchor: ${effect.anchor}.`,
@@ -409,7 +810,7 @@ function sanitizeAnimationPageSection(args: {
       loopEffectKeys.add(effectKey);
     }
 
-    manifest = parsedResult.data;
+    manifest = normalizedManifest;
   }
 
   const mergedManifest = mergeAnimationManifestPreservingPrevious({

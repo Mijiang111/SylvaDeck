@@ -237,6 +237,67 @@ export function ComposeStagePanel({ view, actions }: ComposeStagePanelProps) {
                         }
                         className="h-9 w-full border border-white/10 bg-white/[0.03] px-3 text-sm text-white outline-none transition focus:border-white/20 focus:bg-white/[0.06]"
                       />
+                      {selectedField.importSource ? (
+                        <div className="rounded-[16px] border border-white/8 bg-white/[0.02] px-3 py-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <div className="text-sm font-semibold text-white">
+                                Imported source
+                              </div>
+                              <div className="mt-1 text-[12px] leading-5 text-[#8ca3b2]">
+                                {selectedField.importSource.sourceFileName} · slide{" "}
+                                {selectedField.importSource.slideNumber} ·{" "}
+                                {selectedField.importSource.sourceObjectKind}
+                              </div>
+                            </div>
+                            <div
+                              className={[
+                                "rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em]",
+                                selectedField.importSource.reviewState === "needs-review"
+                                  ? "border border-[rgba(216,164,95,0.3)] bg-[rgba(216,164,95,0.12)] text-[#f3c992]"
+                                  : "border border-[rgba(49,212,194,0.28)] bg-[rgba(49,212,194,0.12)] text-[#8af0e4]",
+                              ].join(" ")}
+                            >
+                              {selectedField.importSource.reviewState === "needs-review"
+                                ? "Blocks publish"
+                                : "Imported"}
+                            </div>
+                          </div>
+                          {selectedField.importSource.reviewNote ? (
+                            <div className="mt-3 text-[12px] leading-5 text-[#d7b07a]">
+                              {selectedField.importSource.reviewNote}
+                            </div>
+                          ) : null}
+                          {selectedObjectKind === "image" ? (
+                            <div className="mt-3 grid grid-cols-2 gap-2">
+                              {(["cover", "contain"] as const).map((fit) => {
+                                const isActive =
+                                  (selectedField.imageFit ?? "cover") === fit;
+                                return (
+                                  <button
+                                    key={fit}
+                                    type="button"
+                                    onClick={() =>
+                                      updateDraftFieldById(selectedField.id, (field) => ({
+                                        ...field,
+                                        imageFit: fit,
+                                      }))
+                                    }
+                                    className={[
+                                      "inline-flex h-9 items-center justify-center border px-3 text-sm font-semibold transition",
+                                      isActive
+                                        ? "border-white bg-white text-[#0b1117]"
+                                        : "border-white/10 bg-transparent text-white hover:bg-white/[0.05]",
+                                    ].join(" ")}
+                                  >
+                                    {fit === "cover" ? "Cover frame" : "Contain image"}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
                       {selectedObjectKind === "slot" && (
                         <div className="grid grid-cols-2 gap-2">
                           {[

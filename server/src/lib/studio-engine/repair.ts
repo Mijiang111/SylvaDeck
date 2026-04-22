@@ -6,6 +6,8 @@ import type {
   PageCompositionFingerprint,
   PageFitMeasurement,
   PageOverflowCause,
+  PageReviewDecision,
+  PageReviewReason,
   PageRepairProfile,
 } from "./contracts.js";
 import { assessGeneratedTitleQuality, deriveSpecificStudioTitle } from "./brief.js";
@@ -523,6 +525,16 @@ function countLongTextBlocks(measurement: PageFitMeasurement) {
   ).length;
 }
 
+function isShortDeckReviewContext(args: {
+  pageCount?: number | null;
+  softenSemanticDensity?: boolean;
+}) {
+  if (typeof args.softenSemanticDensity === "boolean") {
+    return args.softenSemanticDensity;
+  }
+  return args.pageCount == null || args.pageCount < 10;
+}
+
 export function hasSemanticDensityFailure(
   measurement: PageFitMeasurement,
   pageCount?: number | null,
@@ -556,21 +568,75 @@ export function hasSemanticDensityFailure(
   );
 }
 
+export function resolvePageReviewDecision(
+  measurement: PageFitMeasurement,
+  options?: {
+    pageCount?: number | null;
+    softenSemanticDensity?: boolean;
+  },
+): PageReviewDecision {
+  const reasons: PageReviewReason[] = [];
+  if (measurement.overflowX) {
+    reasons.push("overflow-x");
+  }
+  if (measurement.overflowY) {
+    reasons.push("overflow-y");
+  }
+  if (measurement.pageTitleQuality.promptLeak) {
+    reasons.push("title-prompt-leak");
+  }
+  if (measurement.pageTitleQuality.truncated) {
+    reasons.push("title-truncated");
+  }
+  if (measurement.pageTitleQuality.repeatedInstruction) {
+    reasons.push("title-repeated-instruction");
+  }
+
+  const semanticDensityFailure = hasSemanticDensityFailure(measurement, options?.pageCount);
+  if (semanticDensityFailure) {
+    reasons.push("semantic-density");
+  }
+
+  const hasHardFailure = reasons.some((reason) => reason !== "semantic-density");
+  if (hasHardFailure) {
+    return {
+      severity: "hard-fail",
+      reasons,
+    };
+  }
+
+  if (semanticDensityFailure) {
+    return {
+      severity: isShortDeckReviewContext(options ?? {}) ? "soft-warning" : "hard-fail",
+      reasons,
+    };
+  }
+
+  return {
+    severity: "pass",
+    reasons,
+  };
+}
+
 export function measurementNeedsRepair(
   measurement: PageFitMeasurement,
   pageCount?: number | null,
+  options?: {
+    includeSoftWarnings?: boolean;
+    softenSemanticDensity?: boolean;
+  },
 ) {
-  return Boolean(
-    measurement.overflowX ||
-      measurement.overflowY ||
-      measurement.pageTitleQuality.promptLeak ||
-      measurement.pageTitleQuality.truncated ||
-      measurement.pageTitleQuality.repeatedInstruction ||
-      hasSemanticDensityFailure(measurement, pageCount),
-  );
+  const decision = resolvePageReviewDecision(measurement, {
+    pageCount,
+    softenSemanticDensity: options?.softenSemanticDensity,
+  });
+  return options?.includeSoftWarnings
+    ? decision.severity !== "pass"
+    : decision.severity === "hard-fail";
 }
 
 export function summarizeMeasurementIssues(measurement: PageFitMeasurement) {
+  const decision = resolvePageReviewDecision(measurement);
   const issues: string[] = [
     `Dominant overflow region: ${measurement.dominantOverflowRegion}.`,
     `Composition fingerprint: ${summarizeCompositionFingerprintForPrompt(measurement.compositionFingerprint)}.`,
@@ -602,8 +668,12 @@ export function summarizeMeasurementIssues(measurement: PageFitMeasurement) {
       `Semantic module count: ${measurement.semanticModuleCount}; chart regions: ${measurement.chartRegionCount}; text characters: ${measurement.textCharacterCount}.`,
     );
   }
-  if (hasSemanticDensityFailure(measurement)) {
-    issues.push("Semantic density is too high for the page class: reduce equal-weight modules, long paragraphs, or supporting clutter before changing the core claim.");
+  if (decision.reasons.includes("semantic-density")) {
+    issues.push(
+      decision.severity === "soft-warning"
+        ? "Semantic density is high enough to warrant simplification even though the page still fits."
+        : "Semantic density is too high for the page class: reduce equal-weight modules, long paragraphs, or supporting clutter before changing the core claim.",
+    );
   }
   if (measurement.predictedTextOverflow && (measurement.predictedOverflowRoots?.length ?? 0) > 0) {
     issues.push(

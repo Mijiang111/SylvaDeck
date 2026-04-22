@@ -8,10 +8,15 @@ import {
   type SetStateAction,
 } from "react";
 import {
+  applyDeterministicTitleRepairToReport,
+  buildLayoutPlaceholderDraft,
   createHtmlReportPages,
   createGenerationSignature,
   createGeneratedDraftAsset,
+  didPageReviewImprove,
   hasPageFitFailure,
+  isTitleOnlyHardFail,
+  resolvePageReviewDecision,
   streamReviseHtmlReport,
   type PageFitMeasurement,
   type StudioGenerateStreamEvent,
@@ -131,6 +136,20 @@ function prioritizeRepairMeasurements(
       scorePageFitFailure(right, pageCount, currentPageNumber) -
       scorePageFitFailure(left, pageCount, currentPageNumber),
   );
+}
+
+function formatPageLabelList(pageNumbers: number[]) {
+  return [...new Set(pageNumbers)]
+    .sort((left, right) => left - right)
+    .map((pageNumber) => `P${pageNumber}`)
+    .join(", ");
+}
+
+function buildSoftWarningMessage(pageNumbers: number[], prefix: string) {
+  const labels = formatPageLabelList(pageNumbers);
+  return labels
+    ? `${prefix} ${labels} may still benefit from manual simplification.`
+    : prefix;
 }
 
 type UseStudioDeckReviewFlowArgs = {
@@ -307,6 +326,7 @@ export function useStudioDeckReviewFlow(args: UseStudioDeckReviewFlowArgs) {
         startedAt?: number | null;
         mode?: "auto" | "manual";
         markAutoOptimized?: boolean;
+        lastRepairMeasurements?: Record<number, PageFitMeasurement>;
       },
     ) => {
       const reportKey = buildDeckReviewKey(report);
@@ -347,6 +367,7 @@ export function useStudioDeckReviewFlow(args: UseStudioDeckReviewFlowArgs) {
           (current.reportKey === reportKey && current.startedAt
             ? current.startedAt
             : Date.now()),
+        lastRepairMeasurements: options?.lastRepairMeasurements ?? {},
       }));
       setStatusLine(
         repairPass > 0
@@ -498,6 +519,9 @@ export function useStudioDeckReviewFlow(args: UseStudioDeckReviewFlowArgs) {
           !repairedPageNumbers.includes(Number(pageNumber)),
         ),
       ) as Record<number, PageFitMeasurement>;
+      const lastRepairMeasurements = Object.fromEntries(
+        repairArgs.measurements.map((measurement) => [measurement.pageNumber, measurement]),
+      ) as Record<number, PageFitMeasurement>;
 
       queueDeckReview(repairArgs.briefSource, result.htmlReport, repairArgs.repairPass, {
         seededMeasurements,
@@ -505,6 +529,7 @@ export function useStudioDeckReviewFlow(args: UseStudioDeckReviewFlowArgs) {
         startedAt: deckReview.startedAt,
         mode: repairArgs.mode ?? "auto",
         markAutoOptimized: (repairArgs.mode ?? "auto") === "auto",
+        lastRepairMeasurements,
       });
     } catch (error) {
       if (abortController.signal.aborted) {
@@ -666,27 +691,142 @@ export function useStudioDeckReviewFlow(args: UseStudioDeckReviewFlowArgs) {
       return;
     }
 
-    const failedMeasurements = collectedMeasurements.filter((measurement) =>
-      hasPageFitFailure(measurement, generatedHtmlReport.pageCount),
+    const reviewDecisions = Object.fromEntries(
+      collectedMeasurements.map((measurement) => [
+        measurement.pageNumber,
+        resolvePageReviewDecision(measurement, generatedHtmlReport.pageCount),
+      ]),
     );
-    if (failedMeasurements.length === 0) {
+    const hardFailMeasurements = collectedMeasurements.filter(
+      (measurement) => reviewDecisions[measurement.pageNumber]?.severity === "hard-fail",
+    );
+    const softWarningMeasurements = collectedMeasurements.filter(
+      (measurement) => reviewDecisions[measurement.pageNumber]?.severity === "soft-warning",
+    );
+
+    if (hardFailMeasurements.length === 0) {
       if (shouldPersistCompletedAutoOptimization(deckReview.mode)) {
         persistCompletedAutoOptimizedReportKey(deckReview.reportKey);
       }
       mergeLatestMeasuredPages(deckReview.measurements);
-      setDeckReview(DEFAULT_DECK_REVIEW_STATE);
-      setStatusLine(
+      const softWarningPageNumbers = softWarningMeasurements.map(
+        (measurement) => measurement.pageNumber,
+      );
+      const baseSuccessMessage =
         deckReview.mode === "manual"
           ? `Page ${requiredPages[0] ?? currentCanvasPageNumber} optimization complete.`
           : deckReview.repairPass > 0
             ? "Auto-repair complete. Deck is ready to edit."
-            : "Deck review complete. Editing is now unlocked.",
+            : "Deck review complete. Editing is now unlocked.";
+      const warning =
+        softWarningPageNumbers.length > 0
+          ? buildSoftWarningMessage(
+              softWarningPageNumbers,
+              deckReview.mode === "manual"
+                ? "Optimization complete."
+                : deckReview.repairPass > 0
+                  ? "Auto-repair complete."
+                  : "Review complete.",
+            )
+          : null;
+      setDeckReview(
+        warning
+          ? {
+              ...DEFAULT_DECK_REVIEW_STATE,
+              warning,
+            }
+          : DEFAULT_DECK_REVIEW_STATE,
       );
+      setStatusLine(warning ?? baseSuccessMessage);
       return;
     }
 
+    const latestProject = useWorkbenchStudioStore.getState().document.project;
+    const latestGeneratedDraft =
+      latestProject?.generatedDraft ??
+      latestProject?.generationHistory.at(-1)?.snapshot.generatedDraft ??
+      project?.generatedDraft ??
+      project?.generationHistory.at(-1)?.snapshot.generatedDraft;
+    const templateId = (project?.templateId ?? latestProject?.templateId ?? "blank") as TemplateId;
+
+    if (deckReview.mode === "auto") {
+      const titleOnlyHardFails = hardFailMeasurements.filter((measurement) =>
+        isTitleOnlyHardFail(measurement, generatedHtmlReport.pageCount),
+      );
+      if (titleOnlyHardFails.length > 0) {
+        const deterministicTitleRepair = applyDeterministicTitleRepairToReport({
+          report: generatedHtmlReport,
+          measurements: titleOnlyHardFails,
+        });
+        if (deterministicTitleRepair) {
+          const repairedPages = createHtmlReportPages(
+            deterministicTitleRepair.report,
+            deckReview.briefSource,
+          );
+          const signature = createGenerationSignature(
+            deckReview.briefSource,
+            repairedPages,
+            templateId,
+          );
+          const asset = latestGeneratedDraft
+            ? {
+                ...latestGeneratedDraft,
+                signature,
+                generatedAt: new Date().toISOString(),
+                htmlReport: deterministicTitleRepair.report,
+              }
+            : createGeneratedDraftAsset({
+                draft: buildLayoutPlaceholderDraft({
+                  title: deterministicTitleRepair.report.title,
+                  subtitle: deckReview.briefSource,
+                  pages: repairedPages,
+                }),
+                signature,
+                templateId,
+                provider: "local",
+                mode: "content",
+                model: null,
+                htmlReport: deterministicTitleRepair.report,
+              });
+          updateGeneratedDraft({
+            generatedDraft: asset,
+            pages: repairedPages,
+            projectName: deterministicTitleRepair.report.title,
+            workflowStage: "generated",
+            label: "Normalize leaked page titles",
+            scope: "generation",
+            statusLine: "Applied deterministic title cleanup before escalating to AI repair.",
+          });
+
+          const repairedPageNumbers = deterministicTitleRepair.repairedPageNumbers;
+          const seededMeasurements = Object.fromEntries(
+            Object.entries(deckReview.measurements).filter(([pageNumber]) =>
+              !repairedPageNumbers.includes(Number(pageNumber)),
+            ),
+          ) as Record<number, PageFitMeasurement>;
+
+          queueDeckReview(
+            deckReview.briefSource,
+            deterministicTitleRepair.report,
+            deckReview.repairPass,
+            {
+              seededMeasurements,
+              pendingPages: repairedPageNumbers,
+              startedAt: deckReview.startedAt,
+              mode: deckReview.mode,
+              markAutoOptimized: true,
+              lastRepairMeasurements: deckReview.lastRepairMeasurements,
+            },
+          );
+          return;
+        }
+      }
+    }
+
     if (deckReview.mode === "manual") {
-      const failedLabel = failedMeasurements.map((measurement) => `P${measurement.pageNumber}`).join(", ");
+      const failedLabel = formatPageLabelList(
+        hardFailMeasurements.map((measurement) => measurement.pageNumber),
+      );
       mergeLatestMeasuredPages(deckReview.measurements);
       setDeckReview({
         ...DEFAULT_DECK_REVIEW_STATE,
@@ -700,7 +840,9 @@ export function useStudioDeckReviewFlow(args: UseStudioDeckReviewFlowArgs) {
       if (shouldPersistCompletedAutoOptimization(deckReview.mode)) {
         persistCompletedAutoOptimizedReportKey(deckReview.reportKey);
       }
-      const failedLabel = failedMeasurements.map((measurement) => `P${measurement.pageNumber}`).join(", ");
+      const failedLabel = formatPageLabelList(
+        hardFailMeasurements.map((measurement) => measurement.pageNumber),
+      );
       mergeLatestMeasuredPages(deckReview.measurements);
       setDeckReview({
         ...DEFAULT_DECK_REVIEW_STATE,
@@ -712,10 +854,44 @@ export function useStudioDeckReviewFlow(args: UseStudioDeckReviewFlowArgs) {
       return;
     }
 
+    if (deckReview.repairPass > 0) {
+      const repairedEntries = Object.entries(deckReview.lastRepairMeasurements);
+      const materialImprovement =
+        repairedEntries.length === 0 ||
+        repairedEntries.some(([pageNumber, previousMeasurement]) => {
+          const currentMeasurement = deckReview.measurements[Number(pageNumber)];
+          if (!currentMeasurement) {
+            return false;
+          }
+          return didPageReviewImprove({
+            before: previousMeasurement,
+            after: currentMeasurement,
+            pageCount: generatedHtmlReport.pageCount,
+          });
+        });
+
+      if (!materialImprovement) {
+        if (shouldPersistCompletedAutoOptimization(deckReview.mode)) {
+          persistCompletedAutoOptimizedReportKey(deckReview.reportKey);
+        }
+        const failedLabel = formatPageLabelList(
+          hardFailMeasurements.map((measurement) => measurement.pageNumber),
+        );
+        mergeLatestMeasuredPages(deckReview.measurements);
+        const warning = `Auto-repair stopped after one pass because ${failedLabel} did not materially improve. Manual cleanup is still needed.`;
+        setDeckReview({
+          ...DEFAULT_DECK_REVIEW_STATE,
+          warning,
+        });
+        setStatusLine(warning);
+        return;
+      }
+    }
+
     const isLongFormDeck =
       project?.generationMode === "long-form" || generatedHtmlReport.pageCount >= 10;
     const prioritizedFailedMeasurements = prioritizeRepairMeasurements(
-      failedMeasurements,
+      hardFailMeasurements,
       generatedHtmlReport.pageCount,
       currentCanvasPageNumber,
     );
@@ -739,7 +915,9 @@ export function useStudioDeckReviewFlow(args: UseStudioDeckReviewFlowArgs) {
       if (shouldPersistCompletedAutoOptimization(deckReview.mode)) {
         persistCompletedAutoOptimizedReportKey(deckReview.reportKey);
       }
-      const failedLabel = failedMeasurements.map((measurement) => `P${measurement.pageNumber}`).join(", ");
+      const failedLabel = formatPageLabelList(
+        hardFailMeasurements.map((measurement) => measurement.pageNumber),
+      );
       mergeLatestMeasuredPages(deckReview.measurements);
       setDeckReview({
         ...DEFAULT_DECK_REVIEW_STATE,
@@ -777,10 +955,14 @@ export function useStudioDeckReviewFlow(args: UseStudioDeckReviewFlowArgs) {
     deckReview,
     generatedHtmlReport,
     project?.generationMode,
+    project?.generatedDraft,
+    project?.templateId,
+    queueDeckReview,
     runDeckRepair,
     setStatusLine,
     mergeLatestMeasuredPages,
     persistCompletedAutoOptimizedReportKey,
+    updateGeneratedDraft,
   ]);
 
   useEffect(() => {

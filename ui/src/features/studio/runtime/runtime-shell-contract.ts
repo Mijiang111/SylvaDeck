@@ -38,6 +38,7 @@ export type DeckReviewState = {
   repairPass: number;
   warning: string | null;
   startedAt: number | null;
+  lastRepairMeasurements: Record<number, PageFitMeasurement>;
 };
 
 export type StudioShellGenerationFlowContract = {
@@ -74,6 +75,7 @@ export type StudioShellReviewFlowContract = {
       startedAt?: number | null;
       mode?: "auto" | "manual";
       markAutoOptimized?: boolean;
+      lastRepairMeasurements?: Record<number, PageFitMeasurement>;
     },
   ) => void;
   stopDeckOptimization: (message?: string) => void;
@@ -117,6 +119,7 @@ export const DEFAULT_DECK_REVIEW_STATE: DeckReviewState = {
   repairPass: 0,
   warning: null,
   startedAt: null,
+  lastRepairMeasurements: {},
 };
 
 export const STANDARD_DECK_REVIEW_HARD_TIMEOUT_MS = 90_000;

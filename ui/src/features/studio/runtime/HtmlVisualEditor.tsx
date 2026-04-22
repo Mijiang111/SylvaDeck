@@ -13,7 +13,7 @@ type HtmlVisualEditorProps = {
   style: HtmlPageVisualStyle | null;
   selectedNode: HtmlVisualNode | null;
   contentNodes: HtmlVisualContentNode[];
-  inspectorMode: "page" | "text" | "visual" | "layout";
+  inspectorMode: "page" | "text" | "visual";
   onChangeStyle: (nextStyle: HtmlPageVisualStyle) => void;
   onChangeNodeStyle: (nextStyle: Partial<HtmlVisualNodeStyle>) => void;
   onAddVisualElement: (kind: HtmlVisualNodeKind, placement: HtmlVisualInsertionMode) => void;
@@ -224,8 +224,6 @@ export function HtmlVisualEditor({
     ? `Page ${selectedNode.pageNumber}`
     : inspectorMode === "text"
       ? "Text is selected. Visual controls still target the page until you select a visual element."
-      : inspectorMode === "layout"
-        ? "A layout split is selected. Visual controls still target the page until you select a visual element."
       : "Tune the page tone or select a visual element.";
 
   const selectedFill = normalizeNodeColor(selectedNode?.style.background, style.surfaceFill ?? "#ffffff");

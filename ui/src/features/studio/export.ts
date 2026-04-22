@@ -1,18 +1,15 @@
-function collectAccessibleStyles(document: Document) {
-  const chunks: string[] = [];
+import {
+  HTML_REPORT_PAGE_WIDTH,
+  buildHtmlReportExportBundle,
+} from "@/features/studio/runtime/runtime-export-annotations";
+import type { GeneratedHtmlReport } from "@/features/studio/types";
 
-  for (const sheet of Array.from(document.styleSheets)) {
-    try {
-      const rules = sheet.cssRules;
-      for (const rule of Array.from(rules)) {
-        chunks.push(rule.cssText);
-      }
-    } catch {
-      continue;
-    }
-  }
+function escapeHtml(value: string) {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
 
-  return chunks.join("\n");
+function escapeAttribute(value: string) {
+  return escapeHtml(value).replace(/"/g, "&quot;");
 }
 
 function createFileName(projectName: string, extension: "html") {
@@ -26,35 +23,47 @@ function createFileName(projectName: string, extension: "html") {
 }
 
 function buildStandaloneHtml(args: {
-  document: Document;
+  htmlReport: GeneratedHtmlReport;
   projectName: string;
-  reportMarkup: string;
   publishedUrl: string;
 }) {
-  const styles = collectAccessibleStyles(args.document);
-  const escapedTitle = args.projectName.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  const escapedUrl = args.publishedUrl
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+  const exportBundle = buildHtmlReportExportBundle(args.htmlReport);
+  const escapedTitle = escapeHtml(args.projectName);
+  const escapedUrl = escapeHtml(args.publishedUrl);
+  const bodyAttributes = Object.entries(exportBundle.bodyAttributes)
+    .map(([name, value]) => `${name}="${escapeAttribute(value)}"`)
+    .join(" ");
+  const exportPages = exportBundle.pages
+    .map(
+      (page) => `
+    <section class="export-page-shell" data-export-page-number="${page.pageNumber}" aria-label="Page ${page.pageNumber}: ${escapeAttribute(page.title)}">
+      ${page.pageMarkup}
+    </section>`,
+    )
+    .join("\n");
 
   return [
     "<!doctype html>",
     '<html lang="en">',
     "<head>",
+    exportBundle.headMarkup,
     '<meta charset="utf-8" />',
     '<meta name="viewport" content="width=device-width, initial-scale=1" />',
     `<title>${escapedTitle}</title>`,
-    `<meta name="generator" content="PPT Studio" />`,
+    '<meta name="generator" content="PPT Studio" />',
     `<meta name="source" content="${escapedUrl}" />`,
     "<style>",
-    styles,
-    "html, body { margin: 0; background: #ddd9d3; }",
-    ".export-shell { min-height: 100vh; }",
+    [
+      "html, body { margin: 0; min-height: 100%; background: #ddd9d3; }",
+      "body { min-height: 100vh; }",
+      ".export-shell { min-height: 100vh; box-sizing: border-box; display: flex; flex-direction: column; align-items: center; gap: 32px; padding: 32px 24px 48px; }",
+      `.export-page-shell { width: min(${HTML_REPORT_PAGE_WIDTH}px, calc(100vw - 48px)); overflow-x: auto; overflow-y: hidden; }`,
+      `.export-page-shell > * { width: ${HTML_REPORT_PAGE_WIDTH}px; }`,
+    ].join("\n"),
     "</style>",
     "</head>",
-    "<body>",
-    `<div class="export-shell">${args.reportMarkup}</div>`,
+    `<body${bodyAttributes ? ` ${bodyAttributes}` : ""}>`,
+    `<div class="export-shell">${exportPages}</div>`,
     "</body>",
     "</html>",
   ].join("\n");
@@ -62,14 +71,13 @@ function buildStandaloneHtml(args: {
 
 export function downloadPublishedHtml(args: {
   document: Document;
-  reportRoot: HTMLElement;
+  htmlReport: GeneratedHtmlReport;
   projectName: string;
   publishedUrl: string;
 }) {
   const html = buildStandaloneHtml({
-    document: args.document,
+    htmlReport: args.htmlReport,
     projectName: args.projectName,
-    reportMarkup: args.reportRoot.outerHTML,
     publishedUrl: args.publishedUrl,
   });
 

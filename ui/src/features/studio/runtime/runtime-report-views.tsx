@@ -3,7 +3,7 @@ import { SlideSceneCanvas } from "@/features/studio/slide-scene-renderer";
 import type {
   GeneratedHtmlReport,
   HtmlCanvasFrame,
-  HtmlLayoutZoneKind,
+  HtmlCanvasTransform,
   HtmlVisualNodeKind,
   LayoutPage,
   WorkflowStage,
@@ -22,6 +22,7 @@ import {
 import { resolveCanvasPageViewportRadius } from "./runtime-report-view-math";
 import { StorylineStructureCanvas } from "./runtime-storyline";
 import type { StreamingReportPage } from "./runtime-types";
+import type { PreviewSelectionPreference } from "./preview-selection";
 
 const HTML_REPORT_MIN_SCALE = 0.24;
 const HTML_REPORT_MAX_SCALE = 1.4;
@@ -74,38 +75,31 @@ function HtmlReportFrame({
   selectedPageNumber,
   selectedBlockId,
   selectedVisualNodeId,
-  selectedLayoutZoneId,
   onSelectBlock,
   onSelectVisualNode,
-  onSelectLayoutZone,
-  onCommitLayoutZone,
   onQuickEditBlock,
   onCommitBlockTransform,
   onCommitVisualTransform,
+  onReturnBlockToFlow,
+  onReturnVisualToFlow,
+  onShiftBlockLayer,
+  onShiftVisualLayer,
   onHtmlPageOverflow,
   onHtmlPageMeasurement,
+  preferredSelectionType = "page",
+  selectedBlockTransform,
+  selectedVisualTransform,
 }: {
   htmlReport: GeneratedHtmlReport;
   rootId?: string;
   selectedPageNumber?: number | null;
   selectedBlockId?: string | null;
   selectedVisualNodeId?: string | null;
-  selectedLayoutZoneId?: string | null;
   onSelectBlock?: (pageNumber: number, blockId: string) => void;
   onSelectVisualNode?: (
     pageNumber: number,
     nodeId: string,
     kind: HtmlVisualNodeKind,
-  ) => void;
-  onSelectLayoutZone?: (
-    pageNumber: number,
-    zoneId: string,
-    kind: HtmlLayoutZoneKind,
-  ) => void;
-  onCommitLayoutZone?: (
-    pageNumber: number,
-    zoneId: string,
-    splitPercent: number,
   ) => void;
   onQuickEditBlock?: (
     pageNumber: number,
@@ -123,8 +117,26 @@ function HtmlReportFrame({
     nodeId: string,
     frame: HtmlCanvasFrame,
   ) => void;
+  onReturnBlockToFlow?: (pageNumber: number, blockId: string) => void;
+  onReturnVisualToFlow?: (pageNumber: number, nodeId: string) => void;
+  onShiftBlockLayer?: (
+    pageNumber: number,
+    blockId: string,
+    direction: "forward" | "backward",
+    frame: HtmlCanvasFrame,
+    fontSize?: number,
+  ) => void;
+  onShiftVisualLayer?: (
+    pageNumber: number,
+    nodeId: string,
+    direction: "forward" | "backward",
+    frame: HtmlCanvasFrame,
+  ) => void;
   onHtmlPageOverflow?: (pageNumber: number, overflows: boolean) => void;
   onHtmlPageMeasurement?: (measurement: PageFitMeasurement) => void;
+  preferredSelectionType?: PreviewSelectionPreference;
+  selectedBlockTransform?: HtmlCanvasTransform | null;
+  selectedVisualTransform?: HtmlCanvasTransform | null;
 }) {
   const frameRef = useRef<HTMLDivElement | null>(null);
   const [containerWidth, setContainerWidth] = useState(0);
@@ -250,22 +262,28 @@ function HtmlReportFrame({
                     pageCount={htmlReport.pageCount}
                     previewScale={previewScale}
                     onSelectVisualNode={onSelectVisualNode}
-                    onSelectLayoutZone={onSelectLayoutZone}
-                    onCommitLayoutZone={onCommitLayoutZone}
                     onSelectBlock={onSelectBlock}
                     onQuickEditBlock={onQuickEditBlock}
                     onCommitBlockTransform={onCommitBlockTransform}
                     onCommitVisualTransform={onCommitVisualTransform}
+                    onReturnBlockToFlow={onReturnBlockToFlow}
+                    onReturnVisualToFlow={onReturnVisualToFlow}
+                    onShiftBlockLayer={onShiftBlockLayer}
+                    onShiftVisualLayer={onShiftVisualLayer}
                     onPageOverflow={onHtmlPageOverflow}
                     onPageMeasurement={onHtmlPageMeasurement}
+                    preferredSelectionType={preferredSelectionType}
                     selectedBlockId={
                       selectedPageNumber === pagePreview.pageNumber ? selectedBlockId : null
+                    }
+                    selectedBlockTransform={
+                      selectedPageNumber === pagePreview.pageNumber ? selectedBlockTransform : null
                     }
                     selectedVisualNodeId={
                       selectedPageNumber === pagePreview.pageNumber ? selectedVisualNodeId : null
                     }
-                    selectedLayoutZoneId={
-                      selectedPageNumber === pagePreview.pageNumber ? selectedLayoutZoneId : null
+                    selectedVisualTransform={
+                      selectedPageNumber === pagePreview.pageNumber ? selectedVisualTransform : null
                     }
                   />
                 </div>
@@ -428,42 +446,35 @@ function HtmlReportCanvasFrame({
   selectedPageNumber,
   selectedBlockId,
   selectedVisualNodeId,
-  selectedLayoutZoneId,
   onSelectBlock,
   onSelectVisualNode,
-  onSelectLayoutZone,
-  onCommitLayoutZone,
   onQuickEditBlock,
   onCommitBlockTransform,
   onCommitVisualTransform,
+  onReturnBlockToFlow,
+  onReturnVisualToFlow,
+  onShiftBlockLayer,
+  onShiftVisualLayer,
   onHtmlPageOverflow,
   onHtmlPageMeasurement,
   scaleMode = "fit",
   scale = null,
   onResolvedScaleChange,
   onVisiblePageChange,
+  preferredSelectionType = "page",
+  selectedBlockTransform,
+  selectedVisualTransform,
 }: {
   htmlReport: GeneratedHtmlReport;
   rootId?: string;
   selectedPageNumber?: number | null;
   selectedBlockId?: string | null;
   selectedVisualNodeId?: string | null;
-  selectedLayoutZoneId?: string | null;
   onSelectBlock?: (pageNumber: number, blockId: string) => void;
   onSelectVisualNode?: (
     pageNumber: number,
     nodeId: string,
     kind: HtmlVisualNodeKind,
-  ) => void;
-  onSelectLayoutZone?: (
-    pageNumber: number,
-    zoneId: string,
-    kind: HtmlLayoutZoneKind,
-  ) => void;
-  onCommitLayoutZone?: (
-    pageNumber: number,
-    zoneId: string,
-    splitPercent: number,
   ) => void;
   onQuickEditBlock?: (
     pageNumber: number,
@@ -481,12 +492,30 @@ function HtmlReportCanvasFrame({
     nodeId: string,
     frame: HtmlCanvasFrame,
   ) => void;
+  onReturnBlockToFlow?: (pageNumber: number, blockId: string) => void;
+  onReturnVisualToFlow?: (pageNumber: number, nodeId: string) => void;
+  onShiftBlockLayer?: (
+    pageNumber: number,
+    blockId: string,
+    direction: "forward" | "backward",
+    frame: HtmlCanvasFrame,
+    fontSize?: number,
+  ) => void;
+  onShiftVisualLayer?: (
+    pageNumber: number,
+    nodeId: string,
+    direction: "forward" | "backward",
+    frame: HtmlCanvasFrame,
+  ) => void;
   onHtmlPageOverflow?: (pageNumber: number, overflows: boolean) => void;
   onHtmlPageMeasurement?: (measurement: PageFitMeasurement) => void;
   scaleMode?: WorkbenchReportScaleMode;
   scale?: number | null;
   onResolvedScaleChange?: (scale: number) => void;
   onVisiblePageChange?: (pageNumber: number) => void;
+  preferredSelectionType?: PreviewSelectionPreference;
+  selectedBlockTransform?: HtmlCanvasTransform | null;
+  selectedVisualTransform?: HtmlCanvasTransform | null;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const pageRefs = useRef<Record<number, HTMLElement | null>>({});
@@ -662,22 +691,28 @@ function HtmlReportCanvasFrame({
                     pageCount={htmlReport.pageCount}
                     previewScale={resolvedScale}
                     onSelectVisualNode={onSelectVisualNode}
-                    onSelectLayoutZone={onSelectLayoutZone}
-                    onCommitLayoutZone={onCommitLayoutZone}
                     onSelectBlock={onSelectBlock}
                     onQuickEditBlock={onQuickEditBlock}
                     onCommitBlockTransform={onCommitBlockTransform}
                     onCommitVisualTransform={onCommitVisualTransform}
+                    onReturnBlockToFlow={onReturnBlockToFlow}
+                    onReturnVisualToFlow={onReturnVisualToFlow}
+                    onShiftBlockLayer={onShiftBlockLayer}
+                    onShiftVisualLayer={onShiftVisualLayer}
                     onPageOverflow={onHtmlPageOverflow}
                     onPageMeasurement={onHtmlPageMeasurement}
+                    preferredSelectionType={preferredSelectionType}
                     selectedBlockId={
                       selectedPageNumber === pagePreview.pageNumber ? selectedBlockId : null
+                    }
+                    selectedBlockTransform={
+                      selectedPageNumber === pagePreview.pageNumber ? selectedBlockTransform : null
                     }
                     selectedVisualNodeId={
                       selectedPageNumber === pagePreview.pageNumber ? selectedVisualNodeId : null
                     }
-                    selectedLayoutZoneId={
-                      selectedPageNumber === pagePreview.pageNumber ? selectedLayoutZoneId : null
+                    selectedVisualTransform={
+                      selectedPageNumber === pagePreview.pageNumber ? selectedVisualTransform : null
                     }
                   />
                 </div>
@@ -896,20 +931,24 @@ function WorkbenchReportView({
   selectedHtmlPageNumber,
   selectedHtmlBlockId,
   selectedHtmlVisualNodeId,
-  selectedHtmlLayoutZoneId,
   onSelectHtmlBlock,
   onSelectHtmlVisualNode,
-  onSelectHtmlLayoutZone,
-  onCommitHtmlLayoutZone,
   onQuickEditHtmlBlock,
   onCommitHtmlBlockTransform,
   onCommitHtmlVisualTransform,
+  onReturnHtmlBlockToFlow,
+  onReturnHtmlVisualToFlow,
+  onShiftHtmlBlockLayer,
+  onShiftHtmlVisualLayer,
   onHtmlPageOverflow,
   onHtmlPageMeasurement,
   scaleMode = "fit",
   scale = null,
   onResolvedScaleChange,
   onVisiblePageChange,
+  preferredHtmlSelectionType = "page",
+  selectedHtmlBlockTransform,
+  selectedHtmlVisualTransform,
 }: {
   pages: LayoutPage[];
   draft: WorkbenchDraft;
@@ -921,22 +960,11 @@ function WorkbenchReportView({
   selectedHtmlPageNumber?: number | null;
   selectedHtmlBlockId?: string | null;
   selectedHtmlVisualNodeId?: string | null;
-  selectedHtmlLayoutZoneId?: string | null;
   onSelectHtmlBlock?: (pageNumber: number, blockId: string) => void;
   onSelectHtmlVisualNode?: (
     pageNumber: number,
     nodeId: string,
     kind: HtmlVisualNodeKind,
-  ) => void;
-  onSelectHtmlLayoutZone?: (
-    pageNumber: number,
-    zoneId: string,
-    kind: HtmlLayoutZoneKind,
-  ) => void;
-  onCommitHtmlLayoutZone?: (
-    pageNumber: number,
-    zoneId: string,
-    splitPercent: number,
   ) => void;
   onQuickEditHtmlBlock?: (
     pageNumber: number,
@@ -954,12 +982,30 @@ function WorkbenchReportView({
     nodeId: string,
     frame: HtmlCanvasFrame,
   ) => void;
+  onReturnHtmlBlockToFlow?: (pageNumber: number, blockId: string) => void;
+  onReturnHtmlVisualToFlow?: (pageNumber: number, nodeId: string) => void;
+  onShiftHtmlBlockLayer?: (
+    pageNumber: number,
+    blockId: string,
+    direction: "forward" | "backward",
+    frame: HtmlCanvasFrame,
+    fontSize?: number,
+  ) => void;
+  onShiftHtmlVisualLayer?: (
+    pageNumber: number,
+    nodeId: string,
+    direction: "forward" | "backward",
+    frame: HtmlCanvasFrame,
+  ) => void;
   onHtmlPageOverflow?: (pageNumber: number, overflows: boolean) => void;
   onHtmlPageMeasurement?: (measurement: PageFitMeasurement) => void;
   scaleMode?: WorkbenchReportScaleMode;
   scale?: number | null;
   onResolvedScaleChange?: (scale: number) => void;
   onVisiblePageChange?: (pageNumber: number) => void;
+  preferredHtmlSelectionType?: PreviewSelectionPreference;
+  selectedHtmlBlockTransform?: HtmlCanvasTransform | null;
+  selectedHtmlVisualTransform?: HtmlCanvasTransform | null;
 }) {
   if (workflowStage === "generated" && htmlReport) {
     if (mode === "immersive") {
@@ -970,16 +1016,20 @@ function WorkbenchReportView({
           selectedPageNumber={selectedHtmlPageNumber}
           selectedBlockId={selectedHtmlBlockId}
           selectedVisualNodeId={selectedHtmlVisualNodeId}
-          selectedLayoutZoneId={selectedHtmlLayoutZoneId}
           onSelectBlock={onSelectHtmlBlock}
           onSelectVisualNode={onSelectHtmlVisualNode}
-          onSelectLayoutZone={onSelectHtmlLayoutZone}
-          onCommitLayoutZone={onCommitHtmlLayoutZone}
           onQuickEditBlock={onQuickEditHtmlBlock}
           onCommitBlockTransform={onCommitHtmlBlockTransform}
           onCommitVisualTransform={onCommitHtmlVisualTransform}
+          onReturnBlockToFlow={onReturnHtmlBlockToFlow}
+          onReturnVisualToFlow={onReturnHtmlVisualToFlow}
+          onShiftBlockLayer={onShiftHtmlBlockLayer}
+          onShiftVisualLayer={onShiftHtmlVisualLayer}
           onHtmlPageOverflow={onHtmlPageOverflow}
           onHtmlPageMeasurement={onHtmlPageMeasurement}
+          preferredSelectionType={preferredHtmlSelectionType}
+          selectedBlockTransform={selectedHtmlBlockTransform}
+          selectedVisualTransform={selectedHtmlVisualTransform}
           scaleMode={scaleMode}
           scale={scale}
           onResolvedScaleChange={onResolvedScaleChange}
@@ -1002,16 +1052,20 @@ function WorkbenchReportView({
           selectedPageNumber={selectedHtmlPageNumber}
           selectedBlockId={selectedHtmlBlockId}
           selectedVisualNodeId={selectedHtmlVisualNodeId}
-          selectedLayoutZoneId={selectedHtmlLayoutZoneId}
           onSelectBlock={onSelectHtmlBlock}
           onSelectVisualNode={onSelectHtmlVisualNode}
-          onSelectLayoutZone={onSelectHtmlLayoutZone}
-          onCommitLayoutZone={onCommitHtmlLayoutZone}
           onQuickEditBlock={onQuickEditHtmlBlock}
           onCommitBlockTransform={onCommitHtmlBlockTransform}
           onCommitVisualTransform={onCommitHtmlVisualTransform}
+          onReturnBlockToFlow={onReturnHtmlBlockToFlow}
+          onReturnVisualToFlow={onReturnHtmlVisualToFlow}
+          onShiftBlockLayer={onShiftHtmlBlockLayer}
+          onShiftVisualLayer={onShiftHtmlVisualLayer}
           onHtmlPageOverflow={onHtmlPageOverflow}
           onHtmlPageMeasurement={onHtmlPageMeasurement}
+          preferredSelectionType={preferredHtmlSelectionType}
+          selectedBlockTransform={selectedHtmlBlockTransform}
+          selectedVisualTransform={selectedHtmlVisualTransform}
         />
       </div>
     </article>

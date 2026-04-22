@@ -30,10 +30,16 @@ import {
   buildReportSourceInput,
 } from "@/features/studio/module-runtime-input";
 import { consumeModuleAuthoringHandoff } from "@/features/studio/module-authoring-handoff";
+import {
+  createModuleDraftFromImportedPage,
+  importDeckTemplatePackFromPptx,
+} from "@/features/studio/pptx-import";
+import { createAssetRepository } from "@/features/studio/runtime/studio/repository";
 import type {
   CompositionPublishArtifact,
   CompositionTestCase,
   CompositionTestRun,
+  DeckTemplatePackPage,
   ModuleAiState,
   ModuleChartKind,
   ModuleCanvasSurface,
@@ -164,6 +170,7 @@ import {
   THINKING_FLOW_BOARD_WIDTH,
 } from "./thinking-flow-model";
 import { TemplateLibraryModal } from "./TemplateLibraryModal";
+import { PptxSlideImportModal } from "./PptxSlideImportModal";
 import {
   AuthoringStageRail,
   ComposeStagePanel,
@@ -179,8 +186,10 @@ export function ModuleAuthorWorkbenchPage() {
   const location = useLocation();
   const navigate = useNavigate();
   const params = useParams<{ moduleId?: string }>();
+  const assetRepository = useMemo(() => createAssetRepository(), []);
   const sceneRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  const pptxFileInputRef = useRef<HTMLInputElement | null>(null);
   const workspaceViewportRef = useRef<HTMLDivElement | null>(null);
   const thinkingFlowViewportRef = useRef<HTMLDivElement | null>(null);
   const thinkingFlowBoardRef = useRef<HTMLDivElement | null>(null);
@@ -260,9 +269,18 @@ export function ModuleAuthorWorkbenchPage() {
   const [selectedSavedTestCaseId, setSelectedSavedTestCaseId] = useState<string | null>(
     null
   );
+  const [isImportingPptx, setIsImportingPptx] = useState(false);
+  const [pptxImportSession, setPptxImportSession] = useState<{
+    fileName: string;
+    pages: DeckTemplatePackPage[];
+    selectedPageId: string | null;
+  } | null>(null);
+  const [pptxImportError, setPptxImportError] = useState<string | null>(null);
+  const [imageUrlByFieldId, setImageUrlByFieldId] = useState<Record<string, string>>({});
   const [publishVersionNote, setPublishVersionNote] = useState("");
   const openedDraftIdRef = useRef<string | null>(null);
   const fittedFlowDraftIdRef = useRef<string | null>(null);
+  const autoImportQueryRef = useRef<string | null>(null);
 
   function loadDraftEvidence(moduleId: string) {
     const asset = getModuleAssetRecord(moduleId);
@@ -271,12 +289,31 @@ export function ModuleAuthorWorkbenchPage() {
     setSelectedSavedTestCaseId(asset?.testCases[0]?.id ?? null);
   }
 
+  function draftHasMeaningfulContent(entry: ModuleRegistryEntry) {
+    return !(
+      entry.label === "New module" &&
+      entry.fields.length === 1 &&
+      entry.fields[0]?.objectKind === "slot" &&
+      entry.fields[0]?.label === "AI Text" &&
+      (entry.connections?.length ?? 0) === 0 &&
+      (entry.thinkingFlow?.nodes.length ?? 0) === 0 &&
+      (entry.thinkingFlow?.edges.length ?? 0) === 0
+    );
+  }
+
+  function openPptxImportPicker() {
+    setPptxImportError(null);
+    pptxFileInputRef.current?.click();
+  }
+
   function openAuthoringDraft(
     nextDraft: ModuleRegistryEntry,
     nextStatus: string,
     nextStage?: AuthoringStage
   ) {
     const visibleDraft = ensureDraftVisibleOnArtboard(nextDraft);
+    setPptxImportSession(null);
+    setPptxImportError(null);
     setDraft(visibleDraft);
     setFlowRunBrief("");
     setFlowRunResult(null);
@@ -290,6 +327,82 @@ export function ModuleAuthorWorkbenchPage() {
     loadDraftEvidence(visibleDraft.id);
     setStatus(nextStatus);
     requestAnimationFrame(() => fitWorkspaceToView());
+  }
+
+  async function handleImportPptxFile(file: File) {
+    setIsImportingPptx(true);
+    setPptxImportError(null);
+    setStatus(`Importing ${file.name} into the current authoring workspace...`);
+
+    try {
+      const importedPack = await importDeckTemplatePackFromPptx({
+        fileName: file.name,
+        blob: file,
+        saveAsset: async ({ blob, mimeType, alt }) => {
+          const asset = await assetRepository.saveBlob({
+            blob,
+            mimeType,
+            kind: "image",
+          });
+          return {
+            assetId: asset.id,
+            mimeType: asset.mimeType,
+            size: asset.size,
+            alt,
+          };
+        },
+      });
+
+      setPptxImportSession({
+        fileName: file.name,
+        pages: importedPack.pages,
+        selectedPageId: importedPack.pages[0]?.id ?? null,
+      });
+      setStatus(
+        `${file.name} parsed. Pick one slide to replace the current single-page template draft.`,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "PPTX import failed.";
+      setPptxImportError(message);
+      setStatus(message);
+    } finally {
+      setIsImportingPptx(false);
+      if (pptxFileInputRef.current) {
+        pptxFileInputRef.current.value = "";
+      }
+    }
+  }
+
+  function handleImportSelectedSlide() {
+    if (!pptxImportSession) {
+      return;
+    }
+    const selectedPage =
+      pptxImportSession.pages.find((page) => page.id === pptxImportSession.selectedPageId) ?? null;
+    if (!selectedPage) {
+      return;
+    }
+    if (
+      draftHasMeaningfulContent(draft) &&
+      typeof window !== "undefined" &&
+      !window.confirm(
+        `Replace the current draft with slide ${selectedPage.pageNumber} from ${pptxImportSession.fileName}?`,
+      )
+    ) {
+      return;
+    }
+
+    const nextDraft = createModuleDraftFromImportedPage({
+      fileName: pptxImportSession.fileName,
+      page: selectedPage,
+    });
+    openAuthoringDraft(
+      nextDraft,
+      `Imported slide ${selectedPage.pageNumber} from ${pptxImportSession.fileName} into the current template draft.`,
+      "compose",
+    );
+    setPptxImportSession(null);
+    setPptxImportError(null);
   }
 
   useEffect(() => {
@@ -352,6 +465,56 @@ export function ModuleAuthorWorkbenchPage() {
       normalizedStage
     );
   }, [location.search, params.moduleId]);
+
+  useEffect(() => {
+    const searchParams = new URLSearchParams(location.search);
+    if (searchParams.get("import") !== "1") {
+      autoImportQueryRef.current = null;
+      return;
+    }
+    if (autoImportQueryRef.current === location.search) {
+      return;
+    }
+    autoImportQueryRef.current = location.search;
+    requestAnimationFrame(() => {
+      openPptxImportPicker();
+    });
+  }, [location.search]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const urls: string[] = [];
+
+    async function loadImageUrls() {
+      const next: Record<string, string> = {};
+      for (const field of draft.fields) {
+        if (getCanvasObjectKind(field) !== "image" || !field.imageAsset?.assetId) {
+          continue;
+        }
+        const blob = await assetRepository.readBlob(field.imageAsset.assetId);
+        if (!blob) {
+          continue;
+        }
+        const url = URL.createObjectURL(blob);
+        urls.push(url);
+        next[field.id] = url;
+      }
+      if (!cancelled) {
+        setImageUrlByFieldId(next);
+      }
+    }
+
+    loadImageUrls().catch(() => {
+      if (!cancelled) {
+        setImageUrlByFieldId({});
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      urls.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, [assetRepository, draft.fields]);
 
   useEffect(() => {
     setDraft((current) => {
@@ -619,6 +782,9 @@ export function ModuleAuthorWorkbenchPage() {
       preview && preview.status !== "ready" && preview.status !== "needs-data"
     );
   });
+  const importReviewFields = draft.fields.filter(
+    (field) => field.importSource?.reviewState === "needs-review"
+  );
   const flowOutputFields = draft.fields.filter((field) => {
     const objectKind = getCanvasObjectKind(field);
     return isAiEditableField(field) || objectKind === "chart";
@@ -765,12 +931,14 @@ export function ModuleAuthorWorkbenchPage() {
     invalidChartFields.length === 0 &&
     missingFlowOutputLinks.length === 0 &&
     incompleteIfNodes.length === 0;
+  const importReady = importReviewFields.length === 0;
   const publishReady =
     defineReady &&
     composeReady &&
     hasSemanticSlots &&
     (!requiresAiTextSlot || hasAiTextSlot) &&
     connectReady &&
+    importReady &&
     colorReady &&
     testEvidenceReady;
   const publishChecklist = [
@@ -808,6 +976,13 @@ export function ModuleAuthorWorkbenchPage() {
       label: "Advanced logic",
       done: connectReady,
       detail: "Flow and data connections are in a runnable state when you choose to wire advanced logic.",
+    },
+    {
+      label: "Imported review items",
+      done: importReady,
+      detail: importReady
+        ? "Imported slides do not contain unresolved placeholders that would block publish."
+        : `${importReviewFields.length} imported object${importReviewFields.length === 1 ? "" : "s"} still need to be deleted or replaced before publish.`,
     },
     {
       label: "Reusable visual system",
@@ -3372,6 +3547,8 @@ export function ModuleAuthorWorkbenchPage() {
     setDraft(nextDraft);
     setFlowRunBrief("");
     setFlowRunResult(null);
+    setPptxImportSession(null);
+    setPptxImportError(null);
     setSelectedFlowNodeId(null);
     setSelectedFlowNodeIds([]);
     setSelectedFieldIds(nextDraft.fields[0] ? [nextDraft.fields[0].id] : []);
@@ -3404,6 +3581,19 @@ export function ModuleAuthorWorkbenchPage() {
         />
 
         <div className="relative min-h-0">
+          <input
+            ref={pptxFileInputRef}
+            type="file"
+            accept=".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            className="hidden"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (!file) {
+                return;
+              }
+              void handleImportPptxFile(file);
+            }}
+          />
           <TemplateCanvasStage
             view={{
               activeStage,
@@ -3415,6 +3605,7 @@ export function ModuleAuthorWorkbenchPage() {
               connectionRenderItems,
               connections,
               draft,
+              imageUrlByFieldId,
               flowEdgePreviewPoint,
               flowInteractionMode,
               flowMarqueeState,
@@ -3492,6 +3683,26 @@ export function ModuleAuthorWorkbenchPage() {
             onSearchQueryChange={setSearchQuery}
             onSelectedCollectionChange={setSelectedCollection}
           />
+
+          <PptxSlideImportModal
+            isOpen={Boolean(pptxImportSession)}
+            fileName={pptxImportSession?.fileName ?? ""}
+            pages={pptxImportSession?.pages ?? []}
+            selectedPageId={pptxImportSession?.selectedPageId ?? null}
+            isReplacingCurrentDraft={draftHasMeaningfulContent(draft)}
+            onClose={() => setPptxImportSession(null)}
+            onSelectPage={(pageId) =>
+              setPptxImportSession((current) =>
+                current
+                  ? {
+                      ...current,
+                      selectedPageId: pageId,
+                    }
+                  : current
+              )
+            }
+            onImportSelected={handleImportSelectedSlide}
+          />
         </div>
 
         <aside className="min-h-0 overflow-y-auto border-l border-[var(--studio-line)] bg-[rgba(10,10,10,0.92)]">
@@ -3516,7 +3727,16 @@ export function ModuleAuthorWorkbenchPage() {
                 frameOutsideCount={frameOutsideFields.length}
                 moduleFrame={moduleFrame}
                 isReady={defineReady}
+                importStatus={
+                  isImportingPptx
+                    ? "Importing PPTX and extracting slide objects..."
+                    : pptxImportError ??
+                      (pptxImportSession
+                        ? `${pptxImportSession.fileName} is ready. Pick a slide to replace the current draft.`
+                        : null)
+                }
                 onOpenLibrary={openLibraryModal}
+                onImportPptx={openPptxImportPicker}
                 onCreateFromBlank={createFromBlank}
                 onLabelChange={(value) =>
                   setDraft((current) => ({

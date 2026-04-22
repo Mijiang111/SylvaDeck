@@ -114,6 +114,15 @@ function buildDividerBackground(color: string) {
   return `linear-gradient(90deg, ${color}, transparent)`;
 }
 
+function shouldPromoteEditableVisualToContent(kind: HtmlVisualNodeKind) {
+  return (
+    kind === "badge" ||
+    kind === "annotation" ||
+    kind === "rail" ||
+    kind === "chart-frame"
+  );
+}
+
 function getClassTokens(element: Element) {
   const className =
     typeof (element as HTMLElement).className === "string"
@@ -421,7 +430,9 @@ function extractPageVisualNodes(
         kind,
         explicitFitParticipation: readHtmlFitParticipation(element),
         hasModuleBinding: Boolean(moduleId || moduleLabel),
-        hasEditableText: editableCandidates.has(element),
+        hasEditableText:
+          editableCandidates.has(element) &&
+          shouldPromoteEditableVisualToContent(kind),
       }),
       style: extractNodeStyle(element, kind, pageStyle),
     } satisfies HtmlVisualNode;
@@ -584,7 +595,9 @@ export function annotateHtmlFitRolesOnPage(pageElement: Element): void {
         kind,
         explicitFitParticipation: explicitRoles.get(element) ?? null,
         hasModuleBinding: Boolean(moduleId || moduleLabel),
-        hasEditableText: editableSet.has(element),
+        hasEditableText:
+          editableSet.has(element) &&
+          shouldPromoteEditableVisualToContent(kind),
       }),
       {
         preserveContent: false,
@@ -760,7 +773,9 @@ function applyVisualNodeStyleToElement(
         element.getAttribute("data-html-module-id")?.trim() ||
           element.getAttribute("data-html-module-label")?.trim(),
       ),
-      hasEditableText: Boolean(element.getAttribute("data-html-block-id")?.trim()),
+      hasEditableText:
+        Boolean(element.getAttribute("data-html-block-id")?.trim()) &&
+        shouldPromoteEditableVisualToContent(kind),
     }),
     {
       preserveContent: false,

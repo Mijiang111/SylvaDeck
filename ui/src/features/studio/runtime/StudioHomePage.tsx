@@ -38,6 +38,10 @@ import type { WorkbenchAgentProvider } from "@/features/studio/ai-settings";
 import type { HtmlOutputMode, StarterPackManifest, WorkbenchModuleUsageMode } from "@/features/studio/types";
 import { createIntakeThread } from "./runtime-intake";
 import { formatProjectTimestamp } from "./runtime-presentational";
+import {
+  fireAndForget,
+  getAsyncActionErrorMessage,
+} from "./fire-and-forget";
 import { LibraryReportCard } from "./homepage/LibraryReportCard";
 import type { LibraryCardRecord } from "./homepage/types";
 import { useStudioWorkspace } from "./studio/useStudioWorkspace";
@@ -117,6 +121,12 @@ function EmptyState({
 }
 
 export function StudioHomePage() {
+  function runAsyncAction(promise: Promise<unknown>, fallback: string) {
+    fireAndForget(promise, (error) => {
+      setStatusLine(getAsyncActionErrorMessage(error, fallback));
+    });
+  }
+
   useStudioWorkspace();
 
   const navigate = useNavigate();
@@ -708,7 +718,12 @@ export function StudioHomePage() {
                       <LibraryReportCard
                         entry={entry}
                         selected={shell.selectedLibraryProjectId === entry.id}
-                        onOpen={() => void openProjectFromLibrary(entry)}
+                        onOpen={() =>
+                          runAsyncAction(
+                            openProjectFromLibrary(entry),
+                            `Studio could not open ${entry.project.projectName}.`,
+                          )
+                        }
                         onDelete={() =>
                           handleDeleteProject({
                             workspaceId: entry.project.workspaceId,
@@ -957,7 +972,12 @@ export function StudioHomePage() {
                     </div>
                     <button
                       type="button"
-                      onClick={() => void continueChatRecord(selectedChatRecord)}
+                      onClick={() =>
+                        runAsyncAction(
+                          continueChatRecord(selectedChatRecord),
+                          `Studio could not continue ${selectedChatRecord.projectName}.`,
+                        )
+                      }
                       className="mt-6 inline-flex items-center justify-center gap-2 rounded-full border border-[rgba(0,242,255,0.35)] bg-[rgba(0,242,255,0.1)] px-4 py-2.5 text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--studio-ink)] transition hover:bg-[rgba(0,242,255,0.16)]"
                     >
                       Continue editing
@@ -977,8 +997,8 @@ export function StudioHomePage() {
                   Build the template system behind better decks.
                 </h1>
                 <p className="mt-3 max-w-3xl text-[14px] leading-7 text-[var(--studio-muted-strong)]">
-                  The author workspace stays as a specialized lane. From here you can open the template
-                  library, fork a reusable shape, or jump into a fresh template canvas.
+                  The author workspace is one canvas now. Start from a blank template, import one PPTX
+                  slide into the same workbench, or open an existing template without switching tools.
                 </p>
               </div>
 
@@ -987,7 +1007,11 @@ export function StudioHomePage() {
                   {recentModules.map((entry) => (
                     <Link
                       key={entry.id}
-                      to={entry.scope === "core" ? `/templates/${entry.id}` : `/templates/${entry.id}/edit`}
+                      to={
+                        entry.scope === "core"
+                          ? `/templates/${entry.id}`
+                          : `/templates/${entry.id}/edit`
+                      }
                       className="studio-terminal-panel group block px-5 py-5 transition hover:-translate-y-0.5 hover:border-[rgba(0,242,255,0.24)]"
                     >
                       <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[var(--studio-muted)]">
@@ -1046,7 +1070,7 @@ export function StudioHomePage() {
                       Workspace
                     </div>
                     <div className="mt-4 text-[1.08rem] font-semibold text-[var(--studio-ink)]">
-                      Open template library
+                      Open existing template
                     </div>
                     <div className="mt-2 text-[13px] leading-6 text-[var(--studio-muted-strong)]">
                       Browse the full template registry, test evidence, and reusable composition patterns.
@@ -1061,10 +1085,25 @@ export function StudioHomePage() {
                       <Plus className="h-5 w-5 text-[var(--studio-accent)]" />
                     </div>
                     <div className="mt-4 text-[1.08rem] font-semibold text-[var(--studio-ink)]">
-                      Start a new template
+                      New template
                     </div>
                     <div className="mt-2 text-[13px] leading-6 text-[var(--studio-muted-strong)]">
-                      Jump straight into the authoring canvas and build a new reusable page shape.
+                      Start from a blank single-page workbench and draw the reusable template yourself.
+                    </div>
+                  </Link>
+
+                  <Link
+                    to="/templates/new?import=1"
+                    className="studio-terminal-panel block px-5 py-5 transition hover:border-[rgba(0,242,255,0.24)]"
+                  >
+                    <div className="inline-flex h-12 w-12 items-center justify-center rounded-full border border-[rgba(0,242,255,0.22)] bg-[rgba(0,242,255,0.08)]">
+                      <Plus className="h-5 w-5 text-[var(--studio-accent)]" />
+                    </div>
+                    <div className="mt-4 text-[1.08rem] font-semibold text-[var(--studio-ink)]">
+                      Import PPTX
+                    </div>
+                    <div className="mt-2 text-[13px] leading-6 text-[var(--studio-muted-strong)]">
+                      Parse a full deck, pick one slide, and land it directly in the same editable template canvas.
                     </div>
                   </Link>
 

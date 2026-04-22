@@ -7,7 +7,6 @@ type SelectionSlice = Pick<
   | "selectPage"
   | "selectHtmlBlock"
   | "selectVisualNode"
-  | "selectLayoutZone"
   | "clearSelection"
   | "recordHtmlOverflow"
 >;
@@ -22,7 +21,6 @@ export const createSelectionSlice: WorkbenchStudioSlice<SelectionSlice> = (set) 
         activePageId: pageId,
         selectedHtmlBlockId: null,
         selectedVisualNodeId: null,
-        selectedLayoutZoneId: null,
       },
       shell: {
         ...state.shell,
@@ -40,7 +38,6 @@ export const createSelectionSlice: WorkbenchStudioSlice<SelectionSlice> = (set) 
         activePageId: String(pageNumber),
         selectedHtmlBlockId: blockId,
         selectedVisualNodeId: null,
-        selectedLayoutZoneId: null,
       },
       shell: {
         ...state.shell,
@@ -59,31 +56,11 @@ export const createSelectionSlice: WorkbenchStudioSlice<SelectionSlice> = (set) 
         activePageId: String(pageNumber),
         selectedHtmlBlockId: null,
         selectedVisualNodeId: nodeId,
-        selectedLayoutZoneId: null,
       },
       shell: {
         ...state.shell,
         inspectorTab: "visual",
         canvasDrawer: "visual",
-        canvasToolbarVisible: true,
-        currentCanvasPageId: String(pageNumber),
-      },
-    }));
-  },
-
-  selectLayoutZone(pageNumber, zoneId) {
-    set((state) => ({
-      selection: {
-        ...state.selection,
-        activePageId: String(pageNumber),
-        selectedHtmlBlockId: null,
-        selectedVisualNodeId: null,
-        selectedLayoutZoneId: zoneId,
-      },
-      shell: {
-        ...state.shell,
-        inspectorTab: "layout",
-        canvasDrawer: "layout",
         canvasToolbarVisible: true,
         currentCanvasPageId: String(pageNumber),
       },
@@ -96,7 +73,6 @@ export const createSelectionSlice: WorkbenchStudioSlice<SelectionSlice> = (set) 
         ...state.selection,
         selectedHtmlBlockId: null,
         selectedVisualNodeId: null,
-        selectedLayoutZoneId: null,
       },
       shell: {
         ...state.shell,

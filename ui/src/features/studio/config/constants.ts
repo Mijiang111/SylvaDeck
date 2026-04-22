@@ -27,6 +27,7 @@ export const SKILL_REGISTRY_STORAGE_KEY = "studio-skill-registry-v1";
 export const MODULE_SKILL_PRESET_STORAGE_KEY = "studio-module-skill-preset-registry-v1";
 export const MODULE_ASSET_STORAGE_KEY = "studio-module-assets-v1";
 export const MODULE_AUTHORING_HANDOFF_STORAGE_KEY = "studio-module-authoring-handoff-v1";
+export const DECK_TEMPLATE_PACK_STORAGE_KEY = "studio-deck-template-packs-v1";
 export const AI_SETTINGS_STORAGE_KEY = "studio-ai-settings-v1";
 export const WORKSPACE_LIBRARY_VERSION = 4;
 export const PROJECT_BUNDLE_VERSION = 6;

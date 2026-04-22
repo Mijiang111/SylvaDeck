@@ -120,6 +120,7 @@ type TemplateCanvasStageProps = {
     connectionRenderItems: ConnectionRenderItem[];
     connections: ModuleConnection[];
     draft: ModuleRegistryEntry;
+    imageUrlByFieldId: Record<string, string>;
     flowEdgePreviewPoint: CanvasPoint | null;
     flowInteractionMode: "select" | "pan";
     flowMarqueeState: FlowMarqueeSelectionState | null;
@@ -220,6 +221,7 @@ function getFieldBadge(field: ModuleTemplateField) {
   const objectKind = getCanvasObjectKind(field);
   if (objectKind === "data") return "Data";
   if (objectKind === "chart") return "Chart";
+  if (objectKind === "image") return "Image";
   if (objectKind === "line") return "Line";
   if (isAiTextField(field)) return "AI";
   if (objectKind === "text") return "Locked";
@@ -237,6 +239,7 @@ export function TemplateCanvasStage({ view, actions }: TemplateCanvasStageProps)
     connectionRenderItems,
     connections,
     draft,
+    imageUrlByFieldId,
     flowEdgePreviewPoint,
     flowInteractionMode,
     flowMarqueeState,
@@ -648,6 +651,7 @@ export function TemplateCanvasStage({ view, actions }: TemplateCanvasStageProps)
                     ? (chartPreviewByFieldId.get(field.id) ??
                       getEmptyChartPreview(field))
                     : null;
+                const imageUrl = imageUrlByFieldId[field.id] ?? null;
                 const flowRunFieldOutput =
                   flowRunResult?.fieldOutputs[field.id] ?? null;
                 const outputPreviewTitle =
@@ -723,6 +727,7 @@ export function TemplateCanvasStage({ view, actions }: TemplateCanvasStageProps)
                         canvasMode === "output" &&
                         !isSlot &&
                         objectKind !== "text" &&
+                        objectKind !== "image" &&
                         objectKind !== "data" &&
                         objectKind !== "chart"
                           ? 0.78
@@ -770,6 +775,7 @@ export function TemplateCanvasStage({ view, actions }: TemplateCanvasStageProps)
                       boxShadow:
                         objectKind === "slot" ||
                         objectKind === "text" ||
+                        objectKind === "image" ||
                         objectKind === "data" ||
                         objectKind === "chart"
                           ? "0 10px 24px rgba(16,40,56,0.06)"
@@ -823,6 +829,38 @@ export function TemplateCanvasStage({ view, actions }: TemplateCanvasStageProps)
                         <div className="text-[11px] leading-5 text-[#5c7280]">
                           {field.description ||
                             "Locked template copy lives here."}
+                        </div>
+                      </div>
+                    ) : objectKind === "image" ? (
+                      <div className="relative h-full overflow-hidden">
+                        {imageUrl ? (
+                          <img
+                            src={imageUrl}
+                            alt={field.imageAsset?.alt || field.label}
+                            className="absolute inset-0 h-full w-full"
+                            style={{
+                              objectFit: field.imageFit ?? "cover",
+                            }}
+                            draggable={false}
+                          />
+                        ) : (
+                          <div className="absolute inset-0 bg-[linear-gradient(180deg,#edf2f5_0%,#d7e2e9_100%)]" />
+                        )}
+                        <div className="absolute inset-x-0 bottom-0 h-20 bg-[linear-gradient(180deg,rgba(16,40,56,0)_0%,rgba(16,40,56,0.74)_100%)]" />
+                        <div className="absolute left-3 top-3 rounded-full border border-white/10 bg-[rgba(255,255,255,0.82)] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-[#5f7682]">
+                          {getFieldBadge(field)}
+                        </div>
+                        <div className="absolute inset-x-3 bottom-3">
+                          <div className="truncate text-[12px] font-semibold text-white">
+                            {field.label}
+                          </div>
+                          <div className="mt-1 text-[10px] uppercase tracking-[0.16em] text-white/72">
+                            {field.importSource?.reviewState === "needs-review"
+                              ? "Needs review"
+                              : field.imageFit === "contain"
+                              ? "Contain"
+                              : "Cover"}
+                          </div>
                         </div>
                       </div>
                     ) : objectKind === "data" ? (

@@ -3,20 +3,20 @@ import { HOMEPAGE_TOKENS } from "./HomepageThemeTokens";
 
 const AUTHOR_ENTRIES = [
   {
-    title: "Template packs",
-    description: "Create reusable visual systems, report shells, and brand-ready starting points.",
-    href: "/templates",
+    title: "New template",
+    description: "Open the unified workbench and sketch a reusable single-page template directly on canvas.",
+    href: "/templates/new",
     icon: Sparkles,
   },
   {
-    title: "Page grammars",
-    description: "Define page-level layout recipes that Codex can reuse without dragging generation back into a heavy chain.",
-    href: "/templates/new",
+    title: "Import PPTX",
+    description: "Bring in a full deck, choose one slide, and keep editing it inside the same single-page workbench.",
+    href: "/templates/new?import=1",
     icon: PenSquare,
   },
   {
-    title: "Chart recipes",
-    description: "Capture chart and annotation patterns for recurring report types and richer visual evidence.",
+    title: "Open existing template",
+    description: "Browse saved templates, evidence status, and reusable page contracts from the library.",
     href: "/templates",
     icon: Scale,
   },
@@ -37,7 +37,7 @@ export function AuthorHome() {
           Build the assets that make generation smarter.
         </div>
         <p className="mt-4 max-w-2xl text-[15px] leading-7 text-white/42">
-          Keep homepage authoring lightweight. The goal here is to create packs, recipes, and rules that can be attached later without bringing back a heavy runtime chain.
+          Authoring now lives in one workbench. You can draw templates from scratch, import one slide out of a PPTX, and keep refining everything on the same canvas.
         </p>
       </div>
 

@@ -207,6 +207,15 @@ function normalizePublishedTemplateManifest(
       label: item.label.trim(),
       role: item.role.trim(),
       geometry: normalizeTemplateGeometry(item.geometry),
+      asset: item.asset
+        ? {
+            assetId: item.asset.assetId.trim(),
+            mimeType: item.asset.mimeType.trim(),
+            size: item.asset.size,
+            alt: item.asset.alt?.trim(),
+          }
+        : undefined,
+      fit: item.fit === "contain" || item.fit === "cover" ? item.fit : undefined,
     })),
     copyBudget: normalizeList(template.copyBudget).slice(0, 8),
     allowedAdaptations: normalizeList(template.allowedAdaptations).slice(0, 8),
@@ -440,6 +449,7 @@ function inferTemplateDecorativeKind(
   field: ModuleRegistryEntry["fields"][number]
 ): PublishedTemplateDecorativeKind {
   const objectKind = getCanvasObjectKind(field);
+  if (objectKind === "image") return "image";
   if (objectKind === "line") return "line";
   if (objectKind === "ellipse") return "circle";
   if (isSquareTemplateField(field)) return "square";
@@ -459,6 +469,9 @@ function inferTemplateDecorativeRole(
     return /caption|label|badge|eyebrow/.test(text)
       ? "locked-label"
       : "locked-text";
+  }
+  if (objectKind === "image") {
+    return /photo|portrait|hero|cover/.test(text) ? "hero-image" : "support-image";
   }
   if (objectKind === "ellipse") {
     return "badge-shape";
@@ -599,6 +612,12 @@ export function buildPublishedTemplateManifest(
       kind: inferTemplateDecorativeKind(field),
       role: inferTemplateDecorativeRole(field),
       geometry: normalizeTemplateGeometry(field.layout),
+      asset: field.imageAsset
+        ? {
+            ...field.imageAsset,
+          }
+        : undefined,
+      fit: field.imageFit,
       style: field.style
         ? {
             fill: field.style.fill,

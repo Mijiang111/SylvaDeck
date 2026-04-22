@@ -100,6 +100,24 @@ test("published template manifest separates semantic slots from decorative objec
       },
     },
     {
+      id: "image-1",
+      label: "Imported image",
+      type: "custom",
+      objectKind: "image",
+      aiState: "locked",
+      surface: "artboard",
+      description: "Decorative imported image.",
+      required: false,
+      layout: { x: 96, y: 44, w: 34, h: 26 },
+      imageAsset: {
+        assetId: "asset-1",
+        mimeType: "image/png",
+        size: 2048,
+        alt: "Curtain still",
+      },
+      imageFit: "cover",
+    },
+    {
       id: "chart-1",
       label: "Chart",
       type: "custom",
@@ -138,6 +156,12 @@ test("published template manifest separates semantic slots from decorative objec
   );
   assert.equal(
     manifest.decorativeManifest.some((item) => item.kind === "line"),
+    true,
+  );
+  assert.equal(
+    manifest.decorativeManifest.some(
+      (item) => item.kind === "image" && item.asset?.assetId === "asset-1",
+    ),
     true,
   );
 });

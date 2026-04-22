@@ -20,6 +20,11 @@ import type {
   HtmlVisualNode,
   HtmlVisualPage,
 } from "@/features/studio/types";
+import {
+  PREVIEW_PAGE_CONTENT_VISUAL_KINDS,
+  PREVIEW_SELECTION_ORDERS,
+  PREVIEW_TEXT_PRIORITY_BLOCK_KINDS,
+} from "./preview-selection";
 
 export type HtmlReportPagePreview = {
   pageNumber: number;
@@ -28,6 +33,23 @@ export type HtmlReportPagePreview = {
   pageStructure: HtmlEditablePage | null;
   visualPage: HtmlVisualPage | null;
   layoutPage: HtmlLayoutPage | null;
+};
+
+export type HtmlReportExportPage = {
+  pageNumber: number;
+  title: string;
+  pageMarkup: string;
+};
+
+type HtmlReportRenderMode = "preview" | "export";
+type HtmlReportSourcePage = {
+  pageNumber: number;
+  title: string;
+  pageElement: Element;
+  pageStructure: HtmlEditablePage | null;
+  visualPage: HtmlVisualPage | null;
+  layoutPage: HtmlLayoutPage | null;
+  pageStyle: HtmlPageVisualStyle;
 };
 
 const ANIMATED_PREVIEW_OUTPUT_MODE = "animated-preview-js";
@@ -43,6 +65,13 @@ function cloneElementAttributes(source: Element, target: Element) {
   Array.from(source.attributes).forEach((attribute) => {
     target.setAttribute(attribute.name, attribute.value);
   });
+}
+
+function collectElementAttributes(element: Element) {
+  return Array.from(element.attributes).reduce<Record<string, string>>((accumulator, attribute) => {
+    accumulator[attribute.name] = attribute.value;
+    return accumulator;
+  }, {});
 }
 
 function annotatePreviewPageBlocks(pageElement: Element, pageStructure: HtmlEditablePage | null) {
@@ -254,7 +283,128 @@ function annotatePreviewAnimationNodes(pageElement: Element) {
   });
 }
 
-function buildStandaloneHtmlReportPageDocument(
+function buildHtmlReportSourcePages(
+  sourceDocument: Document,
+  report: GeneratedHtmlReport,
+): HtmlReportSourcePage[] {
+  return Array.from(sourceDocument.querySelectorAll("section.page")).map((pageElement, index) => {
+    const pageNumber = index + 1;
+    const pageStructure = report.structure?.pages[index] ?? null;
+    const visualPage = report.visualStructure?.pages[index] ?? null;
+    const layoutPage = report.layoutStructure?.pages[index] ?? null;
+    const pageStyle = extractHtmlPageVisualStyle({
+      report,
+      pageNumber,
+    });
+    const title =
+      pageElement.getAttribute("data-page-title")?.trim() ||
+      report.pageTitles[index] ||
+      `Page ${pageNumber}`;
+
+    return {
+      pageNumber,
+      title,
+      pageElement,
+      pageStructure,
+      visualPage,
+      layoutPage,
+      pageStyle,
+    };
+  });
+}
+
+function appendPageModeStyles(previewDocument: Document, mode: HtmlReportRenderMode) {
+  const pageStyle = previewDocument.createElement("style");
+  pageStyle.setAttribute("data-ppt-preview-style", "true");
+  pageStyle.textContent =
+    mode === "preview"
+      ? `
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: ${HTML_REPORT_PAGE_WIDTH}px;
+      min-width: ${HTML_REPORT_PAGE_WIDTH}px;
+      background: transparent;
+      overflow: hidden;
+    }
+
+    body {
+      min-height: ${HTML_REPORT_PAGE_HEIGHT}px;
+    }
+
+    section.page {
+      margin: 0 !important;
+      box-shadow: none !important;
+    }
+
+    [data-html-canvas-placeholder="true"] {
+      visibility: hidden !important;
+      pointer-events: none !important;
+      user-select: none !important;
+    }
+
+    [data-html-freeform="true"] {
+      transform-origin: top left;
+    }
+
+    [data-html-block-id] {
+      cursor: text;
+      transition: box-shadow 120ms ease, background-color 120ms ease;
+    }
+
+    [data-html-block-id]:hover {
+      box-shadow: 0 0 0 2px rgba(16, 40, 56, 0.18);
+      background-color: rgba(214, 226, 235, 0.22);
+    }
+
+    [data-html-block-selected="true"] {
+      box-shadow: 0 0 0 3px rgba(16, 40, 56, 0.36);
+      background-color: rgba(214, 226, 235, 0.34);
+    }
+
+    [data-html-block-editing="true"] {
+      outline: none;
+      box-shadow: 0 0 0 3px rgba(198, 153, 74, 0.38);
+      background-color: rgba(255, 249, 234, 0.92);
+    }
+
+    [data-html-visual-id] {
+      cursor: pointer;
+      position: relative;
+    }
+
+    [data-html-visual-selected="true"] {
+      outline: none;
+      box-shadow: none;
+      filter: none;
+    }
+  `
+      : `
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: transparent;
+    }
+
+    section.page {
+      margin: 0 !important;
+      box-shadow: none !important;
+    }
+
+    [data-html-canvas-placeholder="true"] {
+      visibility: hidden !important;
+      pointer-events: none !important;
+      user-select: none !important;
+    }
+
+    [data-html-freeform="true"] {
+      transform-origin: top left;
+    }
+  `;
+  previewDocument.head.appendChild(pageStyle);
+}
+
+function buildHtmlReportPageDocument(
   sourceDocument: Document,
   pageElement: Element,
   report: GeneratedHtmlReport,
@@ -263,9 +413,12 @@ function buildStandaloneHtmlReportPageDocument(
   layoutPage: HtmlLayoutPage | null,
   pageStyle: HtmlPageVisualStyle,
   pageNumber: number,
+  mode: HtmlReportRenderMode,
 ) {
   const animationPreviewEnabled = report.htmlOutputMode === ANIMATED_PREVIEW_OUTPUT_MODE;
-  const previewDocument = document.implementation.createHTMLDocument(sourceDocument.title || "Report page");
+  const previewDocument = sourceDocument.implementation.createHTMLDocument(
+    sourceDocument.title || "Report page",
+  );
   previewDocument.head.innerHTML = sourceDocument.head.innerHTML;
   previewDocument.body.innerHTML = "";
   cloneElementAttributes(sourceDocument.body, previewDocument.body);
@@ -306,95 +459,28 @@ function buildStandaloneHtmlReportPageDocument(
   });
   mountPoint.appendChild(pageClone);
 
-  const previewStyle = previewDocument.createElement("style");
-  previewStyle.setAttribute("data-ppt-preview-style", "true");
-  previewStyle.textContent = `
-    html, body {
-      margin: 0;
-      padding: 0;
-      width: ${HTML_REPORT_PAGE_WIDTH}px;
-      min-width: ${HTML_REPORT_PAGE_WIDTH}px;
-      background: transparent;
-      overflow: hidden;
-    }
+  appendPageModeStyles(previewDocument, mode);
 
-    body {
-      min-height: ${HTML_REPORT_PAGE_HEIGHT}px;
-    }
-
-    section.page {
-      margin: 0 !important;
-      box-shadow: none !important;
-    }
-
-    [data-html-block-id] {
-      cursor: text;
-      transition: box-shadow 120ms ease, background-color 120ms ease;
-    }
-
-    [data-html-canvas-placeholder="true"] {
-      visibility: hidden !important;
-      pointer-events: none !important;
-      user-select: none !important;
-    }
-
-    [data-html-freeform="true"] {
-      transform-origin: top left;
-    }
-
-    [data-html-block-id]:hover {
-      box-shadow: 0 0 0 2px rgba(16, 40, 56, 0.18);
-      background-color: rgba(214, 226, 235, 0.22);
-    }
-
-    [data-html-block-selected="true"] {
-      box-shadow: 0 0 0 3px rgba(16, 40, 56, 0.36);
-      background-color: rgba(214, 226, 235, 0.34);
-    }
-
-    [data-html-block-editing="true"] {
-      outline: none;
-      box-shadow: 0 0 0 3px rgba(198, 153, 74, 0.38);
-      background-color: rgba(255, 249, 234, 0.92);
-    }
-
-    [data-html-visual-id] {
-      cursor: pointer;
-      position: relative;
-    }
-
-    [data-html-visual-selected="true"] {
-      outline: none;
-      box-shadow: none;
-      filter: none;
-    }
-
-    [data-html-layout-id] {
-      position: relative;
-      outline: 1px solid transparent;
-      outline-offset: 4px;
-      transition: outline-color 120ms ease, box-shadow 120ms ease;
-    }
-
-    [data-html-layout-id]:hover {
-      outline-color: rgba(198, 153, 74, 0.22);
-      box-shadow: inset 0 0 0 1px rgba(198, 153, 74, 0.12);
-    }
-
-    [data-html-layout-selected="true"] {
-      outline-color: rgba(198, 153, 74, 0.52);
-      box-shadow: inset 0 0 0 1px rgba(198, 153, 74, 0.22);
-    }
-  `;
-  previewDocument.head.appendChild(previewStyle);
+  if (mode !== "preview") {
+    return previewDocument;
+  }
 
   const serializedAnimationPage = serializeInlineScriptValue(
     animationPreviewEnabled ? findHtmlAnimationPage(report.animationStructure, pageNumber) : null,
   );
+  const serializedSelectionOrders = serializeInlineScriptValue(PREVIEW_SELECTION_ORDERS);
+  const serializedTextPriorityBlockKinds = serializeInlineScriptValue(
+    PREVIEW_TEXT_PRIORITY_BLOCK_KINDS,
+  );
+  const serializedPageContentVisualKinds = serializeInlineScriptValue(
+    PREVIEW_PAGE_CONTENT_VISUAL_KINDS,
+  );
   const previewScript = previewDocument.createElement("script");
-  previewScript.textContent = `
+  previewScript.textContent = String.raw`
     (() => {
-      const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim();
+      const normalize = (value) => (value || "").replace(/\s+/g, " ").trim();
+      const normalizeFitParticipation = (value) =>
+        value === "content" || value === "decorative" ? value : null;
       let activeTransformPreview = null;
       const animationModeEnabled = ${animationPreviewEnabled ? "true" : "false"};
       const previewAnimationPage = ${serializedAnimationPage};
@@ -425,9 +511,72 @@ function buildStandaloneHtmlReportPageDocument(
         "scale-in",
         "chart-reveal",
       ]);
+      const selectionOrders = ${serializedSelectionOrders};
+      const textPriorityBlockKinds = new Set(${serializedTextPriorityBlockKinds});
+      const pageContentVisualKinds = new Set(${serializedPageContentVisualKinds});
+      let selectionContext = {
+        preferredSelectionType: "page",
+        selectedBlockId: null,
+        selectedVisualNodeId: null,
+      };
+      let recentBlockSelection = {
+        blockId: null,
+        timestamp: 0,
+      };
 
       function getPageRoot() {
         return document.querySelector("section.page");
+      }
+
+      function getSelectionOrder(preferredType) {
+        if (preferredType === "block" || preferredType === "visual") {
+          return [preferredType];
+        }
+
+        return selectionOrders[selectionContext.preferredSelectionType] || selectionOrders.page;
+      }
+
+      function isDecorativeVisualCandidate(candidate) {
+        return candidate.type === "visual" && candidate.fitParticipation === "decorative";
+      }
+
+      function isPageContentVisualCandidate(candidate) {
+        return (
+          candidate.type === "visual" &&
+          (candidate.fitParticipation === "content" ||
+            pageContentVisualKinds.has(candidate.visualKind))
+        );
+      }
+
+      function getPageSemanticRank(candidate) {
+        if (candidate.type === "block") {
+          return textPriorityBlockKinds.has(candidate.blockKind) ? 0 : 1;
+        }
+
+        return isPageContentVisualCandidate(candidate) ? 2 : 3;
+      }
+
+      function resolveBlockSizingBehavior(blockCandidate, blockElement) {
+        const linkedVisualNodeId = blockElement.getAttribute("data-html-visual-id");
+        const linkedVisualKind = blockElement.getAttribute("data-html-visual-kind");
+        const linkedVisualFitParticipation = normalizeFitParticipation(
+          blockElement.getAttribute("${HTML_FIT_ROLE_ATTRIBUTE}"),
+        );
+        const sharesSource = Boolean(linkedVisualNodeId);
+
+        if (!linkedVisualNodeId || !sharesSource) {
+          return "text-auto";
+        }
+
+        if (linkedVisualFitParticipation !== "content") {
+          return "text-auto";
+        }
+
+        if (textPriorityBlockKinds.has(blockCandidate.blockKind)) {
+          return "frame-only";
+        }
+
+        return "frame-only";
       }
 
       function safeAnimationNumber(value, fallback, min, max) {
@@ -1014,6 +1163,7 @@ function buildStandaloneHtmlReportPageDocument(
         const matches = Array.from(document.querySelectorAll(selector)).filter(
           (element) =>
             element instanceof HTMLElement &&
+            element.getAttribute("data-html-canvas-placeholder") !== "true" &&
             element.getAttribute("data-html-transform-preview-placeholder") !== "true",
         );
         if (matches.length === 0) {
@@ -1067,6 +1217,45 @@ function buildStandaloneHtmlReportPageDocument(
         }
       }
 
+      function stripPreviewSemanticAttributes(element) {
+        if (!(element instanceof HTMLElement)) {
+          return;
+        }
+
+        element.removeAttribute("id");
+        element.removeAttribute("data-html-block-id");
+        element.removeAttribute("data-html-block-kind");
+        element.removeAttribute("data-html-visual-id");
+        element.removeAttribute("data-html-visual-kind");
+        element.removeAttribute("data-html-freeform");
+        element.removeAttribute("data-html-canvas-target");
+        element.removeAttribute("data-html-canvas-source-id");
+        element.removeAttribute("data-html-canvas-layer");
+        element.removeAttribute("data-html-canvas-layer-order");
+        element.removeAttribute("data-html-freeform-font-size");
+        element.removeAttribute("data-html-block-selected");
+        element.removeAttribute("data-html-visual-selected");
+        element.removeAttribute("data-html-transform-preview");
+        element.removeAttribute("data-html-transform-preview-placeholder");
+      }
+
+      function createTransformPreviewPlaceholder(sourceElement, targetType, targetId) {
+        const placeholder = sourceElement.cloneNode(true);
+        if (!(placeholder instanceof HTMLElement)) {
+          return null;
+        }
+
+        stripPreviewSemanticAttributes(placeholder);
+        placeholder.setAttribute("data-html-transform-preview-placeholder", "true");
+        placeholder.setAttribute("data-html-canvas-placeholder", "true");
+        placeholder.setAttribute("data-html-canvas-placeholder-for", targetId);
+        placeholder.setAttribute("data-html-canvas-placeholder-target", targetType);
+        placeholder.style.visibility = "hidden";
+        placeholder.style.pointerEvents = "none";
+        placeholder.style.userSelect = "none";
+        return placeholder;
+      }
+
       function clearActiveTransformPreview(options = { restore: true }) {
         if (!activeTransformPreview) {
           return;
@@ -1090,39 +1279,46 @@ function buildStandaloneHtmlReportPageDocument(
           activeTransformPreview.previewElement.removeAttribute("data-html-transform-preview");
         } else {
           if (options.restore) {
-            activeTransformPreview.previewElement.remove();
-            if (activeTransformPreview.target === "block") {
-              activeTransformPreview.sourceElement.setAttribute(
-                "data-html-block-id",
-                activeTransformPreview.id,
+            Object.entries(activeTransformPreview.originalPreviewStyles).forEach(([key, value]) => {
+              activeTransformPreview.previewElement.style[key] = value;
+            });
+            if (activeTransformPreview.originalFreeformFontSize) {
+              activeTransformPreview.previewElement.setAttribute(
+                "data-html-freeform-font-size",
+                activeTransformPreview.originalFreeformFontSize,
               );
-              if (activeTransformPreview.originalBlockKind) {
-                activeTransformPreview.sourceElement.setAttribute(
-                  "data-html-block-kind",
-                  activeTransformPreview.originalBlockKind,
-                );
-              }
             } else {
-              activeTransformPreview.sourceElement.setAttribute(
-                "data-html-visual-id",
-                activeTransformPreview.id,
-              );
-              if (activeTransformPreview.originalVisualKind) {
-                activeTransformPreview.sourceElement.setAttribute(
-                  "data-html-visual-kind",
-                  activeTransformPreview.originalVisualKind,
-                );
-              }
+              activeTransformPreview.previewElement.removeAttribute("data-html-freeform-font-size");
             }
-            activeTransformPreview.sourceElement.removeAttribute(
-              "data-html-transform-preview-placeholder",
-            );
-            activeTransformPreview.sourceElement.style.visibility =
-              activeTransformPreview.originalSourceStyles.visibility;
-            activeTransformPreview.sourceElement.style.pointerEvents =
-              activeTransformPreview.originalSourceStyles.pointerEvents;
-            activeTransformPreview.sourceElement.style.userSelect =
-              activeTransformPreview.originalSourceStyles.userSelect;
+            if (activeTransformPreview.originalFreeformState) {
+              activeTransformPreview.previewElement.setAttribute(
+                "data-html-freeform",
+                activeTransformPreview.originalFreeformState,
+              );
+            } else {
+              activeTransformPreview.previewElement.removeAttribute("data-html-freeform");
+            }
+            if (activeTransformPreview.originalCanvasTarget) {
+              activeTransformPreview.previewElement.setAttribute(
+                "data-html-canvas-target",
+                activeTransformPreview.originalCanvasTarget,
+              );
+            } else {
+              activeTransformPreview.previewElement.removeAttribute("data-html-canvas-target");
+            }
+            if (activeTransformPreview.originalCanvasSourceId) {
+              activeTransformPreview.previewElement.setAttribute(
+                "data-html-canvas-source-id",
+                activeTransformPreview.originalCanvasSourceId,
+              );
+            } else {
+              activeTransformPreview.previewElement.removeAttribute("data-html-canvas-source-id");
+            }
+            if (activeTransformPreview.placeholderElement instanceof HTMLElement) {
+              activeTransformPreview.placeholderElement.replaceWith(
+                activeTransformPreview.previewElement,
+              );
+            }
           } else {
             activeTransformPreview.previewElement.removeAttribute("data-html-transform-preview");
           }
@@ -1177,55 +1373,55 @@ function buildStandaloneHtmlReportPageDocument(
             };
           } else {
             const previewRoot = ensureTransformPreviewRoot(pageRoot);
-            const previewElement = sourceElement.cloneNode(true);
-            if (!(previewElement instanceof HTMLElement)) {
+            const placeholderElement = createTransformPreviewPlaceholder(
+              sourceElement,
+              targetType,
+              targetId,
+            );
+            if (!(placeholderElement instanceof HTMLElement)) {
               return;
             }
-
-            const originalBlockKind = sourceElement.getAttribute("data-html-block-kind");
-            const originalVisualKind = sourceElement.getAttribute("data-html-visual-kind");
-            const originalSourceStyles = {
-              visibility: sourceElement.style.visibility || "",
+            const originalFreeformState = sourceElement.getAttribute("data-html-freeform") || null;
+            const originalCanvasTarget =
+              sourceElement.getAttribute("data-html-canvas-target") || null;
+            const originalCanvasSourceId =
+              sourceElement.getAttribute("data-html-canvas-source-id") || null;
+            const originalFreeformFontSize =
+              sourceElement.getAttribute("data-html-freeform-font-size") || null;
+            const originalPreviewStyles = {
+              left: sourceElement.style.left || "",
+              top: sourceElement.style.top || "",
+              width: sourceElement.style.width || "",
+              maxWidth: sourceElement.style.maxWidth || "",
+              minWidth: sourceElement.style.minWidth || "",
+              minHeight: sourceElement.style.minHeight || "",
+              height: sourceElement.style.height || "",
+              position: sourceElement.style.position || "",
+              margin: sourceElement.style.margin || "",
+              boxSizing: sourceElement.style.boxSizing || "",
               pointerEvents: sourceElement.style.pointerEvents || "",
-              userSelect: sourceElement.style.userSelect || "",
+              zIndex: sourceElement.style.zIndex || "",
+              fontSize: sourceElement.style.fontSize || "",
             };
 
-            if (targetType === "block") {
-              sourceElement.removeAttribute("data-html-block-id");
-              sourceElement.removeAttribute("data-html-block-kind");
-              previewElement.setAttribute("data-html-block-id", targetId);
-              if (originalBlockKind) {
-                previewElement.setAttribute("data-html-block-kind", originalBlockKind);
-              }
-            } else {
-              sourceElement.removeAttribute("data-html-visual-id");
-              sourceElement.removeAttribute("data-html-visual-kind");
-              previewElement.setAttribute("data-html-visual-id", targetId);
-              if (originalVisualKind) {
-                previewElement.setAttribute("data-html-visual-kind", originalVisualKind);
-              }
-            }
-
-            sourceElement.setAttribute("data-html-transform-preview-placeholder", "true");
-            sourceElement.style.visibility = "hidden";
-            sourceElement.style.pointerEvents = "none";
-            sourceElement.style.userSelect = "none";
-
-            previewElement.setAttribute("data-html-freeform", "true");
-            previewElement.setAttribute("data-html-canvas-target", targetType);
-            previewElement.setAttribute("data-html-canvas-source-id", targetId);
-            previewRoot.appendChild(previewElement);
+            sourceElement.replaceWith(placeholderElement);
+            sourceElement.setAttribute("data-html-freeform", "true");
+            sourceElement.setAttribute("data-html-canvas-target", targetType);
+            sourceElement.setAttribute("data-html-canvas-source-id", targetId);
+            previewRoot.appendChild(sourceElement);
 
             activeTransformPreview = {
               target: targetType,
               id: targetId,
               committed: false,
               usedExistingElement: false,
-              sourceElement,
-              previewElement,
-              originalBlockKind,
-              originalVisualKind,
-              originalSourceStyles,
+              previewElement: sourceElement,
+              placeholderElement,
+              originalPreviewStyles,
+              originalFreeformFontSize,
+              originalFreeformState,
+              originalCanvasTarget,
+              originalCanvasSourceId,
             };
           }
         }
@@ -1251,16 +1447,38 @@ function buildStandaloneHtmlReportPageDocument(
         const pageRoot = document.querySelector("section.page");
         const candidates = [];
         const seen = new Set();
-        const pointTargets = Number.isFinite(clientX) && Number.isFinite(clientY)
-          ? document.elementsFromPoint(clientX, clientY)
-          : [];
-        const seeds = [target, ...pointTargets].filter(
-          (element, index, list) =>
-            element instanceof Element &&
-            list.findIndex((candidate) => candidate === element) === index,
-        );
+        const seeds = [];
+        const seenSeeds = new Set();
+        const pushSeed = (element, layerIndex) => {
+          if (!(element instanceof Element)) {
+            return;
+          }
+          if (seenSeeds.has(element)) {
+            return;
+          }
+          seenSeeds.add(element);
+          seeds.push({ element, layerIndex });
+        };
 
-        seeds.forEach((seed, layerIndex) => {
+        pushSeed(target, 0);
+
+        if (Number.isFinite(clientX) && Number.isFinite(clientY)) {
+          const probeOffsets = [
+            [0, 0],
+            [-6, 0],
+            [6, 0],
+            [0, -6],
+            [0, 6],
+          ];
+          probeOffsets.forEach(([offsetX, offsetY], probeIndex) => {
+            const pointTargets = document.elementsFromPoint(clientX + offsetX, clientY + offsetY);
+            pointTargets.forEach((element, elementIndex) => {
+              pushSeed(element, probeIndex * 100 + elementIndex + 1);
+            });
+          });
+        }
+
+        seeds.forEach(({ element: seed, layerIndex }) => {
           let current = seed;
           let depth = 0;
 
@@ -1271,9 +1489,9 @@ function buildStandaloneHtmlReportPageDocument(
 
             const isPlaceholder =
               current.getAttribute("data-html-canvas-placeholder") === "true" ||
-              current.getAttribute("data-html-transform-preview-placeholder") === "true";
-            const isDecorative = current.getAttribute("data-export-role") === "decorative";
-            if (isPlaceholder || isDecorative) {
+              current.getAttribute("data-html-transform-preview-placeholder") === "true" ||
+              current.getAttribute("data-html-transform-preview") === "true";
+            if (isPlaceholder) {
               current = current.parentElement;
               depth += 1;
               continue;
@@ -1281,18 +1499,25 @@ function buildStandaloneHtmlReportPageDocument(
 
             const rect = current.getBoundingClientRect();
             const area = Math.max(1, rect.width * rect.height);
+            const fitParticipation = normalizeFitParticipation(
+              current.getAttribute("${HTML_FIT_ROLE_ATTRIBUTE}"),
+            );
 
             const blockId = current.getAttribute("data-html-block-id");
             const blockKind = current.getAttribute("data-html-block-kind");
             if (blockId && blockKind && !seen.has("block:" + blockId)) {
               candidates.push({
                 type: "block",
+                key: "block:" + blockId,
                 element: current,
                 depth,
                 area,
                 layerIndex,
+                fitParticipation,
                 blockId,
                 blockKind,
+                visualKind: current.getAttribute("data-html-visual-kind"),
+                sharesSource: Boolean(current.getAttribute("data-html-visual-id")),
               });
               seen.add("block:" + blockId);
             }
@@ -1302,29 +1527,18 @@ function buildStandaloneHtmlReportPageDocument(
             if (visualNodeId && visualKind && !seen.has("visual:" + visualNodeId)) {
               candidates.push({
                 type: "visual",
+                key: "visual:" + visualNodeId,
                 element: current,
                 depth,
                 area,
                 layerIndex,
+                fitParticipation,
                 visualNodeId,
                 visualKind,
+                blockKind: current.getAttribute("data-html-block-kind"),
+                sharesSource: Boolean(current.getAttribute("data-html-block-id")),
               });
               seen.add("visual:" + visualNodeId);
-            }
-
-            const layoutZoneId = current.getAttribute("data-html-layout-id");
-            const layoutKind = current.getAttribute("data-html-layout-kind");
-            if (layoutZoneId && layoutKind && !seen.has("layout:" + layoutZoneId)) {
-              candidates.push({
-                type: "layout",
-                element: current,
-                depth,
-                area,
-                layerIndex,
-                layoutZoneId,
-                layoutKind,
-              });
-              seen.add("layout:" + layoutZoneId);
             }
 
             if (pageRoot && current === pageRoot) {
@@ -1340,38 +1554,48 @@ function buildStandaloneHtmlReportPageDocument(
       }
 
       function chooseSelectableCandidate(target, preferredType, clientX, clientY) {
+        const pageModeHybrid =
+          selectionContext.preferredSelectionType === "page" && !preferredType;
         const candidates = collectSelectableCandidates(target, clientX, clientY);
-        const rank = { block: 0, visual: 1, layout: 2 };
-        const filtered = preferredType
-          ? candidates.filter((candidate) => candidate.type === preferredType)
-          : candidates;
-        const pool = filtered.length > 0 ? filtered : candidates;
+        const order = getSelectionOrder(preferredType);
+        const typeRanks = new Map(order.map((type, index) => [type, index]));
+        const pool = (pageModeHybrid
+          ? candidates.filter((candidate) => !isDecorativeVisualCandidate(candidate))
+          : candidates)
+          .filter((candidate) => typeRanks.has(candidate.type))
+          .sort((left, right) => {
+            if (pageModeHybrid) {
+              const leftSemanticRank = getPageSemanticRank(left);
+              const rightSemanticRank = getPageSemanticRank(right);
+              if (leftSemanticRank !== rightSemanticRank) {
+                return leftSemanticRank - rightSemanticRank;
+              }
+            }
+            if (left.layerIndex !== right.layerIndex) {
+              return left.layerIndex - right.layerIndex;
+            }
+            const leftRank = typeRanks.get(left.type) ?? 99;
+            const rightRank = typeRanks.get(right.type) ?? 99;
+            if (leftRank !== rightRank) {
+              return leftRank - rightRank;
+            }
+            if (left.depth !== right.depth) {
+              return left.depth - right.depth;
+            }
+            if (left.area !== right.area) {
+              return left.area - right.area;
+            }
+            return left.key.localeCompare(right.key);
+          });
         if (pool.length === 0) {
           return null;
         }
 
-        return [...pool].sort((left, right) => {
-          if (!preferredType && rank[left.type] !== rank[right.type]) {
-            return rank[left.type] - rank[right.type];
-          }
-          if (left.depth !== right.depth) {
-            return left.depth - right.depth;
-          }
-          const leftFreeform = left.element.getAttribute("data-html-freeform") === "true" ? 0 : 1;
-          const rightFreeform = right.element.getAttribute("data-html-freeform") === "true" ? 0 : 1;
-          if (leftFreeform !== rightFreeform) {
-            return leftFreeform - rightFreeform;
-          }
-          if (left.layerIndex !== right.layerIndex) {
-            return left.layerIndex - right.layerIndex;
-          }
-          return left.area - right.area;
-        })[0];
+        return pool[0];
       }
 
       function buildBlockPayload(blockCandidate) {
         const blockElement = blockCandidate.element;
-        const rect = blockElement.getBoundingClientRect();
         const computed = window.getComputedStyle(blockElement);
         const fontSize = Number.parseFloat(computed.fontSize || "");
         const lineHeight = Number.parseFloat(computed.lineHeight || "");
@@ -1380,6 +1604,13 @@ function buildStandaloneHtmlReportPageDocument(
               .map((item) => normalize(item.textContent))
               .filter(Boolean)
           : [];
+        const linkedVisualNodeId = blockElement.getAttribute("data-html-visual-id");
+        const linkedVisualKind = blockElement.getAttribute("data-html-visual-kind");
+        const linkedVisualFitParticipation = normalizeFitParticipation(
+          blockElement.getAttribute("${HTML_FIT_ROLE_ATTRIBUTE}"),
+        );
+        const sharesSource = Boolean(linkedVisualNodeId);
+        const sizingBehavior = resolveBlockSizingBehavior(blockCandidate, blockElement);
 
         return {
           type: "ppt-html-preview-interaction",
@@ -1391,71 +1622,26 @@ function buildStandaloneHtmlReportPageDocument(
           fontWeight: computed.fontWeight || undefined,
           fontStyle: computed.fontStyle || undefined,
           lineHeight: Number.isFinite(lineHeight) ? lineHeight : undefined,
+          linkedVisualNodeId: linkedVisualNodeId || undefined,
+          linkedVisualKind: linkedVisualKind || undefined,
+          linkedVisualFitParticipation: linkedVisualFitParticipation || undefined,
+          sharesSource,
+          sizingBehavior,
           whiteSpace:
             computed.whiteSpace === "pre-wrap" || computed.whiteSpace === "pre-line"
               ? "pre-wrap"
               : "normal",
           text: normalize(blockElement.textContent),
           items,
-          rect: {
-            top: rect.top,
-            left: rect.left,
-            width: rect.width,
-            height: rect.height
-          }
         };
       }
 
       function buildVisualPayload(visualCandidate) {
-        const visualElement = visualCandidate.element;
-        const rect = visualElement.getBoundingClientRect();
         return {
           type: "ppt-html-preview-interaction",
           pageNumber: ${pageNumber},
           visualNodeId: visualCandidate.visualNodeId,
           visualKind: visualCandidate.visualKind,
-          rect: {
-            top: rect.top,
-            left: rect.left,
-            width: rect.width,
-            height: rect.height
-          }
-        };
-      }
-
-      function applyLayoutPreview(layoutElement, splitPercent) {
-        if (!(layoutElement instanceof HTMLElement)) return;
-
-        const children = Array.from(layoutElement.children).filter((child) => child instanceof HTMLElement);
-        if (children.length !== 2) return;
-
-        const normalized = Math.max(28, Math.min(72, Math.round(splitPercent)));
-        layoutElement.style.display = "grid";
-        layoutElement.style.gridTemplateColumns = "minmax(0, " + normalized + "fr) minmax(0, " + (100 - normalized) + "fr)";
-        layoutElement.style.alignItems = "start";
-        children.forEach((child) => {
-          child.style.minWidth = "0";
-        });
-        layoutElement.setAttribute("data-layout-split", String(normalized));
-      }
-
-      function buildLayoutPayload(layoutCandidate) {
-        const layoutElement = layoutCandidate.element;
-        const rect = layoutElement.getBoundingClientRect();
-        const splitPercent = Number.parseFloat(layoutElement.getAttribute("data-layout-split") || "");
-
-        return {
-          type: "ppt-html-preview-interaction",
-          pageNumber: ${pageNumber},
-          layoutZoneId: layoutCandidate.layoutZoneId,
-          layoutKind: layoutCandidate.layoutKind,
-          splitPercent: Number.isFinite(splitPercent) ? splitPercent : 50,
-          rect: {
-            top: rect.top,
-            left: rect.left,
-            width: rect.width,
-            height: rect.height
-          }
         };
       }
 
@@ -1464,6 +1650,10 @@ function buildStandaloneHtmlReportPageDocument(
         if (!(target instanceof Element)) return;
         const candidate = chooseSelectableCandidate(target, null, event.clientX, event.clientY);
         if (!candidate) {
+          recentBlockSelection = {
+            blockId: null,
+            timestamp: 0,
+          };
           window.parent.postMessage(
             {
               type: "ppt-html-preview-interaction",
@@ -1478,10 +1668,30 @@ function buildStandaloneHtmlReportPageDocument(
         const payload =
           candidate.type === "block"
             ? buildBlockPayload(candidate)
-            : candidate.type === "visual"
-              ? buildVisualPayload(candidate)
-              : buildLayoutPayload(candidate);
-        window.parent.postMessage({ ...payload, action: "select" }, "*");
+            : buildVisualPayload(candidate);
+        const now = Date.now();
+        const repeatedBlockClick =
+          candidate.type === "block" &&
+          recentBlockSelection.blockId === candidate.blockId &&
+          now - recentBlockSelection.timestamp <= 900;
+        const action =
+          candidate.type === "block" &&
+          ((candidate.blockId === selectionContext.selectedBlockId &&
+            !selectionContext.selectedVisualNodeId) ||
+            repeatedBlockClick)
+            ? "edit"
+            : "select";
+        recentBlockSelection =
+          candidate.type === "block"
+            ? {
+                blockId: candidate.blockId,
+                timestamp: now,
+              }
+            : {
+                blockId: null,
+                timestamp: 0,
+              };
+        window.parent.postMessage({ ...payload, action }, "*");
       }, true);
 
       document.addEventListener("dblclick", (event) => {
@@ -1513,16 +1723,6 @@ function buildStandaloneHtmlReportPageDocument(
           return;
         }
 
-        const layoutCandidate = chooseSelectableCandidate(
-          target,
-          "layout",
-          event.clientX,
-          event.clientY,
-        );
-        if (!layoutCandidate) return;
-        event.preventDefault();
-        event.stopPropagation();
-        window.parent.postMessage({ ...buildLayoutPayload(layoutCandidate), action: "select" }, "*");
       }, true);
 
       window.addEventListener("message", (event) => {
@@ -1540,19 +1740,24 @@ function buildStandaloneHtmlReportPageDocument(
           return;
         }
 
-        if (event.data.action === "layout-preview") {
-          const layoutZoneId = event.data.zoneId;
-          const splitPercent = Number(event.data.splitPercent);
-          if (!layoutZoneId || !Number.isFinite(splitPercent)) {
-            return;
-          }
-
-          const layoutElement = document.querySelector('[data-html-layout-id="' + layoutZoneId + '"]');
-          if (!layoutElement) {
-            return;
-          }
-
-          applyLayoutPreview(layoutElement, splitPercent);
+        if (event.data.action === "selection-context") {
+          const preferredSelectionType = event.data.preferredSelectionType;
+          selectionContext = {
+            preferredSelectionType:
+              preferredSelectionType === "text" ||
+              preferredSelectionType === "visual" ||
+              preferredSelectionType === "page"
+                ? preferredSelectionType
+                : "page",
+            selectedBlockId:
+              typeof event.data.selectedBlockId === "string" && event.data.selectedBlockId
+                ? event.data.selectedBlockId
+                : null,
+            selectedVisualNodeId:
+              typeof event.data.selectedVisualNodeId === "string" && event.data.selectedVisualNodeId
+                ? event.data.selectedVisualNodeId
+                : null,
+          };
           return;
         }
 
@@ -1958,7 +2163,111 @@ function buildStandaloneHtmlReportPageDocument(
   `;
   previewDocument.body.appendChild(previewScript);
 
+  return previewDocument;
+}
+
+function buildStandaloneHtmlReportPageDocument(
+  sourceDocument: Document,
+  pageElement: Element,
+  report: GeneratedHtmlReport,
+  pageStructure: HtmlEditablePage | null,
+  visualPage: HtmlVisualPage | null,
+  layoutPage: HtmlLayoutPage | null,
+  pageStyle: HtmlPageVisualStyle,
+  pageNumber: number,
+) {
+  const previewDocument = buildHtmlReportPageDocument(
+    sourceDocument,
+    pageElement,
+    report,
+    pageStructure,
+    visualPage,
+    layoutPage,
+    pageStyle,
+    pageNumber,
+    "preview",
+  );
   return `<!DOCTYPE html>\n${previewDocument.documentElement.outerHTML}`;
+}
+
+function buildHtmlReportExportBundle(htmlReport: GeneratedHtmlReport) {
+  if (typeof window === "undefined") {
+    return {
+      headMarkup: "",
+      bodyAttributes: {} as Record<string, string>,
+      pages: [
+        {
+          pageNumber: 1,
+          title: htmlReport.pageTitles[0] ?? htmlReport.title,
+          pageMarkup: htmlReport.html,
+        },
+      ] satisfies HtmlReportExportPage[],
+    };
+  }
+
+  const parser = new window.DOMParser();
+  const sourceDocument = parser.parseFromString(htmlReport.html, "text/html");
+  const sourcePages = buildHtmlReportSourcePages(sourceDocument, htmlReport);
+
+  if (sourcePages.length === 0) {
+    const exportDocument = sourceDocument.implementation.createHTMLDocument(
+      sourceDocument.title || htmlReport.title || "Report page",
+    );
+    exportDocument.head.innerHTML = sourceDocument.head.innerHTML;
+    exportDocument.body.innerHTML = sourceDocument.body.innerHTML;
+    cloneElementAttributes(sourceDocument.body, exportDocument.body);
+    appendPageModeStyles(exportDocument, "export");
+
+    return {
+      headMarkup: exportDocument.head.innerHTML,
+      bodyAttributes: collectElementAttributes(exportDocument.body),
+      pages: [
+        {
+          pageNumber: 1,
+          title: htmlReport.pageTitles[0] ?? htmlReport.title,
+          pageMarkup: exportDocument.body.innerHTML,
+        },
+      ] satisfies HtmlReportExportPage[],
+    };
+  }
+
+  const pages = sourcePages.map((page) => {
+    const exportDocument = buildHtmlReportPageDocument(
+      sourceDocument,
+      page.pageElement,
+      htmlReport,
+      page.pageStructure,
+      page.visualPage,
+      page.layoutPage,
+      page.pageStyle,
+      page.pageNumber,
+      "export",
+    );
+
+    return {
+      pageNumber: page.pageNumber,
+      title: page.title,
+      pageMarkup: exportDocument.body.innerHTML,
+    } satisfies HtmlReportExportPage;
+  });
+
+  const firstPageDocument = buildHtmlReportPageDocument(
+    sourceDocument,
+    sourcePages[0].pageElement,
+    htmlReport,
+    sourcePages[0].pageStructure,
+    sourcePages[0].visualPage,
+    sourcePages[0].layoutPage,
+    sourcePages[0].pageStyle,
+    sourcePages[0].pageNumber,
+    "export",
+  );
+
+  return {
+    headMarkup: firstPageDocument.head.innerHTML,
+    bodyAttributes: collectElementAttributes(firstPageDocument.body),
+    pages,
+  };
 }
 
 function buildHtmlReportPagePreviews(htmlReport: GeneratedHtmlReport): HtmlReportPagePreview[] {
@@ -1975,9 +2284,9 @@ function buildHtmlReportPagePreviews(htmlReport: GeneratedHtmlReport): HtmlRepor
 
   const parser = new window.DOMParser();
   const sourceDocument = parser.parseFromString(htmlReport.html, "text/html");
-  const pageElements = Array.from(sourceDocument.querySelectorAll("section.page"));
+  const sourcePages = buildHtmlReportSourcePages(sourceDocument, htmlReport);
 
-  if (pageElements.length === 0) {
+  if (sourcePages.length === 0) {
     return [
       {
         pageNumber: 1,
@@ -1990,36 +2299,23 @@ function buildHtmlReportPagePreviews(htmlReport: GeneratedHtmlReport): HtmlRepor
     ];
   }
 
-  return pageElements.map((pageElement, index) => {
-    const pageNumber = index + 1;
-    const pageStructure = htmlReport.structure?.pages[index] ?? null;
-    const visualPage = htmlReport.visualStructure?.pages[index] ?? null;
-    const layoutPage = htmlReport.layoutStructure?.pages[index] ?? null;
-    const pageStyle = extractHtmlPageVisualStyle({
-      report: htmlReport,
-      pageNumber,
-    });
-    const title =
-      pageElement.getAttribute("data-page-title")?.trim() ||
-      htmlReport.pageTitles[index] ||
-      `Page ${pageNumber}`;
-
+  return sourcePages.map((page) => {
     return {
-      pageNumber,
-      title,
+      pageNumber: page.pageNumber,
+      title: page.title,
       srcDoc: buildStandaloneHtmlReportPageDocument(
         sourceDocument,
-        pageElement,
+        page.pageElement,
         htmlReport,
-        pageStructure,
-        visualPage,
-        layoutPage,
-        pageStyle,
-        pageNumber,
+        page.pageStructure,
+        page.visualPage,
+        page.layoutPage,
+        page.pageStyle,
+        page.pageNumber,
       ),
-      pageStructure,
-      visualPage,
-      layoutPage,
+      pageStructure: page.pageStructure,
+      visualPage: page.visualPage,
+      layoutPage: page.layoutPage,
     };
   });
 }
@@ -2027,5 +2323,6 @@ function buildHtmlReportPagePreviews(htmlReport: GeneratedHtmlReport): HtmlRepor
 export {
   HTML_REPORT_PAGE_HEIGHT,
   HTML_REPORT_PAGE_WIDTH,
+  buildHtmlReportExportBundle,
   buildHtmlReportPagePreviews,
 };

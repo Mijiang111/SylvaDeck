@@ -30,7 +30,12 @@ export function isSemanticTemplateSlotField(field: ModuleTemplateField) {
 
 export function isDecorativeTemplateField(field: ModuleTemplateField) {
   const kind = getCanvasObjectKind(field);
-  if (kind === "line" || kind === "ellipse" || kind === "rectangle") {
+  if (
+    kind === "line" ||
+    kind === "ellipse" ||
+    kind === "rectangle" ||
+    kind === "image"
+  ) {
     return true;
   }
   return kind === "text" && !isAiTextField(field);

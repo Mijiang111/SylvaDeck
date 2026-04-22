@@ -65,6 +65,7 @@ export function StudioPublishedPage({ projectId }: { projectId: string }) {
   const publishedHref = useMemo(() => `/projects/${projectId}/published`, [projectId]);
 
   const project = projectState?.project ?? null;
+  const generatedHtmlReport = project?.generatedDraft?.htmlReport ?? null;
 
   useEffect(() => {
     let cancelled = false;
@@ -173,7 +174,7 @@ export function StudioPublishedPage({ projectId }: { projectId: string }) {
   }, [exportMode, project?.id, project?.generatedDraft?.signature, project?.updatedAt, publishedDraft]);
 
   useEffect(() => {
-    if (!project || !publishedDraft || exportMode !== "html") {
+    if (!project || !publishedDraft || !generatedHtmlReport || exportMode !== "html") {
       return;
     }
     if (handledExportKeyRef.current === exportRunKey) {
@@ -184,14 +185,9 @@ export function StudioPublishedPage({ projectId }: { projectId: string }) {
     const timeout = window.setTimeout(() => {
       void (async () => {
         await recordPublish("html", window.location.href);
-        const reportRoot = document.querySelector("[data-ppt-report-root='published']");
-        if (!(reportRoot instanceof HTMLElement)) {
-          return;
-        }
-
         downloadPublishedHtml({
           document,
-          reportRoot,
+          htmlReport: generatedHtmlReport,
           projectName: project.projectName,
           publishedUrl: window.location.href,
         });
@@ -199,7 +195,14 @@ export function StudioPublishedPage({ projectId }: { projectId: string }) {
     }, 260);
 
     return () => window.clearTimeout(timeout);
-  }, [exportMode, project?.id, project?.generatedDraft?.signature, project?.updatedAt, publishedDraft]);
+  }, [
+    exportMode,
+    generatedHtmlReport,
+    project?.id,
+    project?.generatedDraft?.signature,
+    project?.updatedAt,
+    publishedDraft,
+  ]);
 
   useEffect(() => {
     if (!project || !publishedDraft || exportMode !== "pdf") {
@@ -285,7 +288,7 @@ export function StudioPublishedPage({ projectId }: { projectId: string }) {
       <WorkbenchReportView
         pages={project.pages}
         draft={publishedDraft}
-        htmlReport={project.generatedDraft?.htmlReport}
+        htmlReport={generatedHtmlReport}
         rootId="published"
       />
     );
@@ -389,12 +392,12 @@ export function StudioPublishedPage({ projectId }: { projectId: string }) {
 
       <div className="min-h-0 flex-1">
         <WorkbenchReportView
-          pages={project.pages}
-          draft={publishedDraft}
-          fullscreen={false}
-          htmlReport={project.generatedDraft?.htmlReport}
-          rootId="published"
-        />
+        pages={project.pages}
+        draft={publishedDraft}
+        fullscreen={false}
+        htmlReport={generatedHtmlReport}
+        rootId="published"
+      />
       </div>
     </div>
   );

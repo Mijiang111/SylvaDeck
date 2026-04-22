@@ -127,6 +127,7 @@ import {
   formatMeasurementElements,
   formatTextMeasurementsForPrompt,
   measurementNeedsRepair,
+  resolvePageReviewDecision,
   sanitizeRepairTitle,
   summarizeDeckCompositionDiversityForPrompt,
   summarizeMeasurementIssues,
@@ -2775,12 +2776,13 @@ const MAX_STANDARD_HEURISTIC_RECIPE_PAGES = 9;
 
 export function resolveStandardHeuristicRecipePageCount(args: {
   requestedPageCount?: number | null;
+  preflightPageCount?: number | null;
   defaultPageCount: number;
 }) {
   return Math.max(
     1,
     Math.min(
-      args.requestedPageCount ?? args.defaultPageCount,
+      args.requestedPageCount ?? args.preflightPageCount ?? args.defaultPageCount,
       MAX_STANDARD_HEURISTIC_RECIPE_PAGES,
     ),
   );
@@ -2792,6 +2794,7 @@ function buildStandardHeuristicRecipePlan(args: {
   modules: PublishedModuleManifest[];
   thinkingContext: ResolvedThinkingContext;
   briefSynthesis: StudioBriefSynthesis;
+  preflightPageCount?: number | null;
 }) {
   const thinkingMode = args.thinkingContext.mode;
   const strongestClaim =
@@ -2827,6 +2830,7 @@ function buildStandardHeuristicRecipePlan(args: {
   });
   const pageCount = resolveStandardHeuristicRecipePageCount({
     requestedPageCount: args.payload.pageCount,
+    preflightPageCount: args.preflightPageCount,
     defaultPageCount,
   });
   const pages: PageRecipePlan["pages"] = [];
@@ -3551,6 +3555,7 @@ function buildHeuristicRecipePlan(args: {
   modules: PublishedModuleManifest[];
   thinkingContext: ResolvedThinkingContext;
   briefSynthesis: StudioBriefSynthesis;
+  preflightPageCount?: number | null;
 }) {
   if (isLongFormGenerationRequest(args.payload)) {
     return buildLongFormHeuristicRecipePlan(args);
@@ -3858,8 +3863,9 @@ export function buildAnimatedPreviewOutputRuleLines(htmlOutputMode: HtmlOutputMo
     "For data-anim-delay and data-anim-duration, prefer plain integer millisecond values with no unit, such as 80 or 640.",
     "Use data-anim-order as a small integer like 0, 1, 2, 3 to control stagger order.",
     "If you need looping preview motion, include at most one <template data-studio-animation-manifest>...</template> inside the page section, and make the template body pure JSON only with no comments or prose.",
-    'Use only this manifest shape: {"version":1,"startMode":"entry-then-loop","entryTracks":[{"anchor":"slug","preset":"fade-up","delayMs":0,"durationMs":640,"order":0}],"loopEffects":[...]}',
+    'Canonical manifest example: {"version":1,"startMode":"entry-then-loop","entryTracks":[{"anchor":"recorder-wheel","preset":"scale-in","delayMs":120,"durationMs":720,"order":0},{"anchor":"signal-word","preset":"fade-up","delayMs":260,"durationMs":680,"order":1}],"loopEffects":[{"kind":"rotate","anchor":"recorder-wheel","durationMs":2800,"direction":"clockwise"},{"kind":"ticker","anchor":"signal-word","items":["SIGNAL","ARCHIVE","TRACE"],"stepMs":960}]}',
     "Each loop effect must be exactly one of: rotate {kind, anchor, durationMs, optional direction, optional angleDeg}; ticker {kind, anchor, items, stepMs}; typewriter {kind, anchor, items, typeMs, holdMs, deleteMs}; pulse {kind, anchor, durationMs, optional scaleFrom, optional scaleTo, optional opacityFrom, optional opacityTo}; orbit {kind, anchor, durationMs, radiusPx, optional axis}.",
+    "Do not use comments, trailing commas, stringified numbers like \"640\", unknown loop kinds, or alternate keys such as effects, target, selector, easing, or speed.",
     "Every manifest anchor must match a real data-anim-anchor on the same page and should use a short lowercase slug like recorder-wheel or signal-word.",
     "Animate a small number of important elements, not the entire page.",
   ];
@@ -3873,7 +3879,8 @@ export function buildAnimatedPreviewRepairRuleLines(htmlOutputMode: HtmlOutputMo
   return [
     "Preserve valid data-anim-* attributes, data-anim-anchor markers, and a valid animation manifest template when the corresponding semantic elements survive the repair.",
     "If animation metadata disappears after a restructure, re-add a small set of valid data-anim-* attributes and, when looping motion is still appropriate, re-add one valid <template data-studio-animation-manifest>...</template> with pure JSON only.",
-    'Keep the manifest on the exact shape {"version":1,"startMode":"entry-then-loop","entryTracks":[...],"loopEffects":[...]}; do not invent alternate keys, comments, trailing commas, stringified numbers, or freeform animation DSL.',
+    'Repair toward this canonical manifest shape: {"version":1,"startMode":"entry-then-loop","entryTracks":[{"anchor":"slug","preset":"fade-up","delayMs":0,"durationMs":640,"order":0}],"loopEffects":[{"kind":"rotate","anchor":"slug","durationMs":2800}]}',
+    "Do not invent alternate keys, comments, trailing commas, stringified numbers, unknown loop kinds, or freeform animation DSL.",
     "Only reference anchors that actually exist on the repaired page via data-anim-anchor.",
   ];
 }
@@ -4586,6 +4593,62 @@ function buildPageRepairProfile(args: {
   } satisfies PageRepairProfile;
 }
 
+function shouldSoftenSemanticDensityForRevision(args: {
+  generationMode?: GenerationMode;
+  requestedPageCount?: number | null;
+  pageCount: number;
+}) {
+  if (args.generationMode && args.generationMode !== "long-form") {
+    return true;
+  }
+  return (args.requestedPageCount ?? args.pageCount) < 10;
+}
+
+function measureOverflowPixels(measurement: PageFitMeasurement) {
+  return (
+    Math.max(0, measurement.scrollHeight - measurement.clientHeight) +
+    Math.max(0, measurement.scrollWidth - measurement.clientWidth)
+  );
+}
+
+function shouldApplyDeterministicOnlyRepair(args: {
+  measurement: PageFitMeasurement;
+  changed: boolean;
+  chartPageIntent: ChartPageIntent;
+  repairProfile: PageRepairProfile;
+}) {
+  if (!args.changed) {
+    return false;
+  }
+
+  const decision = resolvePageReviewDecision(args.measurement, {
+    pageCount: null,
+  });
+  const hardReasons = decision.reasons.filter((reason) => reason !== "semantic-density");
+  const titleOnlyHardFail =
+    decision.severity === "hard-fail" &&
+    hardReasons.length > 0 &&
+    hardReasons.every((reason) => reason.startsWith("title-"));
+  if (titleOnlyHardFail && !args.measurement.overflowX && !args.measurement.overflowY) {
+    return true;
+  }
+
+  if (args.chartPageIntent.enabled) {
+    return false;
+  }
+
+  const overflowPixels = measureOverflowPixels(args.measurement);
+  const lightOverflow =
+    overflowPixels > 0 && overflowPixels <= 140;
+  const compatibleOverflowCause =
+    args.repairProfile.overflowCause === "title" ||
+    args.repairProfile.overflowCause === "hero-copy" ||
+    args.repairProfile.overflowCause === "footer/appendix" ||
+    args.repairProfile.overflowCause === "mixed-density";
+
+  return lightOverflow && compatibleOverflowCause;
+}
+
 function buildLayoutRepairPrompt(args: {
   brief: string;
   skill: LoadedStudioLayoutRepairSkill;
@@ -5036,6 +5099,7 @@ export async function runStudioGenerationV2(args: {
     modules: moduleManifests,
     thinkingContext,
     briefSynthesis,
+    preflightPageCount: preflight.pageCount,
   });
   const alignedRecipePlan = {
     ...recipePlan,
@@ -5969,8 +6033,36 @@ export async function runStudioRevision(args: {
     pageNumber: section.pageNumber,
     pageTitle: section.pageTitle,
   }));
+  const softenSemanticDensity = shouldSoftenSemanticDensityForRevision({
+    generationMode: args.payload.generationMode,
+    requestedPageCount: args.payload.requestedPageCount,
+    pageCount: args.payload.report.pageCount,
+  });
+  const pageReviewDecisions = new Map(
+    args.payload.pageMeasurements.map((measurement) => [
+      measurement.pageNumber,
+      resolvePageReviewDecision(measurement, {
+        pageCount: args.payload.report.pageCount,
+        softenSemanticDensity,
+      }),
+    ]),
+  );
+  const hardFailMeasurements = args.payload.pageMeasurements.filter(
+    (measurement) =>
+      pageReviewDecisions.get(measurement.pageNumber)?.severity === "hard-fail",
+  );
+  const softConcernMeasurements = args.payload.pageMeasurements.filter(
+    (measurement) =>
+      pageReviewDecisions.get(measurement.pageNumber)?.severity === "soft-warning",
+  );
   const failingMeasurements = [...args.payload.pageMeasurements]
-    .filter((measurement) => measurementNeedsRepair(measurement, args.payload.report.pageCount))
+    .filter(
+      (measurement) =>
+        measurementNeedsRepair(measurement, args.payload.report.pageCount, {
+          includeSoftWarnings: true,
+          softenSemanticDensity,
+        }),
+    )
     .sort((left, right) => left.pageNumber - right.pageNumber)
     .filter((measurement) => {
       if (!reviewBudget || args.payload.repairMode !== "aggressive") {
@@ -5992,6 +6084,18 @@ export async function runStudioRevision(args: {
           : reviewBudget.maxPagesPerPass
         : args.payload.pageMeasurements.length,
     );
+  logger.info(
+    {
+      runId: args.runId,
+      pageCount: args.payload.report.pageCount,
+      requestedRepairCount: failingMeasurements.length,
+      hardFailCount: hardFailMeasurements.length,
+      softConcernCount: softConcernMeasurements.length,
+      softenSemanticDensity,
+      repairMode: args.payload.repairMode,
+    },
+    "studio revision classified review pages",
+  );
 
   await emit({
     type: "run_started",
@@ -6011,9 +6115,13 @@ export async function runStudioRevision(args: {
     stage: "review",
     content:
       failingMeasurements.length > 0
-        ? `Detected fit or title issues on pages ${failingMeasurements
-            .map((measurement) => measurement.pageNumber)
-            .join(", ")}.${reviewBudget ? ` Repair budget is capped at ${reviewBudget.maxPagesPerPass} pages per pass and about ${Math.round(reviewBudget.hardTimeoutMs / 1000)} seconds overall.` : ""} ${summarizeDeckCompositionDiversityForPrompt(deckDiversityReport)}`
+        ? hardFailMeasurements.length > 0
+          ? `Detected hard-fail issues on pages ${hardFailMeasurements
+              .map((measurement) => measurement.pageNumber)
+              .join(", ")}.${softConcernMeasurements.length > 0 ? ` ${softConcernMeasurements.length} page(s) also only need manual simplification guidance.` : ""}${reviewBudget ? ` Repair budget is capped at ${reviewBudget.maxPagesPerPass} pages per pass and about ${Math.round(reviewBudget.hardTimeoutMs / 1000)} seconds overall.` : ""} ${summarizeDeckCompositionDiversityForPrompt(deckDiversityReport)}`
+          : `No hard-fail issues remain, but pages ${failingMeasurements
+              .map((measurement) => measurement.pageNumber)
+              .join(", ")} were queued for manual simplification. ${summarizeDeckCompositionDiversityForPrompt(deckDiversityReport)}`
         : "No fit issues were detected, so the original generated deck can remain unchanged.",
   });
 
@@ -6090,15 +6198,12 @@ export async function runStudioRevision(args: {
       heroModelIntent,
     });
     const shrunkSectionHtml = deterministicShrink.sectionHtml;
-    const titleOnlyRepair =
-      deterministicShrink.changed &&
-      !measurement.overflowX &&
-      !measurement.overflowY &&
-      (
-        measurement.pageTitleQuality.promptLeak ||
-        measurement.pageTitleQuality.truncated ||
-        measurement.pageTitleQuality.repeatedInstruction
-      );
+    const deterministicOnlyRepair = shouldApplyDeterministicOnlyRepair({
+      measurement,
+      changed: deterministicShrink.changed,
+      chartPageIntent,
+      repairProfile,
+    });
 
     await emit({
       type: "page_started",
@@ -6123,7 +6228,7 @@ export async function runStudioRevision(args: {
       });
     }
 
-    if (titleOnlyRepair) {
+    if (deterministicOnlyRepair) {
       const deterministicPage = validateGeneratedPageHtml({
         html: composeSinglePageHtml({
           title: deckTitle,

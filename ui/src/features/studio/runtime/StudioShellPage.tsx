@@ -25,7 +25,6 @@ import {
   createGeneratedDraftAsset,
   createGenerationSignature,
   detectImplicitLongFormClarification,
-  hasPageFitFailure,
   inferRequestedHtmlPageCount,
   resolveGenerationIntent,
   streamReviseHtmlReport,
@@ -40,10 +39,13 @@ import {
 import {
   getGeneratedHtmlReportBlockCanvasTransform,
   getGeneratedHtmlReportVisualCanvasTransform,
+  removeGeneratedHtmlReportCanvasBlockTransform,
+  removeGeneratedHtmlReportCanvasVisualTransform,
+  shiftGeneratedHtmlReportCanvasBlockLayer,
+  shiftGeneratedHtmlReportCanvasVisualLayer,
   updateGeneratedHtmlReportCanvasBlockTransform,
   updateGeneratedHtmlReportCanvasVisualTransform,
 } from "@/features/studio/html-report-canvas";
-import { updateGeneratedHtmlReportLayoutZone } from "@/features/studio/html-report-layout";
 import { updateGeneratedHtmlReportBlock } from "@/features/studio/html-report-structure";
 import {
   addGeneratedHtmlReportVisualNode,
@@ -67,6 +69,10 @@ import {
 } from "@/features/studio/module-authoring-handoff";
 import { getIndustryStyleProfile } from "@/features/studio/industry-style";
 import {
+  fireAndForget,
+  getAsyncActionErrorMessage,
+} from "@/features/studio/runtime/fire-and-forget";
+import {
   createStarterLayoutPage,
   getStarterPackManifest,
   isStarterPackDeck,
@@ -81,7 +87,6 @@ import type {
   HtmlOutputMode,
   HtmlCanvasFrame,
   HtmlEditableBlock,
-  HtmlLayoutZoneKind,
   HtmlLayoutZone,
   HtmlVisualContentNode,
   HtmlVisualNode,
@@ -138,14 +143,11 @@ const INSPECTOR_TABS = [
   { id: "page", label: "Page" },
   { id: "text", label: "Text" },
   { id: "visual", label: "Visual" },
-  { id: "layout", label: "Layout" },
   { id: "history", label: "History" },
   { id: "export", label: "Export" },
 ] as const;
 
-const SIDEBAR_TABS = INSPECTOR_TABS.filter(
-  (tab) => tab.id !== "text" && tab.id !== "layout",
-);
+const SIDEBAR_TABS = INSPECTOR_TABS.filter((tab) => tab.id !== "text");
 
 const MODULE_USAGE_OPTIONS: Array<{
   value: WorkbenchModuleUsageMode;
@@ -398,7 +400,6 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
     selectPage,
     selectHtmlBlock,
     selectVisualNode,
-    selectLayoutZone,
     clearSelection,
     recordHtmlOverflow,
     undo,
@@ -407,6 +408,15 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
     setInspectorTab,
     setAiSettings,
   } = useStudioProjectActions();
+
+  const runAsyncAction = useCallback(
+    (promise: Promise<unknown>, fallback: string) => {
+      fireAndForget(promise, (error) => {
+        setStatusLine(getAsyncActionErrorMessage(error, fallback));
+      });
+    },
+    [setStatusLine],
+  );
 
   const project = documentState.project;
   const starterDeckOptions = useMemo(
@@ -503,6 +513,11 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
     selection.activePageId || currentCanvasPageId,
     project?.pages,
   );
+  const selectedCanvasPageId =
+    selection.selectedHtmlBlockId || selection.selectedVisualNodeId
+      ? selection.activePageId || currentCanvasPageId
+      : currentCanvasPageId;
+  const selectedCanvasPageNumber = resolvePageNumberFromId(selectedCanvasPageId, project?.pages);
   const currentCanvasPageTitle = useMemo(() => {
     if (!project && !hasStreamingPreview) {
       return "";
@@ -678,24 +693,6 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
       nodeId: selection.selectedVisualNodeId,
     });
   }, [activePageNumber, generatedHtmlReport, selection.selectedVisualNodeId]);
-  const activeHtmlLayoutPage = useMemo(() => {
-    if (!generatedHtmlReport?.layoutStructure?.pages?.length) {
-      return null;
-    }
-
-    return (
-      generatedHtmlReport.layoutStructure.pages.find(
-        (page) => page.pageNumber === activePageNumber,
-      ) ?? null
-    );
-  }, [activePageNumber, generatedHtmlReport]);
-  const activeHtmlLayoutZone = useMemo(() => {
-    if (!activeHtmlLayoutPage || !selection.selectedLayoutZoneId) {
-      return null;
-    }
-
-    return activeHtmlLayoutPage.zones.find((zone) => zone.id === selection.selectedLayoutZoneId) ?? null;
-  }, [activeHtmlLayoutPage, selection.selectedLayoutZoneId]);
 
   useEffect(() => {
     if (!activeHtmlStructurePage || !selection.selectedHtmlBlockId) {
@@ -716,16 +713,6 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
       clearSelection("page");
     }
   }, [activeHtmlVisualPage, clearSelection, selection.selectedVisualNodeId]);
-
-  useEffect(() => {
-    if (!activeHtmlLayoutPage || !selection.selectedLayoutZoneId) {
-      return;
-    }
-
-    if (!activeHtmlLayoutPage.zones.some((zone) => zone.id === selection.selectedLayoutZoneId)) {
-      clearSelection("page");
-    }
-  }, [activeHtmlLayoutPage, clearSelection, selection.selectedLayoutZoneId]);
 
   const publishedHref = project
     ? `/projects/${project.id}/published`
@@ -1292,6 +1279,29 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
     });
   }
 
+  function returnHtmlBlockToFlow(pageNumber: number, blockId: string) {
+    if (!project?.generatedDraft?.htmlReport) {
+      return;
+    }
+
+    const nextHtmlReport = removeGeneratedHtmlReportCanvasBlockTransform({
+      report: project.generatedDraft.htmlReport,
+      pageNumber,
+      id: blockId,
+    });
+
+    updateGeneratedDraft({
+      generatedDraft: {
+        ...project.generatedDraft,
+        htmlReport: nextHtmlReport,
+      },
+      label: "Return text block to flow",
+      scope: "text",
+      inspectorTab: "text",
+      statusLine: "Returned the selected text block to the page flow.",
+    });
+  }
+
   function updateActiveHtmlVisualStyle(nextStyle: HtmlPageVisualStyle) {
     if (!project?.generatedDraft?.htmlReport) {
       return;
@@ -1372,6 +1382,92 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
       scope: "visual",
       inspectorTab: "visual",
       statusLine: "Moved the selected visual element on the page canvas.",
+    });
+  }
+
+  function returnHtmlVisualToFlow(pageNumber: number, nodeId: string) {
+    if (!project?.generatedDraft?.htmlReport) {
+      return;
+    }
+
+    const nextHtmlReport = removeGeneratedHtmlReportCanvasVisualTransform({
+      report: project.generatedDraft.htmlReport,
+      pageNumber,
+      id: nodeId,
+    });
+
+    updateGeneratedDraft({
+      generatedDraft: {
+        ...project.generatedDraft,
+        htmlReport: nextHtmlReport,
+      },
+      label: "Return visual to flow",
+      scope: "visual",
+      inspectorTab: "visual",
+      statusLine: "Returned the selected visual element to the page flow.",
+    });
+  }
+
+  function shiftHtmlBlockCanvasLayer(
+    pageNumber: number,
+    blockId: string,
+    direction: "forward" | "backward",
+    frame: HtmlCanvasFrame,
+    fontSize?: number,
+  ) {
+    if (!project?.generatedDraft?.htmlReport) {
+      return;
+    }
+
+    const nextHtmlReport = shiftGeneratedHtmlReportCanvasBlockLayer({
+      report: project.generatedDraft.htmlReport,
+      pageNumber,
+      id: blockId,
+      direction,
+      frame,
+      fontSize,
+    });
+
+    updateGeneratedDraft({
+      generatedDraft: {
+        ...project.generatedDraft,
+        htmlReport: nextHtmlReport,
+      },
+      label: direction === "forward" ? "Bring text block forward" : "Send text block backward",
+      scope: "text",
+      inspectorTab: "text",
+      statusLine: "Adjusted the selected text block layer on the canvas.",
+    });
+  }
+
+  function shiftHtmlVisualCanvasLayer(
+    pageNumber: number,
+    nodeId: string,
+    direction: "forward" | "backward",
+    frame: HtmlCanvasFrame,
+  ) {
+    if (!project?.generatedDraft?.htmlReport) {
+      return;
+    }
+
+    const nextHtmlReport = shiftGeneratedHtmlReportCanvasVisualLayer({
+      report: project.generatedDraft.htmlReport,
+      pageNumber,
+      id: nodeId,
+      direction,
+      frame,
+    });
+
+    updateGeneratedDraft({
+      generatedDraft: {
+        ...project.generatedDraft,
+        htmlReport: nextHtmlReport,
+      },
+      label:
+        direction === "forward" ? "Bring visual element forward" : "Send visual element backward",
+      scope: "visual",
+      inspectorTab: "visual",
+      statusLine: "Adjusted the selected visual element layer on the canvas.",
     });
   }
 
@@ -1711,35 +1807,6 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
     ],
   );
 
-  function commitHtmlLayoutZone(pageNumber: number, zoneId: string, splitPercent: number) {
-    if (!project?.generatedDraft?.htmlReport) {
-      return;
-    }
-
-    const nextHtmlReport = updateGeneratedHtmlReportLayoutZone({
-      report: project.generatedDraft.htmlReport,
-      pageNumber,
-      zoneId,
-      splitPercent,
-    });
-
-    if (nextHtmlReport.html === project.generatedDraft.htmlReport.html) {
-      setStatusLine("Layout unchanged (needs a two-child column container).");
-      return;
-    }
-
-    updateGeneratedDraft({
-      generatedDraft: {
-        ...project.generatedDraft,
-        htmlReport: nextHtmlReport,
-      },
-      label: "Adjust layout zone",
-      scope: "layout",
-      inspectorTab: "layout",
-      statusLine: "Adjusted column balance for this page.",
-    });
-  }
-
   function returnToHome() {
     if (project) {
       setHomeSection(project.generatedDraft?.htmlReport ? "library" : "ai");
@@ -1756,9 +1823,9 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
     navigate(location.pathname, { replace: false });
   }
 
-  function openSidebarTab(tab: "page" | "text" | "visual" | "layout" | "history" | "export") {
+  function openSidebarTab(tab: "page" | "text" | "visual" | "history" | "export") {
     setCanvasDrawer(tab);
-    if (tab === "page" || tab === "text" || tab === "visual" || tab === "layout") {
+    if (tab === "page" || tab === "text" || tab === "visual") {
       setInspectorTab(tab);
     }
     setPropertiesVisible(true);
@@ -1771,10 +1838,6 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
     }
     if (selection.selectedVisualNodeId) {
       openSidebarTab("visual");
-      return;
-    }
-    if (selection.selectedLayoutZoneId) {
-      openSidebarTab("layout");
       return;
     }
 
@@ -1862,7 +1925,6 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
     if (
       shell.canvasDrawer === "text" ||
       shell.canvasDrawer === "visual" ||
-      shell.canvasDrawer === "layout" ||
       shell.canvasDrawer === "history" ||
       shell.canvasDrawer === "export"
     ) {
@@ -2036,7 +2098,11 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
               {
                 id: `regenerate-with-starter-${project.id}`,
                 label: selectedDeckStarter ? "Regenerate with starter" : "Clear deck starter",
-                onPress: () => void handleRegenerateWithSelectedStarter(),
+                onPress: () =>
+                  runAsyncAction(
+                    handleRegenerateWithSelectedStarter(),
+                    "Studio could not regenerate with the selected starter.",
+                  ),
               },
             ],
           },
@@ -2070,12 +2136,20 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
               {
                 id: `replace-with-starter-${activePage.id}`,
                 label: selectedPageStarter ? "Replace current page with starter" : "Clear current page starter",
-                onPress: () => void handleReplaceCurrentPageWithStarter(),
+                onPress: () =>
+                  runAsyncAction(
+                    handleReplaceCurrentPageWithStarter(),
+                    "Studio could not replace the current page with the selected starter.",
+                  ),
               },
               {
                 id: `insert-starter-page-${activePage.id}`,
                 label: "Insert starter page",
-                onPress: () => void handleInsertStarterPage(),
+                onPress: () =>
+                  runAsyncAction(
+                    handleInsertStarterPage(),
+                    "Studio could not insert the selected starter page.",
+                  ),
               },
             ],
           },
@@ -2453,7 +2527,7 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
           title: "Style",
           fields: [
             {
-              id: "node-background",
+              id: `node-background-${activeHtmlVisualNode.id}`,
               kind: "color",
               label: "Background",
               value: activeHtmlVisualNode.style.background ?? "#ffffff",
@@ -2461,7 +2535,7 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                 updateActiveHtmlVisualNodeStyle({ background: value }),
             },
             {
-              id: "node-border",
+              id: `node-border-${activeHtmlVisualNode.id}`,
               kind: "color",
               label: "Border",
               value: activeHtmlVisualNode.style.border ?? "#d7d1c6",
@@ -2469,7 +2543,7 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                 updateActiveHtmlVisualNodeStyle({ border: value }),
             },
             {
-              id: "node-accent",
+              id: `node-accent-${activeHtmlVisualNode.id}`,
               kind: "color",
               label: "Accent",
               value: activeHtmlVisualNode.style.accent ?? "#c6994a",
@@ -2477,7 +2551,7 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                 updateActiveHtmlVisualNodeStyle({ accent: value }),
             },
             {
-              id: "node-opacity",
+              id: `node-opacity-${activeHtmlVisualNode.id}`,
               kind: "range",
               label: "Opacity",
               value: Math.round((activeHtmlVisualNode.style.opacity ?? 1) * 100),
@@ -2488,7 +2562,7 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                 updateActiveHtmlVisualNodeStyle({ opacity: value / 100 }),
             },
             {
-              id: "node-radius",
+              id: `node-radius-${activeHtmlVisualNode.id}`,
               kind: "number",
               label: "Radius",
               value: Math.round(activeHtmlVisualNode.style.radius ?? 0),
@@ -2499,7 +2573,7 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                 updateActiveHtmlVisualNodeStyle({ radius: value }),
             },
             {
-              id: "node-padding",
+              id: `node-padding-${activeHtmlVisualNode.id}`,
               kind: "number",
               label: "Padding",
               value: Math.round(activeHtmlVisualNode.style.padding ?? 0),
@@ -2510,7 +2584,7 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                 updateActiveHtmlVisualNodeStyle({ padding: value }),
             },
             {
-              id: "node-width",
+              id: `node-width-${activeHtmlVisualNode.id}`,
               kind: "number",
               label: "Width %",
               value: Math.round(activeHtmlVisualNode.style.widthPercent ?? 100),
@@ -2568,61 +2642,6 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
     replaceSelectedVisualWithModule,
   ]);
 
-  const layoutInspectorSchema = useMemo<InspectorSchema | null>(() => {
-    if (!activeHtmlLayoutZone) {
-      return pageInspectorSchema;
-    }
-
-    return {
-      id: "layout-inspector",
-      title: "Layout zone",
-      description: "Layout balancing now happens on the canvas. Select the zone and drag the divider handle directly.",
-      sections: [
-        {
-          id: "layout-meta",
-          title: "Zone",
-          fields: [
-            {
-              id: `zone-extract-${activeHtmlLayoutZone.id}`,
-              kind: "actions",
-              label: "Authoring handoff",
-              actions: [
-                {
-                  id: `extract-zone-${activeHtmlLayoutZone.id}`,
-                  label: "Extract as module",
-                  onPress: () =>
-                    extractSelectionAsModule({
-                      kind: "layout",
-                      zone: activeHtmlLayoutZone,
-                    }),
-                },
-              ],
-            },
-            {
-              id: `zone-kind-${activeHtmlLayoutZone.id}`,
-              kind: "readonly",
-              label: "Zone kind",
-              value: activeHtmlLayoutZone.kind,
-            },
-            {
-              id: `zone-split-${activeHtmlLayoutZone.id}`,
-              kind: "readonly",
-              label: "Current split",
-              value: `${Math.round(activeHtmlLayoutZone.splitPercent)}% / ${100 - Math.round(activeHtmlLayoutZone.splitPercent)}%`,
-            },
-            {
-              id: `zone-layout-note-${activeHtmlLayoutZone.id}`,
-              kind: "readonly",
-              label: "How to edit",
-              value:
-                "Use the divider handle on the canvas to rebalance this layout zone. The side panel no longer owns layout dragging.",
-            },
-          ],
-        },
-      ],
-    };
-  }, [activeHtmlLayoutZone, extractSelectionAsModule, pageInspectorSchema]);
-
   const inspectorSchema = useMemo(() => {
     if (shell.inspectorTab === "text") {
       return textInspectorSchema;
@@ -2630,12 +2649,8 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
     if (shell.inspectorTab === "visual") {
       return visualInspectorSchema;
     }
-    if (shell.inspectorTab === "layout") {
-      return layoutInspectorSchema;
-    }
     return pageInspectorSchema;
   }, [
-    layoutInspectorSchema,
     pageInspectorSchema,
     shell.inspectorTab,
     textInspectorSchema,
@@ -2647,6 +2662,15 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
     () => (shell.canvasDrawer && shell.canvasDrawer !== "pages" ? shell.canvasDrawer : shell.inspectorTab),
     [shell.canvasDrawer, shell.inspectorTab],
   );
+  const preferredHtmlSelectionType = useMemo(() => {
+    if (activeSidebarTab === "text") {
+      return "text" as const;
+    }
+    if (activeSidebarTab === "visual") {
+      return "visual" as const;
+    }
+    return "page" as const;
+  }, [activeSidebarTab]);
   const activeSidebarTitle = useMemo(() => {
     if (activeSidebarTab === "history") {
       return "History";
@@ -2659,9 +2683,6 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
     }
     if (activeSidebarTab === "visual") {
       return "Visual";
-    }
-    if (activeSidebarTab === "layout") {
-      return "Layout";
     }
     return "Page";
   }, [activeSidebarTab]);
@@ -2852,7 +2873,12 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                               <button
                                 key={option.resolution}
                                 type="button"
-                                onClick={() => void handleLongFormClarificationChoice(option.resolution)}
+                                onClick={() =>
+                                  runAsyncAction(
+                                    handleLongFormClarificationChoice(option.resolution),
+                                    "Studio could not update the requested deck length.",
+                                  )
+                                }
                                 disabled={brief.isGeneratingReport || streamUi.isStreaming || isDeckReviewLocked}
                                 className="inline-flex items-center rounded-full border border-[var(--studio-line)] bg-[rgba(255,255,255,0.03)] px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--studio-ink)] transition hover:border-[rgba(0,242,255,0.28)] hover:bg-[rgba(0,242,255,0.08)] disabled:cursor-not-allowed disabled:opacity-40"
                               >
@@ -2959,7 +2985,12 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                     ) : null}
                     <button
                       type="button"
-                      onClick={() => void continueConversation(chatInput)}
+                      onClick={() =>
+                        runAsyncAction(
+                          continueConversation(chatInput),
+                          "Studio could not continue the conversation.",
+                        )
+                      }
                       disabled={!chatInput.trim() || brief.isGeneratingReport || isDeckReviewLocked}
                       className="inline-flex items-center gap-2 rounded-full border border-[rgba(0,242,255,0.35)] bg-[rgba(0,242,255,0.1)] px-5 py-2.5 text-[12px] font-semibold uppercase tracking-[0.18em] text-[var(--studio-ink)] transition hover:bg-[rgba(0,242,255,0.16)] disabled:cursor-not-allowed disabled:opacity-40"
                     >
@@ -3022,7 +3053,10 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                         type="button"
                         onClick={() => {
                           resetStreamUi();
-                          void regenerateReportContent();
+                          runAsyncAction(
+                            regenerateReportContent(),
+                            "Studio could not retry the generation.",
+                          );
                         }}
                         className={toolbarButtonClass}
                       >
@@ -3145,7 +3179,12 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                       </select>
                       <button
                         type="button"
-                        onClick={() => void handleApplySelectedStarterTheme()}
+                        onClick={() =>
+                          runAsyncAction(
+                            handleApplySelectedStarterTheme(),
+                            "Studio could not apply the selected starter theme.",
+                          )
+                        }
                         className={toolbarButtonClass}
                         disabled={isDeckReviewLocked}
                       >
@@ -3185,7 +3224,10 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                               type="button"
                               onClick={() => {
                                 setCanvasMoreOpen(false);
-                                void regenerateReportContent();
+                                runAsyncAction(
+                                  regenerateReportContent(),
+                                  "Studio could not regenerate the report.",
+                                );
                               }}
                               disabled={brief.isGeneratingReport || isDeckReviewLocked}
                               className="flex h-9 w-full items-center px-3 text-left text-[12px] text-[var(--studio-ink)] transition hover:bg-[rgba(255,255,255,0.04)] disabled:cursor-not-allowed disabled:opacity-40"
@@ -3196,7 +3238,10 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                               type="button"
                               onClick={() => {
                                 setCanvasMoreOpen(false);
-                                void handleRegenerateWithSelectedStarter();
+                                runAsyncAction(
+                                  handleRegenerateWithSelectedStarter(),
+                                  "Studio could not regenerate with the selected starter.",
+                                );
                               }}
                               disabled={brief.isGeneratingReport || isDeckReviewLocked}
                               className="flex h-9 w-full items-center px-3 text-left text-[12px] text-[var(--studio-ink)] transition hover:bg-[rgba(255,255,255,0.04)] disabled:cursor-not-allowed disabled:opacity-40"
@@ -3207,7 +3252,10 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                               type="button"
                               onClick={() => {
                                 setCanvasMoreOpen(false);
-                                void openPublishedReport();
+                                runAsyncAction(
+                                  openPublishedReport(),
+                                  "Studio could not open the published report.",
+                                );
                               }}
                               className="flex h-9 w-full items-center px-3 text-left text-[12px] text-[var(--studio-ink)] transition hover:bg-[rgba(255,255,255,0.04)]"
                             >
@@ -3217,7 +3265,10 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                               type="button"
                               onClick={() => {
                                 setCanvasMoreOpen(false);
-                                void downloadCurrentHtml();
+                                runAsyncAction(
+                                  downloadCurrentHtml(),
+                                  "Studio could not export the HTML report.",
+                                );
                               }}
                               data-testid="action-export-html"
                               disabled={!generatedHtmlReport}
@@ -3229,7 +3280,10 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                               type="button"
                               onClick={() => {
                                 setCanvasMoreOpen(false);
-                                void downloadCurrentPptx();
+                                runAsyncAction(
+                                  downloadCurrentPptx(),
+                                  "Studio could not export the PPTX file.",
+                                );
                               }}
                               data-testid="action-export-pptx"
                               disabled={!generatedHtmlReport}
@@ -3315,10 +3369,12 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                       rootId="studio-main"
                       htmlReport={generatedHtmlReport}
                       mode="immersive"
-                      selectedHtmlPageNumber={currentCanvasPageNumber}
+                      selectedHtmlPageNumber={selectedCanvasPageNumber}
                       selectedHtmlBlockId={selection.selectedHtmlBlockId}
+                      selectedHtmlBlockTransform={activeHtmlBlockCanvasTransform}
                       selectedHtmlVisualNodeId={selection.selectedVisualNodeId}
-                      selectedHtmlLayoutZoneId={selection.selectedLayoutZoneId}
+                      selectedHtmlVisualTransform={activeHtmlVisualCanvasTransform}
+                      preferredHtmlSelectionType={preferredHtmlSelectionType}
                       onSelectHtmlBlock={isDeckReviewLocked ? undefined : selectHtmlBlock}
                       onSelectHtmlVisualNode={
                         isDeckReviewLocked
@@ -3326,13 +3382,6 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                           : (pageNumber, nodeId, _kind) =>
                               selectVisualNode(pageNumber, nodeId)
                       }
-                      onSelectHtmlLayoutZone={
-                        isDeckReviewLocked
-                          ? undefined
-                          : (pageNumber, zoneId, _kind: HtmlLayoutZoneKind) =>
-                              selectLayoutZone(pageNumber, zoneId)
-                      }
-                      onCommitHtmlLayoutZone={isDeckReviewLocked ? undefined : commitHtmlLayoutZone}
                       onQuickEditHtmlBlock={
                         isDeckReviewLocked
                           ? undefined
@@ -3349,12 +3398,50 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                               updateHtmlBlockTransformOnPage(pageNumber, blockId, frame, fontSize);
                             }
                       }
+                      onReturnHtmlBlockToFlow={
+                        isDeckReviewLocked
+                          ? undefined
+                          : (pageNumber, blockId) => {
+                              selectHtmlBlock(pageNumber, blockId);
+                              returnHtmlBlockToFlow(pageNumber, blockId);
+                            }
+                      }
                       onCommitHtmlVisualTransform={
                         isDeckReviewLocked
                           ? undefined
                           : (pageNumber, nodeId, frame) => {
                               selectVisualNode(pageNumber, nodeId);
                               updateHtmlVisualTransformOnPage(pageNumber, nodeId, frame);
+                            }
+                      }
+                      onReturnHtmlVisualToFlow={
+                        isDeckReviewLocked
+                          ? undefined
+                          : (pageNumber, nodeId) => {
+                              selectVisualNode(pageNumber, nodeId);
+                              returnHtmlVisualToFlow(pageNumber, nodeId);
+                            }
+                      }
+                      onShiftHtmlBlockLayer={
+                        isDeckReviewLocked
+                          ? undefined
+                          : (pageNumber, blockId, direction, frame, fontSize) => {
+                              selectHtmlBlock(pageNumber, blockId);
+                              shiftHtmlBlockCanvasLayer(
+                                pageNumber,
+                                blockId,
+                                direction,
+                                frame,
+                                fontSize,
+                              );
+                            }
+                      }
+                      onShiftHtmlVisualLayer={
+                        isDeckReviewLocked
+                          ? undefined
+                          : (pageNumber, nodeId, direction, frame) => {
+                              selectVisualNode(pageNumber, nodeId);
+                              shiftHtmlVisualCanvasLayer(pageNumber, nodeId, direction, frame);
                             }
                       }
                       onHtmlPageOverflow={handleHtmlPageOverflow}
@@ -3412,7 +3499,12 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                         {currentPageMeasurement ? (
                           <button
                             type="button"
-                            onClick={() => void optimizeCurrentPage()}
+                            onClick={() =>
+                              runAsyncAction(
+                                optimizeCurrentPage(),
+                                "Studio could not optimize the current page.",
+                              )
+                            }
                             data-testid="optimize-current-page"
                             className="border border-[rgba(0,242,255,0.28)] bg-[rgba(5,9,11,0.9)] px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--studio-ink)] transition hover:bg-[rgba(8,15,18,0.96)] disabled:cursor-not-allowed disabled:opacity-45"
                           >
@@ -3433,14 +3525,19 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                       </div>
                       <div className="mt-3 text-[14px] leading-7 text-[var(--studio-muted-strong)]">
                         Once the first HTML report lands, this area becomes the full PPT canvas with
-                        text, visual, and layout editing.
+                        text and visual editing.
                       </div>
                       <div className="mt-5 inline-flex items-center border border-[rgba(0,242,255,0.22)] bg-[rgba(0,242,255,0.06)] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--studio-ink)]">
                         {describeHtmlOutputMode(resolvedHtmlOutputMode)}
                       </div>
                       <button
                         type="button"
-                        onClick={() => void continueConversation()}
+                        onClick={() =>
+                          runAsyncAction(
+                            continueConversation(),
+                            "Studio could not generate the first draft.",
+                          )
+                        }
                         disabled={!project.sourceText.trim() || brief.isGeneratingReport}
                         className="mt-6 inline-flex items-center gap-2 border border-[rgba(0,242,255,0.35)] bg-[rgba(0,242,255,0.1)] px-5 py-2.5 text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--studio-ink)] transition hover:bg-[rgba(0,242,255,0.16)] disabled:cursor-not-allowed disabled:opacity-40"
                       >
@@ -3536,15 +3633,38 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                               Export
                             </div>
                             <div className="mt-3 flex flex-wrap gap-2">
-                              <button type="button" onClick={() => void copyProjectBundleJson()} className={sidebarActionClass}>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  runAsyncAction(
+                                    copyProjectBundleJson(),
+                                    "Studio could not copy the project bundle.",
+                                  )
+                                }
+                                className={sidebarActionClass}
+                              >
                                 Copy project bundle
                               </button>
-                              <button type="button" onClick={() => void copyWorkspaceBundleJson()} className={sidebarActionClass}>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  runAsyncAction(
+                                    copyWorkspaceBundleJson(),
+                                    "Studio could not copy the workspace bundle.",
+                                  )
+                                }
+                                className={sidebarActionClass}
+                              >
                                 Copy workspace bundle
                               </button>
                               <button
                                 type="button"
-                                onClick={() => void downloadCurrentHtml()}
+                                onClick={() =>
+                                  runAsyncAction(
+                                    downloadCurrentHtml(),
+                                    "Studio could not export the HTML report.",
+                                  )
+                                }
                                 data-testid="sidebar-export-html"
                                 disabled={!generatedHtmlReport}
                                 className={sidebarActionClass}
@@ -3553,14 +3673,28 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                               </button>
                               <button
                                 type="button"
-                                onClick={() => void downloadCurrentPptx()}
+                                onClick={() =>
+                                  runAsyncAction(
+                                    downloadCurrentPptx(),
+                                    "Studio could not export the PPTX file.",
+                                  )
+                                }
                                 data-testid="sidebar-export-pptx"
                                 disabled={!generatedHtmlReport}
                                 className={sidebarActionClass}
                               >
                                 Download PPTX
                               </button>
-                              <button type="button" onClick={() => void openPublishedReport()} className={sidebarActionClass}>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  runAsyncAction(
+                                    openPublishedReport(),
+                                    "Studio could not open the published report.",
+                                  )
+                                }
+                                className={sidebarActionClass}
+                              >
                                 Open published
                               </button>
                             </div>
@@ -3611,7 +3745,12 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                             <div className="mt-3">
                               <button
                                 type="button"
-                                onClick={() => void handleImportBundle()}
+                                onClick={() =>
+                                  runAsyncAction(
+                                    handleImportBundle(),
+                                    "Studio could not import the selected bundle.",
+                                  )
+                                }
                                 className={sidebarActionClass}
                               >
                                 Import bundle
@@ -3878,7 +4017,7 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                 ) : generatedHtmlReport ? (
                   <HtmlReportPageFilmstrip
                     htmlReport={generatedHtmlReport}
-                    selectedPageNumber={currentCanvasPageNumber}
+                    selectedPageNumber={selectedCanvasPageNumber}
                     overflowMap={selection.htmlPageOverflows}
                     onSelectPage={handleCanvasPageJump}
                   />

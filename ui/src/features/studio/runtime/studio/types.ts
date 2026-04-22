@@ -16,13 +16,12 @@ import type { WorkbenchAiSettings } from "@/features/studio/ai-settings";
 export type StudioMode = "library" | "brief" | "editor" | "author";
 export type StudioHomeSection = "library" | "ai" | "author";
 export type StudioEditView = "split" | "canvas";
-export type StudioInspectorTab = "page" | "text" | "visual" | "layout" | "history" | "export";
+export type StudioInspectorTab = "page" | "text" | "visual" | "history" | "export";
 export type StudioCanvasDrawer =
   | "pages"
   | "page"
   | "text"
   | "visual"
-  | "layout"
   | "history"
   | "export"
   | null;
@@ -34,7 +33,6 @@ export type StudioHistoryScope =
   | "pages"
   | "text"
   | "visual"
-  | "layout"
   | "workflow"
   | "generation";
 export type StudioLibraryView = "recent" | "all" | "published";
@@ -141,7 +139,6 @@ export type StudioSelectionState = {
   activePageId: string;
   selectedHtmlBlockId: string | null;
   selectedVisualNodeId: string | null;
-  selectedLayoutZoneId: string | null;
   htmlPageOverflows: Record<number, boolean>;
 };
 

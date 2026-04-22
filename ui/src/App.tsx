@@ -27,6 +27,9 @@ export function App() {
       <Route index element={<StudioShellPage />} />
       <Route path="templates" element={<StudioModuleLibraryPage />} />
       <Route path="templates/new" element={<StudioModuleAuthorPage />} />
+      <Route path="templates/packs/:packId" element={<Navigate to="/templates/new?import=1" replace />} />
+      <Route path="templates/legacy/new" element={<StudioModuleAuthorPage />} />
+      <Route path="templates/legacy/:moduleId/edit" element={<StudioModuleAuthorPage />} />
       <Route path="templates/:moduleId" element={<ModuleDetailRoute />} />
       <Route path="templates/:moduleId/edit" element={<StudioModuleAuthorPage />} />
       <Route path="modules" element={<StudioModuleLibraryPage />} />

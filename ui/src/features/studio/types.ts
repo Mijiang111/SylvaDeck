@@ -60,6 +60,7 @@ export type ModuleCanvasObjectKind =
   | "ellipse"
   | "line"
   | "text"
+  | "image"
   | "data"
   | "chart";
 export type ModuleFieldStrokeStyle = "solid" | "dashed";
@@ -201,6 +202,19 @@ export type ModuleTemplateField = {
   chartSpec?: {
     kind: ModuleChartKind;
   };
+  imageAsset?: ImportedSourceAssetRef;
+  imageFit?: "cover" | "contain";
+  importSource?: {
+    imported: true;
+    sourceFileName: string;
+    slideNumber: number;
+    sourceObjectId: string;
+    sourceObjectKind: ImportedSourceObjectKind;
+    reviewState?: "ready" | "needs-review";
+    reviewNote?: string;
+    sourceName?: string;
+    sourcePath?: string;
+  };
   style?: {
     fill?: string;
     stroke?: string;
@@ -331,7 +345,8 @@ export type PublishedTemplateDecorativeKind =
   | "rectangle"
   | "square"
   | "circle"
-  | "line";
+  | "line"
+  | "image";
 
 export type PublishedTemplateShape =
   | "page-template"
@@ -366,6 +381,8 @@ export type PublishedTemplateDecorativeManifest = {
   kind: PublishedTemplateDecorativeKind;
   role: string;
   geometry?: TemplateManifestGeometry;
+  asset?: ImportedSourceAssetRef;
+  fit?: "cover" | "contain";
   style?: {
     fill?: string;
     stroke?: string;
@@ -804,7 +821,7 @@ export type SlideSceneTextAlign = "left" | "center" | "right";
 export type SlideSceneDataLayout = "stack" | "grid-2" | "grid-4" | "row";
 export type SlideSceneDataAppearance = "plain" | "panel" | "stat" | "list";
 export type SlideSceneChartAppearance = "panel" | "minimal";
-export type SlideSceneObjectKind = Exclude<ModuleCanvasObjectKind, "slot">;
+export type SlideSceneObjectKind = Exclude<ModuleCanvasObjectKind, "slot" | "image">;
 
 export type SlideSceneBaseObject = {
   id: string;
@@ -1088,10 +1105,14 @@ export type HtmlCanvasFrame = {
   h: number;
 };
 
+export type HtmlCanvasLayer = "background" | "foreground";
+
 export type HtmlCanvasTransform = {
   mode: "flow" | "freeform";
   frame: HtmlCanvasFrame;
   fontSize?: number;
+  layer: HtmlCanvasLayer;
+  layerOrder: number;
   lockedByUser: true;
 };
 
@@ -1310,6 +1331,172 @@ export type CompositionPublishArtifact = {
   versionNote: string;
   publishedAt: string;
   publishedBy: string;
+};
+
+export type DeckTemplatePackId = string;
+export type PackPublishResult = "published" | "warning" | "blocked";
+export type ImportedSourceObjectKind =
+  | "text"
+  | "shape"
+  | "line"
+  | "image"
+  | "chart"
+  | "unsupported";
+export type ImportedSourceShapeKind = "rectangle" | "ellipse";
+export type ImportedSourceProvenance = {
+  slideRelId?: string;
+  slideObjectId?: string;
+  sourceName?: string;
+  sourcePath?: string;
+};
+export type ImportedSourceAssetRef = {
+  assetId: string;
+  mimeType: string;
+  size: number;
+  alt?: string;
+};
+export type ImportedSourceChartSeries = {
+  name?: string;
+  values: number[];
+  color?: string;
+};
+export type ImportedSourceObjectBase = {
+  id: string;
+  kind: ImportedSourceObjectKind;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  zIndex: number;
+  rotation?: number;
+  opacity?: number;
+  provenance?: ImportedSourceProvenance;
+};
+export type ImportedTextSourceObject = ImportedSourceObjectBase & {
+  kind: "text";
+  text: string;
+  fontSize?: number;
+  fontFamily?: string;
+  fontWeight?: number;
+  italic?: boolean;
+  align?: "left" | "center" | "right";
+  color?: string;
+  fill?: string;
+  stroke?: string;
+  strokeWidth?: number;
+  radius?: number;
+};
+export type ImportedShapeSourceObject = ImportedSourceObjectBase & {
+  kind: "shape";
+  shape: ImportedSourceShapeKind;
+  fill?: string;
+  stroke?: string;
+  strokeWidth?: number;
+  radius?: number;
+};
+export type ImportedLineSourceObject = ImportedSourceObjectBase & {
+  kind: "line";
+  stroke?: string;
+  strokeWidth?: number;
+};
+export type ImportedImageSourceObject = ImportedSourceObjectBase & {
+  kind: "image";
+  asset: ImportedSourceAssetRef;
+  fit?: "cover" | "contain";
+};
+export type ImportedChartSourceObject = ImportedSourceObjectBase & {
+  kind: "chart";
+  chartKind?: ModuleChartKind;
+  title?: string;
+  categories: string[];
+  series: ImportedSourceChartSeries[];
+};
+export type ImportedUnsupportedSourceObject = ImportedSourceObjectBase & {
+  kind: "unsupported";
+  label: string;
+  reason: string;
+};
+export type ImportedSourceObject =
+  | ImportedTextSourceObject
+  | ImportedShapeSourceObject
+  | ImportedLineSourceObject
+  | ImportedImageSourceObject
+  | ImportedChartSourceObject
+  | ImportedUnsupportedSourceObject;
+export type PackSemanticSlotKind = "ai-text" | "chart";
+export type PackSemanticSlotRole =
+  | "page-title"
+  | "body"
+  | "support"
+  | "caption"
+  | "chart"
+  | "metric";
+export type PackSemanticSlot = {
+  id: string;
+  kind: PackSemanticSlotKind;
+  label: string;
+  role: PackSemanticSlotRole;
+  sourceObjectIds: string[];
+  required: boolean;
+  canHide: boolean;
+  notes?: string;
+};
+export type PackSemanticDecoration = {
+  id: string;
+  label: string;
+  kind: "locked-text" | "shape" | "line" | "image" | "chart";
+  sourceObjectIds: string[];
+  locked: boolean;
+};
+export type PackImportWarning = {
+  id: string;
+  severity: "warning" | "blocking";
+  message: string;
+  sourceObjectIds: string[];
+};
+export type DeckTemplatePackPageRole =
+  | "cover"
+  | "section"
+  | "content"
+  | "chart"
+  | "closing";
+export type DeckTemplatePackPage = {
+  id: string;
+  pageNumber: number;
+  title: string;
+  background: string;
+  sourceObjects: ImportedSourceObject[];
+  semanticSlots: PackSemanticSlot[];
+  semanticDecorations: PackSemanticDecoration[];
+  unresolvedObjectIds: string[];
+  warnings: PackImportWarning[];
+  pageRole: DeckTemplatePackPageRole;
+  reusablePattern: string;
+  briefHint: string;
+  editableRule: "semantic-only" | "mixed";
+};
+export type PackPublishArtifact = {
+  id: string;
+  version: number;
+  packId: DeckTemplatePackId;
+  versionNote: string;
+  result: PackPublishResult;
+  pageCount: number;
+  blockingIssueCount: number;
+  warningCount: number;
+  publishedAt: string;
+  publishedBy: string;
+};
+export type DeckTemplatePack = {
+  id: DeckTemplatePackId;
+  label: string;
+  sourceFileName: string;
+  pageWidth: number;
+  pageHeight: number;
+  pages: DeckTemplatePackPage[];
+  publishArtifacts: PackPublishArtifact[];
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type ModuleAssetRecord = {
