@@ -55,6 +55,8 @@ export function WorkbenchStudioVirtualList<T>({
         {virtualizer.getVirtualItems().map((virtualItem) => (
           <div
             key={itemKey(items[virtualItem.index], virtualItem.index)}
+            data-index={virtualItem.index}
+            ref={virtualizer.measureElement}
             style={{
               left: 0,
               position: "absolute",
@@ -126,6 +128,8 @@ export function WorkbenchStudioVirtualRail<T>({
         {virtualizer.getVirtualItems().map((virtualItem) => (
           <div
             key={itemKey(items[virtualItem.index], virtualItem.index)}
+            data-index={virtualItem.index}
+            ref={virtualizer.measureElement}
             style={{
               left: 0,
               position: "absolute",

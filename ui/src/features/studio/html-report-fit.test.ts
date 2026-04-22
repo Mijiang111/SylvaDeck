@@ -4,6 +4,7 @@ import {
   applyShrinkToFitToReport,
   scaleInlineStyle,
   scalePxValue,
+  shouldScaleBoxPropertyForShrink,
 } from "./html-report-fit";
 
 test("scalePxValue scales px values and preserves non-px units", () => {
@@ -71,6 +72,41 @@ test("scaleInlineStyle floors border-width at 1px to prevent visual breakage", (
   const input = "border-width: 1px";
   const scaled = scaleInlineStyle(input, 0.5);
   assert.ok(scaled.includes("border-width: 1px"));
+});
+
+test("shrink skips page-root and absolute-position geometry scaling", () => {
+  assert.equal(
+    shouldScaleBoxPropertyForShrink({
+      prop: "width",
+      position: "static",
+      isPageRoot: true,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldScaleBoxPropertyForShrink({
+      prop: "left",
+      position: "absolute",
+      isPageRoot: false,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldScaleBoxPropertyForShrink({
+      prop: "width",
+      position: "absolute",
+      isPageRoot: false,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldScaleBoxPropertyForShrink({
+      prop: "border-width",
+      position: "absolute",
+      isPageRoot: false,
+    }),
+    true,
+  );
 });
 
 test("applyShrinkToFitToReport is a no-op when no browser DOM is available", async () => {

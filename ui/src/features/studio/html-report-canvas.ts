@@ -10,6 +10,7 @@ import type {
   HtmlVisualNode,
   HtmlVisualStructure,
 } from "./types";
+import { HTML_FIT_ROLE_ATTRIBUTE } from "./html-fit-role";
 
 export const HTML_REPORT_PAGE_WIDTH = 1600;
 export const HTML_REPORT_PAGE_HEIGHT = 900;
@@ -757,8 +758,8 @@ function findCanvasTargetElement(args: {
   const matches = Array.from(args.pageElement.querySelectorAll(selector)).filter(
     (element): element is HTMLElement =>
       element instanceof HTMLElement &&
-      element.getAttribute("data-html-canvas-placeholder") !== "true" &&
-      element.getAttribute("data-html-transform-preview-placeholder") !== "true",
+      !element.closest("[data-html-canvas-placeholder='true']") &&
+      !element.closest("[data-html-transform-preview-placeholder='true']"),
   );
   if (matches.length === 0) {
     return null;
@@ -803,21 +804,27 @@ function ensureFreeformOverlayRoot(pageElement: HTMLElement, layer: HtmlCanvasLa
 }
 
 function stripCanvasSemanticAttributes(element: HTMLElement) {
-  element.removeAttribute("id");
-  element.removeAttribute("data-html-block-id");
-  element.removeAttribute("data-html-block-kind");
-  element.removeAttribute("data-html-visual-id");
-  element.removeAttribute("data-html-visual-kind");
-  element.removeAttribute("data-html-freeform");
-  element.removeAttribute("data-html-canvas-target");
-  element.removeAttribute("data-html-canvas-source-id");
-  element.removeAttribute("data-html-canvas-layer");
-  element.removeAttribute("data-html-canvas-layer-order");
-  element.removeAttribute("data-html-freeform-font-size");
-  element.removeAttribute("data-html-block-selected");
-  element.removeAttribute("data-html-visual-selected");
-  element.removeAttribute("data-html-transform-preview");
-  element.removeAttribute("data-html-transform-preview-placeholder");
+  [element, ...Array.from(element.querySelectorAll<HTMLElement>("*"))].forEach((node) => {
+    node.removeAttribute("id");
+    node.removeAttribute(HTML_FIT_ROLE_ATTRIBUTE);
+    node.removeAttribute("data-html-block-id");
+    node.removeAttribute("data-html-block-kind");
+    node.removeAttribute("data-html-visual-id");
+    node.removeAttribute("data-html-visual-kind");
+    node.removeAttribute("data-html-freeform");
+    node.removeAttribute("data-html-canvas-target");
+    node.removeAttribute("data-html-canvas-source-id");
+    node.removeAttribute("data-html-canvas-layer");
+    node.removeAttribute("data-html-canvas-layer-order");
+    node.removeAttribute("data-html-freeform-font-size");
+    node.removeAttribute("data-html-block-selected");
+    node.removeAttribute("data-html-visual-selected");
+    node.removeAttribute("data-html-transform-preview");
+    node.removeAttribute("data-html-transform-preview-placeholder");
+    node.removeAttribute("data-html-canvas-placeholder");
+    node.removeAttribute("data-html-canvas-placeholder-for");
+    node.removeAttribute("data-html-canvas-placeholder-target");
+  });
 }
 
 function createCanvasPlaceholder(args: {

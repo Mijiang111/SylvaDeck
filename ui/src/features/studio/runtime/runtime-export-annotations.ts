@@ -475,12 +475,14 @@ function buildHtmlReportPageDocument(
   const serializedPageContentVisualKinds = serializeInlineScriptValue(
     PREVIEW_PAGE_CONTENT_VISUAL_KINDS,
   );
+  const serializedFitRoleAttribute = serializeInlineScriptValue(HTML_FIT_ROLE_ATTRIBUTE);
   const previewScript = previewDocument.createElement("script");
   previewScript.textContent = String.raw`
     (() => {
       const normalize = (value) => (value || "").replace(/\s+/g, " ").trim();
       const normalizeFitParticipation = (value) =>
         value === "content" || value === "decorative" ? value : null;
+      const fitRoleAttribute = ${serializedFitRoleAttribute};
       let activeTransformPreview = null;
       const animationModeEnabled = ${animationPreviewEnabled ? "true" : "false"};
       const previewAnimationPage = ${serializedAnimationPage};
@@ -560,7 +562,7 @@ function buildHtmlReportPageDocument(
         const linkedVisualNodeId = blockElement.getAttribute("data-html-visual-id");
         const linkedVisualKind = blockElement.getAttribute("data-html-visual-kind");
         const linkedVisualFitParticipation = normalizeFitParticipation(
-          blockElement.getAttribute("${HTML_FIT_ROLE_ATTRIBUTE}"),
+          blockElement.getAttribute(fitRoleAttribute),
         );
         const sharesSource = Boolean(linkedVisualNodeId);
 
@@ -1163,8 +1165,8 @@ function buildHtmlReportPageDocument(
         const matches = Array.from(document.querySelectorAll(selector)).filter(
           (element) =>
             element instanceof HTMLElement &&
-            element.getAttribute("data-html-canvas-placeholder") !== "true" &&
-            element.getAttribute("data-html-transform-preview-placeholder") !== "true",
+            !element.closest("[data-html-canvas-placeholder='true']") &&
+            !element.closest("[data-html-transform-preview-placeholder='true']"),
         );
         if (matches.length === 0) {
           return null;
@@ -1222,21 +1224,31 @@ function buildHtmlReportPageDocument(
           return;
         }
 
-        element.removeAttribute("id");
-        element.removeAttribute("data-html-block-id");
-        element.removeAttribute("data-html-block-kind");
-        element.removeAttribute("data-html-visual-id");
-        element.removeAttribute("data-html-visual-kind");
-        element.removeAttribute("data-html-freeform");
-        element.removeAttribute("data-html-canvas-target");
-        element.removeAttribute("data-html-canvas-source-id");
-        element.removeAttribute("data-html-canvas-layer");
-        element.removeAttribute("data-html-canvas-layer-order");
-        element.removeAttribute("data-html-freeform-font-size");
-        element.removeAttribute("data-html-block-selected");
-        element.removeAttribute("data-html-visual-selected");
-        element.removeAttribute("data-html-transform-preview");
-        element.removeAttribute("data-html-transform-preview-placeholder");
+        [element, ...Array.from(element.querySelectorAll("*"))].forEach((node) => {
+          if (!(node instanceof HTMLElement)) {
+            return;
+          }
+
+          node.removeAttribute("id");
+          node.removeAttribute(fitRoleAttribute);
+          node.removeAttribute("data-html-block-id");
+          node.removeAttribute("data-html-block-kind");
+          node.removeAttribute("data-html-visual-id");
+          node.removeAttribute("data-html-visual-kind");
+          node.removeAttribute("data-html-freeform");
+          node.removeAttribute("data-html-canvas-target");
+          node.removeAttribute("data-html-canvas-source-id");
+          node.removeAttribute("data-html-canvas-layer");
+          node.removeAttribute("data-html-canvas-layer-order");
+          node.removeAttribute("data-html-freeform-font-size");
+          node.removeAttribute("data-html-block-selected");
+          node.removeAttribute("data-html-visual-selected");
+          node.removeAttribute("data-html-transform-preview");
+          node.removeAttribute("data-html-transform-preview-placeholder");
+          node.removeAttribute("data-html-canvas-placeholder");
+          node.removeAttribute("data-html-canvas-placeholder-for");
+          node.removeAttribute("data-html-canvas-placeholder-target");
+        });
       }
 
       function createTransformPreviewPlaceholder(sourceElement, targetType, targetId) {
@@ -1488,8 +1500,8 @@ function buildHtmlReportPageDocument(
             }
 
             const isPlaceholder =
-              current.getAttribute("data-html-canvas-placeholder") === "true" ||
-              current.getAttribute("data-html-transform-preview-placeholder") === "true" ||
+              current.closest("[data-html-canvas-placeholder='true']") ||
+              current.closest("[data-html-transform-preview-placeholder='true']") ||
               current.getAttribute("data-html-transform-preview") === "true";
             if (isPlaceholder) {
               current = current.parentElement;
@@ -1500,7 +1512,7 @@ function buildHtmlReportPageDocument(
             const rect = current.getBoundingClientRect();
             const area = Math.max(1, rect.width * rect.height);
             const fitParticipation = normalizeFitParticipation(
-              current.getAttribute("${HTML_FIT_ROLE_ATTRIBUTE}"),
+              current.getAttribute(fitRoleAttribute),
             );
 
             const blockId = current.getAttribute("data-html-block-id");
@@ -1607,7 +1619,7 @@ function buildHtmlReportPageDocument(
         const linkedVisualNodeId = blockElement.getAttribute("data-html-visual-id");
         const linkedVisualKind = blockElement.getAttribute("data-html-visual-kind");
         const linkedVisualFitParticipation = normalizeFitParticipation(
-          blockElement.getAttribute("${HTML_FIT_ROLE_ATTRIBUTE}"),
+          blockElement.getAttribute(fitRoleAttribute),
         );
         const sharesSource = Boolean(linkedVisualNodeId);
         const sizingBehavior = resolveBlockSizingBehavior(blockCandidate, blockElement);
@@ -1889,7 +1901,7 @@ function buildHtmlReportPageDocument(
             visualKind,
             selector,
             textPreview,
-            fitRole: element.getAttribute("${HTML_FIT_ROLE_ATTRIBUTE}") || "",
+            fitRole: element.getAttribute(fitRoleAttribute) || "",
             top: relativeTop,
             left: relativeLeft,
             width,
@@ -1903,15 +1915,15 @@ function buildHtmlReportPageDocument(
 
         function collectFitContentElements() {
           return Array.from(
-            pageRoot.querySelectorAll("[${HTML_FIT_ROLE_ATTRIBUTE}='content']"),
+            pageRoot.querySelectorAll("[" + fitRoleAttribute + "='content']"),
           ).filter((element) => {
             if (!(element instanceof HTMLElement)) {
               return false;
             }
 
             const isPlaceholder =
-              element.getAttribute("data-html-canvas-placeholder") === "true" ||
-              element.getAttribute("data-html-transform-preview-placeholder") === "true";
+              element.closest("[data-html-canvas-placeholder='true']") ||
+              element.closest("[data-html-transform-preview-placeholder='true']");
             if (isPlaceholder) {
               return false;
             }

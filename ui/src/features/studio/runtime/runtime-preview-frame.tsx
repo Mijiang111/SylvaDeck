@@ -74,10 +74,6 @@ type PreviewTransformSession = {
   anchorY: number;
 };
 
-const SELECTION_MOVE_GRIP_MIN_WIDTH = 52;
-const SELECTION_MOVE_GRIP_MAX_WIDTH = 92;
-const SELECTION_MOVE_GRIP_HEIGHT = 20;
-
 function isDomHTMLElement(value: unknown): value is HTMLElement {
   return Boolean(
     value &&
@@ -182,8 +178,8 @@ function findPreviewSemanticElement(args: {
   const matches = Array.from(args.document.querySelectorAll(selector)).filter(
     (element): element is HTMLElement =>
       isDomHTMLElement(element) &&
-      element.getAttribute("data-html-canvas-placeholder") !== "true" &&
-      element.getAttribute("data-html-transform-preview-placeholder") !== "true",
+      !element.closest("[data-html-canvas-placeholder='true']") &&
+      !element.closest("[data-html-transform-preview-placeholder='true']"),
   );
   if (matches.length === 0) {
     return null;
@@ -213,23 +209,6 @@ function scaleFrameToPreviewRect(frame: HtmlCanvasFrame, previewScale: number) {
     left: frame.x * previewScale,
     width: frame.w * previewScale,
     height: frame.h * previewScale,
-  };
-}
-
-function buildSelectionMoveGripStyle(args: {
-  frame: HtmlCanvasFrame;
-  previewScale: number;
-}) {
-  const width = args.frame.w * args.previewScale;
-  const gripWidth = Math.max(
-    SELECTION_MOVE_GRIP_MIN_WIDTH,
-    Math.min(SELECTION_MOVE_GRIP_MAX_WIDTH, width * 0.36),
-  );
-  return {
-    top: "-12px",
-    left: `${Math.max(8, (width - gripWidth) / 2)}px`,
-    width: `${gripWidth}px`,
-    height: `${SELECTION_MOVE_GRIP_HEIGHT}px`,
   };
 }
 
@@ -1273,6 +1252,19 @@ function HtmlReportPreviewFrame({
 
     const commitTransform = () => {
       flushPendingTransformPreview();
+      const frameChanged =
+        finalFrame.x !== transformSession.initialFrame.x ||
+        finalFrame.y !== transformSession.initialFrame.y ||
+        finalFrame.w !== transformSession.initialFrame.w ||
+        finalFrame.h !== transformSession.initialFrame.h;
+      const fontSizeChanged =
+        (finalFontSize ?? null) !== (transformSession.initialFontSize ?? null);
+
+      if (!frameChanged && !fontSizeChanged) {
+        queueTransformCancel("selected");
+        return;
+      }
+
       releaseTransformPointerCapture(transformSession.pointerId);
       postPreviewCommand({
         action: "transform-preview-commit",
@@ -1571,28 +1563,41 @@ function HtmlReportPreviewFrame({
     const top = selectionChrome.frame.y * previewScale;
     const left = selectionChrome.frame.x * previewScale;
     const width = selectionChrome.frame.w * previewScale;
-    const toolbarTop = top > 42 ? top - 38 : Math.min(scaledHeight - 34, top + 6);
-    const toolbarLeft = Math.max(8, Math.min(left, scaledWidth - 340));
+    const hasReturnAction = Boolean(
+      selectionChrome.target === "block" ? selectedBlockTransform : selectedVisualTransform,
+    );
+    const toolbarWidth =
+      selectionChrome.target === "block"
+        ? hasReturnAction
+          ? 184
+          : 142
+        : hasReturnAction
+          ? 154
+          : 112;
+    const toolbarHeight = 24;
+    const toolbarTop =
+      top > toolbarHeight + 6
+        ? top - toolbarHeight - 2
+        : Math.min(scaledHeight - toolbarHeight - 6, top + 4);
+    const toolbarLeft = Math.max(
+      8,
+      Math.min(left + width - toolbarWidth, scaledWidth - toolbarWidth - 6),
+    );
 
     return {
       top: `${toolbarTop}px`,
       left: `${toolbarLeft}px`,
-      maxWidth: `${Math.max(200, Math.min(width + 140, 340))}px`,
+      width: `${toolbarWidth}px`,
+      minHeight: `${toolbarHeight}px`,
     };
-  }, [previewScale, scaledHeight, scaledWidth, selectionChrome]);
-
-  const blockMoveGripStyle = useMemo(
-    () =>
-      activeBlockFrame ? buildSelectionMoveGripStyle({ frame: activeBlockFrame.frame, previewScale }) : null,
-    [activeBlockFrame, previewScale],
-  );
-  const visualMoveGripStyle = useMemo(
-    () =>
-      activeVisualFrame
-        ? buildSelectionMoveGripStyle({ frame: activeVisualFrame.frame, previewScale })
-        : null,
-    [activeVisualFrame, previewScale],
-  );
+  }, [
+    previewScale,
+    scaledHeight,
+    scaledWidth,
+    selectionChrome,
+    selectedBlockTransform,
+    selectedVisualTransform,
+  ]);
 
   function handleReturnToFlow() {
     if (selectionChrome?.target === "block" && selectedBlockId && selectedBlockTransform) {
@@ -1629,7 +1634,19 @@ function HtmlReportPreviewFrame({
     }
   }
 
-  function handleSelectedBlockFrameClick(event: ReactMouseEvent<HTMLDivElement>) {
+  function handleSelectedBlockFramePointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if (interactionMode === "editing-text") {
+      return;
+    }
+
+    if (event.target !== event.currentTarget) {
+      return;
+    }
+
+    beginTransformInteraction("block", "move", event);
+  }
+
+  function handleSelectedBlockFrameDoubleClick(event: ReactMouseEvent<HTMLDivElement>) {
     if (interactionMode === "editing-text") {
       return;
     }
@@ -1642,7 +1659,28 @@ function HtmlReportPreviewFrame({
     openQuickEditorForActiveSelection();
   }
 
+  function handleSelectedVisualFramePointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if (interactionMode === "editing-text") {
+      return;
+    }
+
+    if (event.target !== event.currentTarget) {
+      return;
+    }
+
+    beginTransformInteraction("visual", "move", event);
+  }
+
   const isTransforming = Boolean(transformSession);
+  const selectionChromeHasReturnAction = Boolean(
+    selectionChrome &&
+      (selectionChrome.target === "block" ? selectedBlockTransform : selectedVisualTransform),
+  );
+  const selectionToolbarButtonClass =
+    "h-6 px-2 text-[8px] font-medium tracking-[0.02em] text-[#183746] transition-colors hover:bg-[rgba(15,23,31,0.05)]";
+  const selectionToolbarSeparatedButtonClass = `${selectionToolbarButtonClass} border-l border-[rgba(15,23,31,0.11)]`;
+  const selectionToolbarHasLeadingAction =
+    selectionChrome?.target === "block" || selectionChromeHasReturnAction;
 
   return (
     <div
@@ -1677,7 +1715,7 @@ function HtmlReportPreviewFrame({
       {selectionChrome && selectionToolbarStyle && interactionMode !== "editing-text" ? (
         <div
           data-testid={`preview-selection-toolbar-${pagePreview.pageNumber}`}
-          className="absolute z-[12] flex items-center gap-1 rounded-full border border-[rgba(15,23,31,0.18)] bg-[rgba(255,255,255,0.92)] px-1.5 py-1 shadow-[0_10px_24px_rgba(15,23,31,0.14)] backdrop-blur-sm"
+          className="absolute z-[12] inline-flex items-stretch overflow-hidden border border-[rgba(15,23,31,0.18)] bg-[rgba(248,247,244,0.98)] shadow-[0_3px_10px_rgba(15,23,31,0.08)] backdrop-blur-sm"
           style={selectionToolbarStyle}
           onClick={(event) => event.stopPropagation()}
         >
@@ -1685,33 +1723,41 @@ function HtmlReportPreviewFrame({
             <button
               type="button"
               onClick={() => openQuickEditorForActiveSelection()}
-              className="rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#173748] transition hover:bg-[rgba(15,23,31,0.08)]"
+              className={selectionToolbarButtonClass}
             >
               Edit
             </button>
           ) : null}
-          {(selectionChrome.target === "block" ? selectedBlockTransform : selectedVisualTransform) ? (
+          {selectionChromeHasReturnAction ? (
             <button
               type="button"
               onClick={handleReturnToFlow}
-              className="rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#50626d] transition hover:bg-[rgba(15,23,31,0.08)]"
+              className={
+                selectionChrome.target === "block"
+                  ? selectionToolbarSeparatedButtonClass
+                  : selectionToolbarButtonClass
+              }
             >
-              Return to flow
+              Return
             </button>
           ) : null}
           <button
             type="button"
             onClick={() => handleShiftLayer("forward")}
-            className="rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#173748] transition hover:bg-[rgba(15,23,31,0.08)]"
+            className={
+              selectionToolbarHasLeadingAction
+                ? selectionToolbarSeparatedButtonClass
+                : selectionToolbarButtonClass
+            }
           >
-            Bring forward
+            Forward
           </button>
           <button
             type="button"
             onClick={() => handleShiftLayer("backward")}
-            className="rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#173748] transition hover:bg-[rgba(15,23,31,0.08)]"
+            className={selectionToolbarSeparatedButtonClass}
           >
-            Send backward
+            Backward
           </button>
         </div>
       ) : null}
@@ -1720,12 +1766,13 @@ function HtmlReportPreviewFrame({
         <div
           data-testid={`preview-selection-block-frame-${pagePreview.pageNumber}`}
           className={[
-            "pointer-events-auto absolute z-[10] rounded-[12px] border",
+            "pointer-events-auto absolute z-[10] cursor-move rounded-[8px] border-[1.5px]",
             isTransforming
-              ? "border-[rgba(0,242,255,0.82)] bg-[rgba(0,242,255,0.08)]"
-              : "border-[rgba(0,242,255,0.46)] bg-[rgba(0,242,255,0.03)]",
+              ? "border-[rgba(10,196,214,0.96)] bg-[rgba(10,196,214,0.10)] shadow-[0_0_0_1px_rgba(255,255,255,0.58),0_0_20px_rgba(10,196,214,0.16)]"
+              : "border-[rgba(10,196,214,0.82)] bg-[rgba(10,196,214,0.04)] shadow-[0_0_0_1px_rgba(255,255,255,0.42)]",
           ].join(" ")}
-          onClick={handleSelectedBlockFrameClick}
+          onPointerDown={handleSelectedBlockFramePointerDown}
+          onDoubleClick={handleSelectedBlockFrameDoubleClick}
           style={{
             top: `${activeBlockFrame.frame.y * previewScale}px`,
             left: `${activeBlockFrame.frame.x * previewScale}px`,
@@ -1733,18 +1780,6 @@ function HtmlReportPreviewFrame({
             height: `${activeBlockFrame.frame.h * previewScale}px`,
           }}
         >
-          {interactionMode !== "editing-text" ? (
-            <button
-              type="button"
-              onPointerDown={(event) => beginTransformInteraction("block", "move", event)}
-              data-testid={`preview-move-block-${pagePreview.pageNumber}`}
-              className="pointer-events-auto absolute inline-flex cursor-move items-center justify-center rounded-full border border-[rgba(0,242,255,0.58)] bg-[rgba(10,27,34,0.82)] text-[8px] font-semibold uppercase tracking-[0.22em] text-[rgba(235,252,255,0.94)] shadow-[0_8px_18px_rgba(0,0,0,0.22)]"
-              style={blockMoveGripStyle ?? undefined}
-              aria-label="Move text block"
-            >
-              Move
-            </button>
-          ) : null}
           {interactionMode !== "editing-text"
             ? [
                 ["resize-nw", "-left-2 -top-2 cursor-nwse-resize"],
@@ -1764,7 +1799,7 @@ function HtmlReportPreviewFrame({
                   }
                   data-testid={`preview-resize-block-${mode}-${pagePreview.pageNumber}`}
                   className={[
-                    "pointer-events-auto absolute h-5 w-5 rounded-full border border-[rgba(0,242,255,0.92)] bg-white shadow-[0_0_14px_rgba(0,242,255,0.24)]",
+                    "pointer-events-auto absolute h-4 w-4 rounded-[2px] border border-[rgba(10,196,214,0.96)] bg-white shadow-[0_0_0_1px_rgba(255,255,255,0.9),0_2px_8px_rgba(10,196,214,0.18)]",
                     className,
                   ].join(" ")}
                   aria-label={`Resize text block ${mode}`}
@@ -1778,11 +1813,12 @@ function HtmlReportPreviewFrame({
         <div
           data-testid={`preview-selection-visual-frame-${pagePreview.pageNumber}`}
           className={[
-            "pointer-events-none absolute z-[10] rounded-[12px] border",
+            "pointer-events-auto absolute z-[10] cursor-move rounded-[4px] border border-dashed",
             isTransforming
-              ? "border-[rgba(255,255,255,0.82)] bg-[rgba(255,255,255,0.06)]"
-              : "border-[rgba(255,255,255,0.42)] bg-[rgba(255,255,255,0.02)]",
+              ? "border-[rgba(28,40,50,0.96)] bg-[rgba(28,40,50,0.08)] shadow-[0_0_0_1px_rgba(255,255,255,0.36)]"
+              : "border-[rgba(28,40,50,0.7)] bg-[rgba(28,40,50,0.03)] shadow-[0_0_0_1px_rgba(255,255,255,0.22)]",
           ].join(" ")}
+          onPointerDown={handleSelectedVisualFramePointerDown}
           style={{
             top: `${activeVisualFrame.frame.y * previewScale}px`,
             left: `${activeVisualFrame.frame.x * previewScale}px`,
@@ -1790,18 +1826,6 @@ function HtmlReportPreviewFrame({
             height: `${activeVisualFrame.frame.h * previewScale}px`,
           }}
         >
-          {interactionMode !== "editing-text" ? (
-            <button
-              type="button"
-              onPointerDown={(event) => beginTransformInteraction("visual", "move", event)}
-              data-testid={`preview-move-visual-${pagePreview.pageNumber}`}
-              className="pointer-events-auto absolute inline-flex cursor-move items-center justify-center rounded-full border border-white/52 bg-[rgba(15,23,32,0.88)] text-[8px] font-semibold uppercase tracking-[0.22em] text-[rgba(255,255,255,0.92)] shadow-[0_8px_18px_rgba(0,0,0,0.28)]"
-              style={visualMoveGripStyle ?? undefined}
-              aria-label="Move visual element"
-            >
-              Move
-            </button>
-          ) : null}
           {interactionMode !== "editing-text"
             ? [
                 ["resize-nw", "-left-2 -top-2 cursor-nwse-resize"],
@@ -1821,7 +1845,7 @@ function HtmlReportPreviewFrame({
                   }
                   data-testid={`preview-resize-visual-${mode}-${pagePreview.pageNumber}`}
                   className={[
-                    "pointer-events-auto absolute h-5 w-5 rounded-full border border-white bg-[#0f1720] shadow-[0_0_14px_rgba(0,0,0,0.34)]",
+                    "pointer-events-auto absolute h-4 w-4 rounded-none border border-[rgba(230,235,239,0.94)] bg-[#16232d] shadow-[0_2px_8px_rgba(0,0,0,0.26)]",
                     className,
                   ].join(" ")}
                   aria-label={`Resize visual element ${mode}`}

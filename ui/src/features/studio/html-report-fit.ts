@@ -84,6 +84,21 @@ const SCALABLE_BOX_PROPERTY_LIST = [
   "background-size",
   "background-position",
 ];
+const SCALABLE_GEOMETRY_BOX_PROPERTY_LIST = new Set([
+  "width",
+  "min-width",
+  "max-width",
+  "height",
+  "min-height",
+  "max-height",
+  "top",
+  "right",
+  "bottom",
+  "left",
+  "transform",
+  "background-size",
+  "background-position",
+]);
 
 const SCALABLE_SPACE_PROPERTIES = new Set(SCALABLE_SPACE_PROPERTY_LIST);
 const SCALABLE_TEXT_PROPERTIES = new Set(SCALABLE_TEXT_PROPERTY_LIST);
@@ -194,6 +209,34 @@ function resolveScalableVarName(prop: string): string | null {
   return null;
 }
 
+export function shouldScaleBoxPropertyForShrink(args: {
+  prop: string;
+  position?: string | null;
+  isPageRoot?: boolean;
+}) {
+  if (!SCALABLE_BOX_PROPERTIES.has(args.prop)) {
+    return false;
+  }
+
+  if (args.prop === "border-width") {
+    return true;
+  }
+
+  if (args.isPageRoot) {
+    return false;
+  }
+
+  const normalizedPosition = (args.position ?? "").trim().toLowerCase();
+  if (
+    (normalizedPosition === "absolute" || normalizedPosition === "fixed") &&
+    SCALABLE_GEOMETRY_BOX_PROPERTY_LIST.has(args.prop)
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
 function resolveScalableDeclarationValue(
   el: HTMLElement,
   prop: string,
@@ -227,8 +270,22 @@ function resolveScalableDeclarationValue(
 
 function preprocessElementStyles(el: HTMLElement): void {
   const inlineDeclarations = parseInlineStyleDeclarations(el.getAttribute("style"));
+  const computedPosition =
+    el.ownerDocument.defaultView?.getComputedStyle(el).position ?? el.style.position;
+  const isPageRoot = el.matches("section.page");
   const newDecls: string[] = [];
   for (const [prop, value] of inlineDeclarations) {
+    if (
+      SCALABLE_BOX_PROPERTIES.has(prop) &&
+      !shouldScaleBoxPropertyForShrink({
+        prop,
+        position: computedPosition,
+        isPageRoot,
+      })
+    ) {
+      newDecls.push(`${prop}: ${value}`);
+      continue;
+    }
     if (resolveScalableVarName(prop)) {
       continue;
     }
@@ -240,6 +297,16 @@ function preprocessElementStyles(el: HTMLElement): void {
     ...SCALABLE_TEXT_PROPERTY_LIST,
     ...SCALABLE_BOX_PROPERTY_LIST,
   ]) {
+    if (
+      SCALABLE_BOX_PROPERTIES.has(prop) &&
+      !shouldScaleBoxPropertyForShrink({
+        prop,
+        position: computedPosition,
+        isPageRoot,
+      })
+    ) {
+      continue;
+    }
     const value = resolveScalableDeclarationValue(el, prop, inlineDeclarations);
     const varName = resolveScalableVarName(prop);
     if (!value || !varName) {
@@ -305,8 +372,8 @@ function measurePageContentBounds(page: HTMLElement): PageContentBounds {
     page.querySelectorAll<HTMLElement>(`[${HTML_FIT_ROLE_ATTRIBUTE}="content"]`),
   ).filter((element) => {
     const isPlaceholder =
-      element.getAttribute("data-html-canvas-placeholder") === "true" ||
-      element.getAttribute("data-html-transform-preview-placeholder") === "true";
+      element.closest("[data-html-canvas-placeholder='true']") ||
+      element.closest("[data-html-transform-preview-placeholder='true']");
     if (isPlaceholder) {
       return false;
     }

@@ -72,7 +72,7 @@ test.describe("Studio stability quick gate", () => {
       throw new Error("Expected the selected block frame to have a bounding box.");
     }
 
-    await dragLocatorBy(page, page.getByTestId("preview-move-block-1"), 84, 42);
+    await dragLocatorBy(page, selectedBlockFrame, 84, 42);
 
     const blockBoxAfter = await selectedBlockFrame.boundingBox();
     if (!blockBoxAfter) {
@@ -101,7 +101,7 @@ test.describe("Studio stability quick gate", () => {
       throw new Error("Expected the selected visual frame to have a bounding box.");
     }
 
-    await dragLocatorBy(page, page.getByTestId("preview-move-visual-2"), 132, 56, {
+    await dragLocatorBy(page, selectedVisualFrame, 132, 56, {
       steps: 3,
     });
 
@@ -115,6 +115,18 @@ test.describe("Studio stability quick gate", () => {
     expect(Math.abs(visualBoxAfter.height - visualBoxBefore.height)).toBeLessThanOrEqual(2);
     await expect(page.getByTestId("preview-resize-visual-resize-se-2")).toBeVisible();
     await expect(pageTwoFrame.locator(`[data-html-visual-id="${chartVisualId}"]`)).toHaveCount(1);
+
+    const deleteNodeButton = page.getByTestId("inspector-action-delete-node");
+    const addNearbyModuleHeading = page.getByText("Add nearby module", { exact: true });
+    await expect(deleteNodeButton).toBeVisible();
+    await expect(addNearbyModuleHeading).toBeVisible();
+
+    const deleteNodeBox = await deleteNodeButton.boundingBox();
+    const addNearbyModuleBox = await addNearbyModuleHeading.boundingBox();
+    if (!deleteNodeBox || !addNearbyModuleBox) {
+      throw new Error("Expected the inspector controls to expose measurable layout boxes.");
+    }
+    expect(addNearbyModuleBox.y).toBeGreaterThan(deleteNodeBox.y + deleteNodeBox.height + 8);
   });
 
   test("@quick iframe title editing and decorative closing surfaces follow PPT-like selection flow", async ({ page }) => {
@@ -148,6 +160,26 @@ test.describe("Studio stability quick gate", () => {
     await expect(page.getByTestId("preview-selection-visual-frame-1")).toBeVisible({
       timeout: 10_000,
     });
+  });
+
+  test("@quick matrix shells and inner cards both stay editable without duplicate visual loss", async ({ page }) => {
+    const fixture = await installStudioFixtureRoutes(page, "matrix-nested-visual-selection");
+
+    await generateDeckFromPrompt(page, fixture.scenario.prompt);
+
+    const pageOneFrame = page
+      .locator('[data-ppt-report-root="studio-main"]')
+      .frameLocator('[data-testid="report-page-frame-1"]');
+    const matrixShell = pageOneFrame.locator(".matrix-shell").first();
+    const rightCard = pageOneFrame.locator(".matrix-card-top-right").first();
+    const leftCard = pageOneFrame.locator(".matrix-card-top-left").first();
+
+    await expect(matrixShell).toBeVisible();
+    await expect(rightCard).toBeVisible();
+    await expect(leftCard).toBeVisible();
+    await expect(matrixShell).toHaveAttribute("data-html-visual-id", /.+/);
+    await expect(rightCard).toHaveAttribute("data-html-visual-id", /.+/);
+    await expect(leftCard).toHaveAttribute("data-html-visual-id", /.+/);
   });
 
   test("@quick architecture words alone do not trigger 3D hero output", async ({ page }) => {

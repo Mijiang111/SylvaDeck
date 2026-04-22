@@ -219,6 +219,81 @@ const BASE_STYLES = `
     gap: 18px;
     margin-top: 22px;
   }
+  .matrix-shell {
+    position: relative;
+    margin-top: 26px;
+    min-height: 520px;
+    border: 1px solid rgba(15,23,31,0.1);
+    border-radius: 28px;
+    background: rgba(255,255,255,0.74);
+    padding: 34px;
+    overflow: hidden;
+  }
+  .matrix-axis-h,
+  .matrix-axis-v {
+    position: absolute;
+    background: rgba(190,164,128,0.68);
+    pointer-events: none;
+  }
+  .matrix-axis-h {
+    left: 84px;
+    right: 84px;
+    top: 50%;
+    height: 1px;
+  }
+  .matrix-axis-v {
+    top: 70px;
+    bottom: 70px;
+    left: 50%;
+    width: 1px;
+  }
+  .matrix-core {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    display: grid;
+    place-items: center;
+    width: 210px;
+    height: 210px;
+    border-radius: 999px;
+    border: 1px solid rgba(190,164,128,0.78);
+    background: linear-gradient(180deg, rgba(255,250,243,0.92), rgba(242,232,218,0.96));
+    transform: translate(-50%, -50%);
+    text-align: center;
+    font-size: 16px;
+    font-weight: 600;
+    color: #59493f;
+    letter-spacing: 0.06em;
+  }
+  .matrix-card {
+    position: absolute;
+    width: 310px;
+    min-height: 154px;
+  }
+  .matrix-card h3 {
+    font-size: 20px;
+    line-height: 1.22;
+  }
+  .matrix-card p {
+    font-size: 15px;
+    line-height: 1.56;
+  }
+  .matrix-card-top-left {
+    left: 34px;
+    top: 46px;
+  }
+  .matrix-card-top-right {
+    right: 34px;
+    top: 46px;
+  }
+  .matrix-card-bottom-left {
+    left: 34px;
+    bottom: 34px;
+  }
+  .matrix-card-bottom-right {
+    right: 34px;
+    bottom: 34px;
+  }
   .metric-strip {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -979,6 +1054,43 @@ const iframeParityPages = [
 ];
 const iframeParityReport = createReport("Iframe parity fixture", iframeParityPages);
 
+const matrixNestedVisualPages = createSectionPages([
+  {
+    title: "Platform capability matrix",
+    eyebrow: "Nested visual selection fixture",
+    left: `
+      <h1>Platform capability matrix should expose cards, not the grouping shell.</h1>
+      <p class="lede">The matrix shell is only structural scaffolding. Visual selection should stay on the individual cards inside it.</p>
+      <div class="matrix-shell">
+        <div class="matrix-axis-h"></div>
+        <div class="matrix-axis-v"></div>
+        <article class="surface-card matrix-card matrix-card-top-left">
+          <h3>Cloud foundation</h3>
+          <p>Compute, storage, and developer tooling expand the base platform and give adjacent products a shared operating substrate.</p>
+        </article>
+        <article class="surface-card matrix-card matrix-card-top-right">
+          <h3>AI platform</h3>
+          <p>Gemini, search, and office workflows reinforce the ecosystem and create a more connected user value loop.</p>
+        </article>
+        <article class="surface-card matrix-card matrix-card-bottom-left">
+          <h3>Consumer reach</h3>
+          <p>YouTube, Chrome, and Android keep audience attention and distribution strength anchored at the edge.</p>
+        </article>
+        <article class="surface-card matrix-card matrix-card-bottom-right">
+          <h3>Operating system leverage</h3>
+          <p>Chrome and Android retain the browser and device control points that route usage back into the platform core.</p>
+        </article>
+        <div class="matrix-core">Account<br/>Data<br/>Compute</div>
+      </div>
+    `,
+    footer: "Selection should attach to the individual matrix cards rather than the outer shell that only groups them.",
+  },
+]);
+const matrixNestedVisualReport = createReport(
+  "Nested matrix visual selection",
+  matrixNestedVisualPages,
+);
+
 const overflowRepairPages = [
   singleClaimPages[0],
   {
@@ -1593,6 +1705,13 @@ const scenarioMap = {
     prompt:
       "Create a 3-page executive deck with one opening title page and a decorative closing strip so iframe editing can be tested against PPT-like behavior.",
     report: iframeParityReport,
+    reviseReports: [],
+  },
+  "matrix-nested-visual-selection": {
+    id: "matrix-nested-visual-selection",
+    prompt:
+      "Create a 1-page platform matrix with nested cards so iframe visual selection can verify that only the inner cards become editable objects.",
+    report: matrixNestedVisualReport,
     reviseReports: [],
   },
   "overflow-auto-repair": {

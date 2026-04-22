@@ -29,7 +29,6 @@ const DEFAULT_DIVIDER_COLOR = GENERAL_CONSULTING_PROFILE.tokens.borderSubtle;
 const DEFAULT_SURFACE_FILL = GENERAL_CONSULTING_PROFILE.tokens.surfacePrimary;
 const DEFAULT_SURFACE_BORDER = GENERAL_CONSULTING_PROFILE.tokens.borderSubtle;
 const DEFAULT_ACCENT_COLOR = GENERAL_CONSULTING_PROFILE.tokens.accentPrimary;
-const MAX_VISUAL_NODES_PER_PAGE = 36;
 const VISUAL_SELECTOR = "div, aside, article, section, hr, figure";
 const TEXTUAL_SELECTOR = "h1, h2, h3, h4, h5, h6, p, ul, ol, li";
 const DEFAULT_ELEMENT_INSERTION_KINDS = new Set<HtmlVisualNodeKind>([
@@ -134,6 +133,112 @@ function getClassTokens(element: Element) {
     .filter(Boolean);
 }
 
+function normalizeVisualIdentityToken(value: string | null | undefined) {
+  return (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+}
+
+function hashVisualIdentity(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function collectVisualAncestorSignature(element: Element) {
+  const parts: string[] = [];
+  let current = element.parentElement;
+
+  while (current && !current.matches("section.page") && parts.length < 3) {
+    const classSignature = getClassTokens(current)
+      .slice(0, 4)
+      .map((token) => normalizeVisualIdentityToken(token))
+      .filter(Boolean)
+      .join(".");
+    if (classSignature) {
+      parts.push(classSignature);
+    } else if (current.hasAttribute("data-page-body")) {
+      parts.push("page-body");
+    } else {
+      parts.push(current.tagName.toLowerCase());
+    }
+    current = current.parentElement;
+  }
+
+  return parts;
+}
+
+function collectVisualChildSignature(element: Element) {
+  return Array.from(element.children)
+    .slice(0, 6)
+    .map((child) => {
+      const childClass = getClassTokens(child)
+        .slice(0, 2)
+        .map((token) => normalizeVisualIdentityToken(token))
+        .filter(Boolean)
+        .join(".");
+      return childClass ? `${child.tagName.toLowerCase()}.${childClass}` : child.tagName.toLowerCase();
+    })
+    .join("|");
+}
+
+function collectVisualTextTagSignature(element: Element) {
+  return Array.from(element.children)
+    .filter((child) => child.matches(TEXTUAL_SELECTOR))
+    .slice(0, 6)
+    .map((node) => node.tagName.toLowerCase())
+    .join("|");
+}
+
+function buildVisualIdentitySignature(args: {
+  element: Element;
+  kind: HtmlVisualNodeKind;
+}) {
+  const classTokens = getClassTokens(args.element)
+    .slice(0, 8)
+    .map((token) => normalizeVisualIdentityToken(token))
+    .filter(Boolean);
+  const roleToken = normalizeVisualIdentityToken(args.element.getAttribute("role"));
+  const ariaToken = normalizeVisualIdentityToken(args.element.getAttribute("aria-label"));
+  const moduleId = normalizeVisualIdentityToken(args.element.getAttribute("data-html-module-id"));
+  const moduleLabel = normalizeVisualIdentityToken(args.element.getAttribute("data-html-module-label"));
+  const childSignature = collectVisualChildSignature(args.element);
+  const textTagSignature = collectVisualTextTagSignature(args.element);
+  const ancestorSignature = collectVisualAncestorSignature(args.element).join("/");
+
+  return [
+    args.kind,
+    args.element.tagName.toLowerCase(),
+    classTokens.join("."),
+    roleToken ? `role:${roleToken}` : "",
+    ariaToken ? `aria:${ariaToken}` : "",
+    moduleId ? `module:${moduleId}` : "",
+    moduleLabel ? `label:${moduleLabel}` : "",
+    childSignature ? `children:${childSignature}` : "",
+    textTagSignature ? `text-tags:${textTagSignature}` : "",
+    ancestorSignature ? `ancestors:${ancestorSignature}` : "",
+  ]
+    .filter(Boolean)
+    .join("|");
+}
+
+export function buildStableVisualFallbackId(args: {
+  pageNumber: number;
+  kind: HtmlVisualNodeKind;
+  signature: string;
+  duplicateOrdinal?: number;
+}) {
+  const duplicateOrdinal = args.duplicateOrdinal ?? 0;
+  const baseId = `visual-${args.pageNumber}-${args.kind}-${hashVisualIdentity(args.signature)}`;
+  return duplicateOrdinal > 0 ? `${baseId}-${duplicateOrdinal + 1}` : baseId;
+}
+
 function hasVisualKeyword(tokens: string[]) {
   return tokens.some((token) =>
     [
@@ -143,6 +248,8 @@ function hasVisualKeyword(tokens: string[]) {
       "kpi",
       "insight",
       "action",
+      "matrix",
+      "quadrant",
       "chart",
       "chartbox",
       "quote",
@@ -228,6 +335,8 @@ export function inferVisualKind(element: Element): HtmlVisualNodeKind | null {
         token.includes("kpi") ||
         token.includes("insight") ||
         token.includes("action") ||
+        token.includes("matrix") ||
+        token.includes("quadrant") ||
         token.includes("tile") ||
         token.includes("box"),
     )
@@ -274,8 +383,7 @@ function isLikelyVisualElement(element: Element) {
 
 export function collectHtmlVisualCandidates(page: Element) {
   return Array.from(page.querySelectorAll(VISUAL_SELECTOR))
-    .filter(isLikelyVisualElement)
-    .slice(0, MAX_VISUAL_NODES_PER_PAGE);
+    .filter(isLikelyVisualElement);
 }
 
 function buildDefaultVisualNodeStyle(
@@ -412,14 +520,28 @@ function extractPageVisualNodes(
 ) {
   const candidates = collectHtmlVisualCandidates(page);
   const editableCandidates = new Set(collectHtmlEditableCandidates(page));
+  const fallbackIdCounts = new Map<string, number>();
 
   return candidates.map((element, sourceIndex) => {
     const kind = inferVisualKind(element) ?? "surface";
     const persistentId = element.getAttribute("data-html-visual-key")?.trim();
     const moduleId = element.getAttribute("data-html-module-id")?.trim();
     const moduleLabel = element.getAttribute("data-html-module-label")?.trim();
+    const fallbackSignature = buildVisualIdentitySignature({
+      element,
+      kind,
+    });
+    const fallbackOrdinal = fallbackIdCounts.get(fallbackSignature) ?? 0;
+    fallbackIdCounts.set(fallbackSignature, fallbackOrdinal + 1);
     return {
-      id: persistentId || `visual-${pageNumber}-${kind}-${sourceIndex + 1}`,
+      id:
+        persistentId ||
+        buildStableVisualFallbackId({
+          pageNumber,
+          kind,
+          signature: fallbackSignature,
+          duplicateOrdinal: fallbackOrdinal,
+        }),
       kind,
       pageNumber,
       sourceTag: element.tagName.toLowerCase(),
