@@ -5,7 +5,8 @@ export type DeckThinkingMode =
   | "neutral"
   | "strategy"
   | "case-study"
-  | "academic-research";
+  | "academic-research"
+  | "brain-to-deck";
 
 export type GenerationSkillFieldRule = {
   fieldId: string;
@@ -53,7 +54,7 @@ export type GenerationPageCopyBudget = {
 };
 
 export type GenerationPageArchetypeDefinition = {
-  id: "hero-rail" | "priority-rail" | "verdict-comparison" | "chart-insight";
+  id: "hero-rail" | "priority-rail" | "verdict-comparison" | "chart-insight" | "research-figure-stage";
   label: string;
   summary: string;
   layoutGrammar: string[];

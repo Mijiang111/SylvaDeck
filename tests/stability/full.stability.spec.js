@@ -3,7 +3,7 @@ import {
   downloadFromActions,
   generateDeckFromPrompt,
 } from "./helpers/browser-helpers.mjs";
-import { readDownloadedText } from "./helpers/download-helpers.mjs";
+import { readDownloadedPptx, readDownloadedText } from "./helpers/download-helpers.mjs";
 import { installStudioFixtureRoutes } from "./helpers/fixture-routes.mjs";
 
 test.describe("Studio stability full matrix", () => {
@@ -156,6 +156,25 @@ test.describe("Studio stability full matrix", () => {
     expect(htmlText).toContain("Method and result");
     expect(htmlText).toContain("Interpretation and next work");
     expect(htmlText).not.toContain("Strategic implications");
+  });
+
+  test("scientific diagram fixture keeps the neural figure lane through export", async ({ page }) => {
+    const fixture = await installStudioFixtureRoutes(page, "academic-neural-network-3page");
+    await generateDeckFromPrompt(page, fixture.scenario.prompt);
+    const htmlDownload = await downloadFromActions(page, "action-export-html");
+    const htmlText = await readDownloadedText(htmlDownload);
+    expect(htmlText).toContain("Dense reranking network");
+    expect(htmlText).toContain("Output score");
+    expect(htmlText).toContain("scientific-diagram");
+    expect(htmlText).not.toContain("Executive summary");
+
+    const pptxDownload = await downloadFromActions(page, "action-export-pptx");
+    const pptx = await readDownloadedPptx(pptxDownload);
+    expect(pptx.slideCount).toBe(3);
+    expect(pptx.layoutSize?.aspectRatio ?? 0).toBeCloseTo(16 / 9, 2);
+    expect(pptx.combinedText.toLowerCase()).toContain("dense reranking network");
+    expect(pptx.combinedText.toLowerCase()).toContain("input layer");
+    expect(pptx.combinedText.toLowerCase()).toContain("output score");
   });
 
   test("deep valuation fixture stays finance-grade and avoids generic sparse framing", async ({ page }) => {

@@ -150,6 +150,42 @@ const PAGE_ARCHETYPE_REGISTRY: GenerationPageArchetypeDefinition[] = [
       "Do not overload the graphic with too many separate callout blocks.",
     ],
   },
+  {
+    id: "research-figure-stage",
+    label: "Research Figure Stage",
+    summary:
+      "Use one dominant scientific figure in the center, then keep captions, labels, and method notes compact around it.",
+    layoutGrammar: [
+      "Give one central figure the clear majority of the page area.",
+      "Keep surrounding annotations short and tied directly to the figure.",
+      "Use the footer or caption to land one careful interpretation rather than a recommendation close.",
+    ],
+    compositionMoves: [
+      "Treat the figure as the page's main object, not one card among many.",
+      "Let labels and method cues feel paper-like and restrained.",
+      "Avoid equal-weight side rails or consultant memo framing.",
+    ],
+    objectStrategy: [
+      "Favor one deterministic figure shell with a few editable labels and notes.",
+      "Keep shapes, rules, and accents thin so the page reads like a conference slide.",
+    ],
+    copyBudget: {
+      totalVisibleWords: 44,
+      headlineMaxChars: 78,
+      thesisMaxChars: 84,
+      supportingPointCount: 2,
+      supportingPointMaxChars: 28,
+      evidenceItemCount: 2,
+      evidenceItemMaxChars: 24,
+      closeMaxChars: 56,
+      recommendedObjectMin: 4,
+      recommendedObjectMax: 6,
+    },
+    avoidPatterns: [
+      "Do not split the page into many same-weight cards.",
+      "Do not wrap the figure in executive-summary or recommendation language.",
+    ],
+  },
 ];
 
 function normalizeText(text: string) {
@@ -266,6 +302,9 @@ export function resolveGenerationPageArchetype(args: {
   }
 
   if (args.thinkingMode === "academic-research") {
+    if (/(?:neural network|mlp|hidden layer|input layer|output layer|encoder|decoder|topology)/.test(text)) {
+      return getArchetype("research-figure-stage");
+    }
     return timeSeriesScore >= 2 || /(?:method|result|results|finding|findings|study|experiment|dataset)/.test(text)
       ? getArchetype("chart-insight")
       : getArchetype("verdict-comparison");

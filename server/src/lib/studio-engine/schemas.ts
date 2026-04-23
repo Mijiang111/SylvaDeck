@@ -24,6 +24,7 @@ export const repairModeSchema = z.enum(["standard", "aggressive"]);
 export const generationModeSchema = z.enum(["standard", "long-form"]);
 export const moduleUsageModeSchema = z.enum(["disabled", "fallback", "chart-only"]);
 export const htmlOutputModeSchema = z.enum(["static", "animated-preview-js"]);
+export const studioBridgeLaunchModeSchema = z.enum(["inject-and-generate", "inject-only"]);
 export const htmlAnimationEntryPresetSchema = z.enum([
   "fade-up",
   "fade-in",
@@ -227,6 +228,14 @@ const fileContextSchema = z.object({
   content: z.string().max(200_000),
 });
 
+export const deckThinkingModeSchema = z.enum([
+  "neutral",
+  "strategy",
+  "case-study",
+  "academic-research",
+  "brain-to-deck",
+]);
+
 export const generateStudioReportRequestSchema = z
   .object({
     brief: z.string().min(1).max(120_000),
@@ -252,6 +261,34 @@ export const generateStudioReportRequestSchema = z
       });
     }
   });
+
+export const createStudioBridgeLaunchRequestSchema = z.object({
+  prompt: z.string().min(1).max(120_000),
+  projectName: z.string().max(240).nullable().optional().default(null),
+  generationMode: generationModeSchema.optional().default("standard"),
+  moduleUsageMode: moduleUsageModeSchema.optional().default("disabled"),
+  htmlOutputMode: htmlOutputModeSchema.optional().default("static"),
+  requestedPageCount: z.number().int().min(1).max(12).nullable().optional().default(null),
+  mode: studioBridgeLaunchModeSchema.optional().default("inject-and-generate"),
+});
+
+export const createStudioBridgeLaunchResponseSchema = z.object({
+  launchId: z.string().min(1).max(120),
+  openUrl: z.string().url(),
+  expiresAt: z.string().datetime(),
+});
+
+export const consumeStudioBridgeLaunchResponseSchema = z.object({
+  launchId: z.string().min(1).max(120),
+  prompt: z.string().min(1).max(120_000),
+  projectName: z.string().max(240).nullable().optional().default(null),
+  generationMode: generationModeSchema.optional().default("standard"),
+  moduleUsageMode: moduleUsageModeSchema.optional().default("disabled"),
+  htmlOutputMode: htmlOutputModeSchema.optional().default("static"),
+  requestedPageCount: z.number().int().min(1).max(12).nullable().optional().default(null),
+  mode: studioBridgeLaunchModeSchema.optional().default("inject-and-generate"),
+  expiresAt: z.string().datetime(),
+});
 
 export const pageFitElementSchema = z.object({
   kind: z.string().max(120),
@@ -291,6 +328,7 @@ export const pageCompositionFingerprintSchema = z.object({
       "single-column",
       "poster-claim",
       "center-stage-figure",
+      "research-figure-stage",
       "single-proof-canvas",
       "vertical-story-strip",
       "case-timeline",
@@ -453,6 +491,9 @@ export const pageRecipePlanSchema = z.object({
 
 export type GenerateStudioReportRequest = z.infer<typeof generateStudioReportRequestSchema>;
 export type ReviseStudioReportRequest = z.infer<typeof reviseStudioReportRequestSchema>;
+export type CreateStudioBridgeLaunchRequest = z.infer<typeof createStudioBridgeLaunchRequestSchema>;
+export type CreateStudioBridgeLaunchResponse = z.infer<typeof createStudioBridgeLaunchResponseSchema>;
+export type ConsumeStudioBridgeLaunchResponse = z.infer<typeof consumeStudioBridgeLaunchResponseSchema>;
 export type DeckPlan = z.infer<typeof deckPlanSchema>;
 export type PublishedModuleManifest = z.infer<typeof publishedModuleManifestSchema>;
 export type PageRecipePlan = z.infer<typeof pageRecipePlanSchema>;
@@ -462,6 +503,7 @@ export type RepairMode = z.infer<typeof repairModeSchema>;
 export type GenerationMode = z.infer<typeof generationModeSchema>;
 export type ModuleUsageMode = z.infer<typeof moduleUsageModeSchema>;
 export type HtmlOutputMode = z.infer<typeof htmlOutputModeSchema>;
+export type StudioBridgeLaunchMode = z.infer<typeof studioBridgeLaunchModeSchema>;
 export type HtmlAnimationEntryPreset = z.infer<typeof htmlAnimationEntryPresetSchema>;
 export type HtmlPageAnimationStartMode = z.infer<typeof htmlPageAnimationStartModeSchema>;
 export type HtmlEntryTrack = z.infer<typeof htmlEntryTrackSchema>;

@@ -81,6 +81,40 @@ This repository is an `alpha`.
 
 ### Install
 
+Fastest first-run path:
+
+```bash
+pnpm studio:onboard
+```
+
+This bootstrap command:
+
+- checks Node / pnpm / Codex readiness
+- installs workspace dependencies when needed
+- links the repo skill from `skills/ppt-workbench-studio/` into `~/.codex/skills/ppt-workbench-studio`
+
+If you prefer the manual path:
+
+```bash
+pnpm install
+```
+
+Skill source:
+
+- GitHub: [skills/ppt-workbench-studio](https://github.com/Mijiang111/claw-design/tree/main/skills/ppt-workbench-studio)
+
+Install guide:
+
+- UI route: [http://127.0.0.1:5174/install](http://127.0.0.1:5174/install)
+
+Environment doctor:
+
+```bash
+pnpm studio:doctor
+```
+
+Then, if you have not already bootstrapped dependencies:
+
 ```bash
 pnpm install
 ```
@@ -164,6 +198,9 @@ User inputs requirements in the **UI** → **Server** assembles prompt → calls
 Current server endpoints:
 
 - `GET /api/health`
+- `GET /api/install/status`
+- `POST /api/install/onboard/stream`
+- `POST /api/studio/bridge/launch`
 - `POST /api/studio/generate-html`
 - `POST /api/studio/generate-html/stream`
 - `POST /api/studio/revise-html/stream`
@@ -171,6 +208,8 @@ Current server endpoints:
 ## Development Commands
 
 ```bash
+pnpm studio:onboard
+pnpm studio:doctor
 pnpm dev
 pnpm build
 pnpm typecheck

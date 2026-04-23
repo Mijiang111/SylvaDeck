@@ -319,10 +319,11 @@ export function useStudioGenerationFlow(args: UseStudioGenerationFlowArgs) {
       return;
     }
 
-    const briefSource = buildReportSourceInput({
+    const rawBriefSource = buildReportSourceInput({
       briefMessages: intakeMessages,
       pendingInput: brief.intakeInput,
     }).briefText;
+    const briefSource = rawBriefSource.trim();
 
     if (!briefSource.trim()) {
       setStatusLine("Give me some report context first, then I can generate the HTML report.");

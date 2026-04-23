@@ -28,6 +28,12 @@ export type SkillRegistryScope = ModuleRegistryScope;
 export type SkillRegistryStatus = "draft" | "beta" | "stable";
 export type WorkbenchGenerationMode = "standard" | "long-form";
 export type WorkbenchModuleUsageMode = "disabled" | "fallback" | "chart-only";
+export type DeckThinkingMode =
+  | "neutral"
+  | "strategy"
+  | "case-study"
+  | "academic-research"
+  | "brain-to-deck";
 export type LongFormClarificationTrigger =
   | "explicit-8-9-pages"
   | "long-input-opportunity";
@@ -1042,6 +1048,50 @@ export type HtmlVisualNodeKind =
   | "rail"
   | "chart-frame";
 
+export type ScientificDiagramFamily = "neural-network";
+
+export type NeuralNetworkDiagramConnectivity =
+  | "dense"
+  | "residual"
+  | "encoder-decoder";
+
+export type NeuralNetworkDiagramLayerRole =
+  | "input"
+  | "hidden"
+  | "output"
+  | "encoder"
+  | "bottleneck"
+  | "decoder";
+
+export type NeuralNetworkDiagramLayer = {
+  id: string;
+  role: NeuralNetworkDiagramLayerRole;
+  label: string;
+  nodeCount: number;
+};
+
+export type ScientificDiagramSideNote = {
+  id: string;
+  text: string;
+  side: "left" | "right";
+};
+
+export type NeuralNetworkDiagramSpec = {
+  family: "neural-network";
+  title: string;
+  caption: string;
+  layers: NeuralNetworkDiagramLayer[];
+  connectivity: NeuralNetworkDiagramConnectivity;
+  topLabel: string;
+  bottomLabel: string;
+  sideNotes: ScientificDiagramSideNote[];
+  stylePreset: "paper-white";
+};
+
+export type ScientificDiagramSpec = NeuralNetworkDiagramSpec;
+
+export type HtmlVisualModuleKind = "scientific-diagram";
+
 export type HtmlFitParticipation = "content" | "decorative";
 
 export type HtmlVisualNodeStyle = {
@@ -1066,6 +1116,8 @@ export type HtmlVisualNode = {
   sourceIndex: number;
   moduleId?: ModuleTemplateId;
   moduleLabel?: string;
+  moduleKind?: HtmlVisualModuleKind;
+  diagramSpec?: ScientificDiagramSpec | null;
   style: HtmlVisualNodeStyle;
 };
 

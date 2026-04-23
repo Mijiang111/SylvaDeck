@@ -21,6 +21,8 @@
     "dev:clean": "node ./scripts/dev.mjs --clean-only",
     "dev:server": "corepack pnpm --dir server dev",
     "dev:ui": "corepack pnpm --dir ui dev",
+    "studio:onboard": "node ./scripts/studio-install.mjs onboard",
+    "studio:doctor": "node ./scripts/studio-install.mjs doctor",
     "build": "corepack pnpm --dir server build && corepack pnpm --dir ui build",
     "typecheck": "corepack pnpm --dir server typecheck && corepack pnpm --dir ui typecheck",
     "stop": "node ./scripts/dev.mjs --clean-only",

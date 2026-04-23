@@ -56,6 +56,7 @@ import {
   extractGeneratedHtmlReportVisualNodeContent,
   extractHtmlPageVisualStyle,
   type HtmlVisualInsertionMode,
+  updateGeneratedHtmlReportScientificDiagram,
   updateGeneratedHtmlReportVisualNode,
   updateGeneratedHtmlReportVisualStyle,
 } from "@/features/studio/html-report-visuals";
@@ -68,6 +69,13 @@ import {
   storeModuleAuthoringHandoff,
 } from "@/features/studio/module-authoring-handoff";
 import { getIndustryStyleProfile } from "@/features/studio/industry-style";
+import {
+  SCIENTIFIC_DIAGRAM_CONNECTIVITY_OPTIONS,
+  SCIENTIFIC_DIAGRAM_MODULE_KIND,
+  getScientificDiagramLayerCountBounds,
+  resizeScientificDiagramLayers,
+  switchScientificDiagramConnectivity,
+} from "@/features/studio/scientific-diagram";
 import {
   fireAndForget,
   getAsyncActionErrorMessage,
@@ -93,6 +101,7 @@ import type {
   HtmlVisualNodeKind,
   HtmlVisualNodeStyle,
   HtmlPageVisualStyle,
+  ScientificDiagramSpec,
   LayoutPage,
   LongFormClarificationResolution,
   LongFormClarificationTrigger,
@@ -693,6 +702,12 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
       nodeId: selection.selectedVisualNodeId,
     });
   }, [activePageNumber, generatedHtmlReport, selection.selectedVisualNodeId]);
+  const activeScientificDiagramSpec = useMemo<ScientificDiagramSpec | null>(() => {
+    if (activeHtmlVisualNode?.moduleKind !== SCIENTIFIC_DIAGRAM_MODULE_KIND) {
+      return null;
+    }
+    return activeHtmlVisualNode.diagramSpec ?? null;
+  }, [activeHtmlVisualNode]);
 
   useEffect(() => {
     if (!activeHtmlStructurePage || !selection.selectedHtmlBlockId) {
@@ -1355,6 +1370,47 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
       inspectorTab: "visual",
       statusLine: "Updated the selected visual element.",
     });
+  }
+
+  function updateActiveScientificDiagramSpec(nextDiagramSpec: ScientificDiagramSpec) {
+    if (
+      !project?.generatedDraft?.htmlReport ||
+      !selection.selectedVisualNodeId ||
+      !activeScientificDiagramSpec
+    ) {
+      return;
+    }
+
+    const nextHtmlReport = updateGeneratedHtmlReportScientificDiagram({
+      report: project.generatedDraft.htmlReport,
+      pageNumber: activePageNumber,
+      nodeId: selection.selectedVisualNodeId,
+      diagramSpec: nextDiagramSpec,
+    });
+
+    if (nextHtmlReport.html === project.generatedDraft.htmlReport.html) {
+      return;
+    }
+
+    updateGeneratedDraft({
+      generatedDraft: {
+        ...project.generatedDraft,
+        htmlReport: nextHtmlReport,
+      },
+      label: "Edit scientific diagram",
+      scope: "visual",
+      inspectorTab: "visual",
+      statusLine: "Updated the scientific diagram module.",
+    });
+  }
+
+  function patchActiveScientificDiagram(
+    updater: (current: ScientificDiagramSpec) => ScientificDiagramSpec,
+  ) {
+    if (!activeScientificDiagramSpec) {
+      return;
+    }
+    updateActiveScientificDiagramSpec(updater(activeScientificDiagramSpec));
   }
 
   function updateHtmlVisualTransformOnPage(
@@ -2409,6 +2465,181 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
       return pageInspectorSchema;
     }
 
+    const scientificDiagramSections =
+      activeHtmlVisualNode.moduleKind === SCIENTIFIC_DIAGRAM_MODULE_KIND && activeScientificDiagramSpec
+        ? [
+            {
+              id: "scientific-diagram",
+              title: "Scientific diagram",
+              description:
+                "Edit the neural-network figure as one deterministic module instead of loose node-and-edge objects.",
+              fields: [
+                {
+                  id: `diagram-connectivity-${activeHtmlVisualNode.id}`,
+                  kind: "select" as const,
+                  label: "Topology",
+                  value: activeScientificDiagramSpec.connectivity,
+                  options: SCIENTIFIC_DIAGRAM_CONNECTIVITY_OPTIONS.map((option) => ({
+                    value: option.value,
+                    label: option.label,
+                  })),
+                  onChange: (value: string) =>
+                    patchActiveScientificDiagram((current) =>
+                      switchScientificDiagramConnectivity(current, value as ScientificDiagramSpec["connectivity"]),
+                    ),
+                },
+                {
+                  id: `diagram-layer-count-${activeHtmlVisualNode.id}`,
+                  kind: "number" as const,
+                  label: "Layer count",
+                  value: activeScientificDiagramSpec.layers.length,
+                  min: getScientificDiagramLayerCountBounds(activeScientificDiagramSpec.connectivity).min,
+                  max: getScientificDiagramLayerCountBounds(activeScientificDiagramSpec.connectivity).max,
+                  step: 1,
+                  onChange: (value: number) =>
+                    patchActiveScientificDiagram((current) =>
+                      resizeScientificDiagramLayers(current, value),
+                    ),
+                },
+                {
+                  id: `diagram-title-${activeHtmlVisualNode.id}`,
+                  kind: "text" as const,
+                  label: "Title",
+                  value: activeScientificDiagramSpec.title,
+                  onChange: (value: string) =>
+                    patchActiveScientificDiagram((current) => ({
+                      ...current,
+                      title: value,
+                    })),
+                },
+                {
+                  id: `diagram-caption-${activeHtmlVisualNode.id}`,
+                  kind: "textarea" as const,
+                  label: "Caption",
+                  value: activeScientificDiagramSpec.caption,
+                  onChange: (value: string) =>
+                    patchActiveScientificDiagram((current) => ({
+                      ...current,
+                      caption: value,
+                    })),
+                },
+                {
+                  id: `diagram-top-label-${activeHtmlVisualNode.id}`,
+                  kind: "text" as const,
+                  label: "Top label",
+                  value: activeScientificDiagramSpec.topLabel,
+                  onChange: (value: string) =>
+                    patchActiveScientificDiagram((current) => ({
+                      ...current,
+                      topLabel: value,
+                    })),
+                },
+                {
+                  id: `diagram-bottom-label-${activeHtmlVisualNode.id}`,
+                  kind: "text" as const,
+                  label: "Bottom label",
+                  value: activeScientificDiagramSpec.bottomLabel,
+                  onChange: (value: string) =>
+                    patchActiveScientificDiagram((current) => ({
+                      ...current,
+                      bottomLabel: value,
+                    })),
+                },
+                {
+                  id: `diagram-note-left-${activeHtmlVisualNode.id}`,
+                  kind: "textarea" as const,
+                  label: "Left note",
+                  value:
+                    activeScientificDiagramSpec.sideNotes.find((note) => note.side === "left")?.text ?? "",
+                  onChange: (value: string) =>
+                    patchActiveScientificDiagram((current) => {
+                      const left = current.sideNotes.find((note) => note.side === "left");
+                      const remaining = current.sideNotes.filter((note) => note.side !== "left");
+                      return {
+                        ...current,
+                        sideNotes: value.trim()
+                          ? [...remaining, { id: left?.id ?? "note-1", side: "left" as const, text: value.trim() }].sort((a, b) =>
+                              a.side.localeCompare(b.side),
+                            )
+                          : remaining,
+                      };
+                    }),
+                },
+                {
+                  id: `diagram-note-right-${activeHtmlVisualNode.id}`,
+                  kind: "textarea" as const,
+                  label: "Right note",
+                  value:
+                    activeScientificDiagramSpec.sideNotes.find((note) => note.side === "right")?.text ?? "",
+                  onChange: (value: string) =>
+                    patchActiveScientificDiagram((current) => {
+                      const right = current.sideNotes.find((note) => note.side === "right");
+                      const remaining = current.sideNotes.filter((note) => note.side !== "right");
+                      return {
+                        ...current,
+                        sideNotes: value.trim()
+                          ? [...remaining, { id: right?.id ?? "note-2", side: "right" as const, text: value.trim() }].sort((a, b) =>
+                              a.side.localeCompare(b.side),
+                            )
+                          : remaining,
+                      };
+                    }),
+                },
+                {
+                  id: `diagram-accent-${activeHtmlVisualNode.id}`,
+                  kind: "color" as const,
+                  label: "Accent color",
+                  value: activeHtmlVisualNode.style.accent ?? "#2f5d84",
+                  onChange: (value: string) => updateActiveHtmlVisualNodeStyle({ accent: value }),
+                },
+              ],
+            },
+            ...activeScientificDiagramSpec.layers.map((layer, index) => ({
+              id: `scientific-diagram-layer-${index + 1}`,
+              title: `Layer ${index + 1}`,
+              fields: [
+                {
+                  id: `diagram-layer-label-${activeHtmlVisualNode.id}-${layer.id}`,
+                  kind: "text" as const,
+                  label: "Layer label",
+                  value: layer.label,
+                  onChange: (value: string) =>
+                    patchActiveScientificDiagram((current) => ({
+                      ...current,
+                      layers: current.layers.map((entry) =>
+                        entry.id === layer.id ? { ...entry, label: value } : entry,
+                      ),
+                    })),
+                },
+                {
+                  id: `diagram-layer-nodes-${activeHtmlVisualNode.id}-${layer.id}`,
+                  kind: "number" as const,
+                  label: "Node count",
+                  value: layer.nodeCount,
+                  min: layer.role === "output" || layer.role === "bottleneck" ? 1 : 2,
+                  max: 9,
+                  step: 1,
+                  onChange: (value: number) =>
+                    patchActiveScientificDiagram((current) => ({
+                      ...current,
+                      layers: current.layers.map((entry) =>
+                        entry.id === layer.id
+                          ? {
+                              ...entry,
+                              nodeCount: Math.max(
+                                layer.role === "output" || layer.role === "bottleneck" ? 1 : 2,
+                                Math.min(9, Math.round(value)),
+                              ),
+                            }
+                          : entry,
+                      ),
+                    })),
+                },
+              ],
+            })),
+          ]
+        : [];
+
     return {
       id: "visual-inspector",
       title: "Visual module",
@@ -2496,6 +2727,7 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
               },
             ]
           : []),
+        ...scientificDiagramSections,
         {
           id: "new-node",
           title: "Add nearby module",
@@ -2633,6 +2865,7 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
       ],
     };
   }, [
+    activeScientificDiagramSpec,
     activeHtmlVisualContentNodes,
     activeHtmlVisualNode,
     activeHtmlVisualCanvasTransform,
@@ -3534,7 +3767,7 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                         type="button"
                         onClick={() =>
                           runAsyncAction(
-                            continueConversation(),
+                            buildStorylineFromInput(),
                             "Studio could not generate the first draft.",
                           )
                         }

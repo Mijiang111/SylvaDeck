@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes, useParams } from "@/lib/router";
 import { StudioShellPage } from "@/features/studio/StudioShellPage";
+import { StudioInstallPage } from "@/features/studio/StudioInstallPage";
 import { StudioModuleAuthorPage } from "@/features/studio/StudioModuleAuthorPage";
 import { StudioModuleDetailPage } from "@/features/studio/StudioModuleDetailPage";
 import { StudioModuleLibraryPage } from "@/features/studio/StudioModuleLibraryPage";
@@ -25,6 +26,7 @@ export function App() {
   return (
     <Routes>
       <Route index element={<StudioShellPage />} />
+      <Route path="install" element={<StudioInstallPage />} />
       <Route path="templates" element={<StudioModuleLibraryPage />} />
       <Route path="templates/new" element={<StudioModuleAuthorPage />} />
       <Route path="templates/packs/:packId" element={<Navigate to="/templates/new?import=1" replace />} />

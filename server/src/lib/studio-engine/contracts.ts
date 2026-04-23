@@ -2,6 +2,9 @@ import {
   toGeneratedReportStyleProfile,
 } from "../industry-style.js";
 import type {
+  CreateStudioBridgeLaunchRequest,
+  CreateStudioBridgeLaunchResponse,
+  ConsumeStudioBridgeLaunchResponse,
   GenerateStudioReportRequest,
   ReviseStudioReportRequest,
   DeckPlan,
@@ -16,11 +19,15 @@ import type {
   HtmlPageAnimationManifest,
   ModuleUsageMode,
   HtmlOutputMode,
+  StudioBridgeLaunchMode,
   PageOverflowCause,
   PageCompositionFingerprint,
 } from "./schemas.js";
 
 export type {
+  CreateStudioBridgeLaunchRequest,
+  CreateStudioBridgeLaunchResponse,
+  ConsumeStudioBridgeLaunchResponse,
   GenerateStudioReportRequest,
   ReviseStudioReportRequest,
   DeckPlan,
@@ -35,6 +42,7 @@ export type {
   HtmlPageAnimationManifest,
   ModuleUsageMode,
   HtmlOutputMode,
+  StudioBridgeLaunchMode,
   PageOverflowCause,
   PageCompositionFingerprint,
 } from "./schemas.js";
@@ -404,6 +412,48 @@ export type FreeformLayoutPlan = {
   avoidPattern: string[];
 };
 
+export type ScientificDiagramFamily = "neural-network";
+
+export type NeuralNetworkDiagramConnectivity =
+  | "dense"
+  | "residual"
+  | "encoder-decoder";
+
+export type NeuralNetworkDiagramLayerRole =
+  | "input"
+  | "hidden"
+  | "output"
+  | "encoder"
+  | "bottleneck"
+  | "decoder";
+
+export type NeuralNetworkDiagramLayer = {
+  id: string;
+  role: NeuralNetworkDiagramLayerRole;
+  label: string;
+  nodeCount: number;
+};
+
+export type ScientificDiagramSideNote = {
+  id: string;
+  text: string;
+  side: "left" | "right";
+};
+
+export type NeuralNetworkDiagramSpec = {
+  family: "neural-network";
+  title: string;
+  caption: string;
+  layers: NeuralNetworkDiagramLayer[];
+  connectivity: NeuralNetworkDiagramConnectivity;
+  topLabel: string;
+  bottomLabel: string;
+  sideNotes: ScientificDiagramSideNote[];
+  stylePreset: "paper-white";
+};
+
+export type ScientificDiagramSpec = NeuralNetworkDiagramSpec;
+
 export type PageRecipe = {
   pageNumber: number;
   pageTitle: string;
@@ -423,6 +473,7 @@ export type PageRecipe = {
   takeaway: string;
   moduleBinding: PublishedModuleManifest | null;
   chartSpec: CompositeChartSpec | null;
+  diagramSpec: ScientificDiagramSpec | null;
   fallbackReason: string | null;
   freeformLayoutPlan?: FreeformLayoutPlan | null;
   briefSynthesisConfidence?: StudioBriefSynthesisConfidence;

@@ -1,12 +1,13 @@
 import express from "express";
 import { ZodError } from "zod";
 import { logger, httpLogger } from "./middleware/logger.js";
+import { installRoutes } from "./routes/install.js";
 import { studioRoutes } from "./routes/studio.js";
 
 export function createApp() {
   const app = express();
 
-  app.use(express.json({ limit: "8mb" }));
+  app.use(express.json({ limit: "32mb" }));
   app.use(httpLogger);
 
   app.get("/api/health", (_req, res) => {
@@ -17,6 +18,7 @@ export function createApp() {
     });
   });
 
+  app.use("/api", installRoutes());
   app.use("/api", studioRoutes());
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });

@@ -270,6 +270,62 @@ test.describe("Studio stability quick gate", () => {
     await expect(page.getByText("Strategic implications")).toHaveCount(0);
   });
 
+  test("@quick scientific diagram fixture keeps caption editable, shell selectable, and exports labels", async ({
+    page,
+  }) => {
+    const fixture = await installStudioFixtureRoutes(page, "academic-neural-network-3page");
+    await generateDeckFromPrompt(page, fixture.scenario.prompt);
+
+    const pageTwoFrame = page
+      .locator('[data-ppt-report-root="studio-main"]')
+      .frameLocator('[data-testid="report-page-frame-2"]');
+    const caption = pageTwoFrame.locator(".scientific-diagram-caption");
+    const shell = pageTwoFrame.locator(".scientific-diagram-shell");
+
+    await caption.click({ force: true });
+    await expect(page.getByTestId("preview-selection-block-frame-2")).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(page.getByTestId("preview-selection-visual-frame-2")).toBeHidden();
+
+    await page.getByRole("button", { name: "Visual", exact: true }).click();
+    const visualId = await shell.getAttribute("data-html-visual-id");
+    if (!visualId) {
+      throw new Error("Expected the scientific diagram shell to expose a visual id.");
+    }
+    await shell.click({ force: true });
+    await expect(page.getByTestId("preview-selection-visual-frame-2")).toBeVisible({
+      timeout: 10_000,
+    });
+
+    const topologySelect = page.locator('[data-testid^="inspector-select-diagram-connectivity-"]').first();
+    await expect(topologySelect).toBeVisible();
+    await topologySelect.selectOption("encoder-decoder");
+    await page.waitForTimeout(420);
+    await expect(pageTwoFrame.locator(".scientific-diagram-layer-label", { hasText: "Encoder" }).first()).toBeVisible();
+    await expect(pageTwoFrame.locator(".scientific-diagram-layer-label", { hasText: "Latent bottleneck" })).toHaveCount(1);
+
+    const layerCountInput = page.locator('[data-testid^="inspector-number-diagram-layer-count-"]').first();
+    await expect(layerCountInput).toBeVisible();
+    await layerCountInput.fill("7");
+    await page.waitForTimeout(420);
+    await expect(pageTwoFrame.locator(".scientific-diagram-layer-label")).toHaveCount(7);
+    await expect(pageTwoFrame.locator(`[data-html-visual-id="${visualId}"]`)).toHaveCount(1);
+
+    const htmlDownload = await downloadFromActions(page, "action-export-html");
+    const htmlText = await readDownloadedText(htmlDownload);
+    expect(htmlText).toContain("Dense reranking network");
+    expect(htmlText).toContain("Latent bottleneck");
+    expect(htmlText).not.toContain("Executive summary");
+
+    const pptxDownload = await downloadFromActions(page, "action-export-pptx");
+    const pptx = await readDownloadedPptx(pptxDownload);
+    expect(pptx.slideCount).toBe(3);
+    expect(pptx.layoutSize?.aspectRatio ?? 0).toBeCloseTo(16 / 9, 2);
+    expect(pptx.combinedText.toLowerCase()).toContain("dense reranking network");
+    expect(pptx.combinedText.toLowerCase()).toContain("latent bottleneck");
+  });
+
   test("@quick deep valuation fixture stays out of generic sparse framing", async ({ page }) => {
     const fixture = await installStudioFixtureRoutes(page, "valuation-deep-1page");
     await generateDeckFromPrompt(page, fixture.scenario.prompt);

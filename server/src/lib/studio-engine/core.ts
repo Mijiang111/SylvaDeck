@@ -167,6 +167,13 @@ import {
   buildStudioWorkingMemory,
 } from "./working-memory.js";
 import {
+  SCIENTIFIC_DIAGRAM_MODULE_KIND,
+  SCIENTIFIC_DIAGRAM_SPEC_ATTRIBUTE,
+  buildScientificDiagramSpec,
+  isScientificDiagramFigurePage,
+  shouldUseScientificDiagramLane,
+} from "./scientific-diagram.js";
+import {
   buildFallbackStudioPreflightPlan,
   buildPreflightCapabilityCards,
   buildPreflightEvidenceInput,
@@ -1934,23 +1941,26 @@ function buildDeckCompositionBrief(args: {
 }
 
 function inferPageRecipeCompositionFingerprint(
-  recipe: Pick<PageRecipe, "pageClass" | "layout" | "chartSpec" | "compositionHint" | "freeformLayoutPlan">,
+  recipe: Pick<PageRecipe, "pageClass" | "layout" | "chartSpec" | "diagramSpec" | "compositionHint" | "freeformLayoutPlan">,
 ): PageCompositionFingerprint {
   const family =
     recipe.freeformLayoutPlan?.layoutFamily ??
+    (recipe.diagramSpec
+      ? "research-figure-stage"
+      :
     (recipe.layout === "sequence"
       ? "sequence-grid"
       : recipe.layout === "comparison"
         ? "comparison-split"
         : recipe.layout === "chart-insight"
           ? recipe.chartSpec?.composite === "annotation-rail" || recipe.chartSpec?.composite === "decision-footer"
-            ? "chart-rail"
-            : "hero-chart"
+          ? "chart-rail"
+          : "hero-chart"
           : recipe.pageClass === "synthesis-support"
             ? "single-column"
-            : "hero-proof");
+            : "hero-proof"));
 
-  const hasChart = Boolean(recipe.chartSpec);
+  const hasChart = Boolean(recipe.chartSpec || recipe.diagramSpec);
   const hasRightRail =
     !recipe.freeformLayoutPlan &&
     (family === "chart-rail" ||
@@ -1971,6 +1981,8 @@ function inferPageRecipeCompositionFingerprint(
     columnCount:
       recipe.freeformLayoutPlan
         ? freeformColumnCount
+        : family === "research-figure-stage"
+          ? 1
         : family === "single-column"
         ? 1
         : family === "sequence-grid"
@@ -2788,6 +2800,22 @@ export function resolveStandardHeuristicRecipePageCount(args: {
   );
 }
 
+function resolvePreferredStyleProfileIdForThinkingMode(mode: DeckThinkingMode) {
+  return mode === "academic-research" ? "academic" : null;
+}
+
+function isScientificShortDeckLane(args: {
+  thinkingMode: DeckThinkingMode;
+  brief: string;
+  pageCount: number;
+}) {
+  return shouldUseScientificDiagramLane({
+    thinkingMode: args.thinkingMode,
+    brief: args.brief,
+    totalPages: args.pageCount,
+  });
+}
+
 function buildStandardHeuristicRecipePlan(args: {
   payload: GenerateStudioReportRequest;
   evidenceGraph: EvidenceGraph;
@@ -2833,6 +2861,11 @@ function buildStandardHeuristicRecipePlan(args: {
     preflightPageCount: args.preflightPageCount,
     defaultPageCount,
   });
+  const scientificDiagramLane = isScientificShortDeckLane({
+    thinkingMode,
+    brief: args.payload.brief,
+    pageCount,
+  });
   const pages: PageRecipePlan["pages"] = [];
   const reserveDecisionPage = pageCount > 1;
   const canAddEvidencePage = () => pages.length < pageCount - (reserveDecisionPage ? 1 : 0);
@@ -2849,7 +2882,9 @@ function buildStandardHeuristicRecipePlan(args: {
       : thinkingMode === "case-study"
         ? "Case overview"
         : thinkingMode === "academic-research"
-          ? "Research question"
+          ? scientificDiagramLane && pageCount <= 2
+            ? "Research question and setup"
+            : "Research question"
           : deriveSpecificStudioTitle({
               seeds: baseTitleSeeds,
               fallback: "Brief focus",
@@ -2863,7 +2898,9 @@ function buildStandardHeuristicRecipePlan(args: {
       : thinkingMode === "case-study"
         ? "Frame the case and the central challenge immediately."
         : thinkingMode === "academic-research"
-          ? "State the research question and key finding immediately."
+          ? scientificDiagramLane && pageCount <= 2
+            ? "Frame the research question, setup, and evaluation boundary before the figure page."
+            : "State the research question and key finding immediately."
           : `State the core claim about ${args.briefSynthesis.subject || "the brief"} immediately.`);
   const closingPageTitle =
     thinkingMode === "strategy"
@@ -2900,7 +2937,7 @@ function buildStandardHeuristicRecipePlan(args: {
       : thinkingMode === "case-study"
         ? "Land the case through one clear outcome pattern and one brief lesson, not a recommendation memo."
         : thinkingMode === "academic-research"
-          ? "Keep the close interpretive and restrained, with one result reading and one next-work note."
+          ? "Keep the close interpretive and restrained, with one result reading, one limitation note, and one next-work cue."
           : "Close with one implication-led sequence or synthesis, not a memo stack.";
 
   pages.push({
@@ -2908,7 +2945,10 @@ function buildStandardHeuristicRecipePlan(args: {
     pageTitle: openingPageTitle,
     objective: openingPageObjective,
     insight: clampText(args.briefSynthesis.pageIntents[0]?.headlineClaim ?? strongestClaim, 260),
-    compositionHint: "Open with a thesis-led page that feels editorial and decisive, not a standard left-text right-card split.",
+    compositionHint:
+      thinkingMode === "academic-research"
+        ? "Open like a paper readout: one research question, one setup frame, and restrained supporting cues rather than a consulting-style card wall."
+        : "Open with a thesis-led page that feels editorial and decisive, not a standard left-text right-card split.",
     layout: "hero-proof",
     desiredChartKind: "none",
     composite: "metric-strip",
@@ -2916,7 +2956,32 @@ function buildStandardHeuristicRecipePlan(args: {
     moduleHints: ["core.metrics"],
   });
 
-  if (canAddEvidencePage() && args.evidenceGraph.timelineSets[0] && isStrongTimelineSet(args.evidenceGraph.timelineSets[0])) {
+  if (scientificDiagramLane && canAddEvidencePage()) {
+    pages.push({
+      pageNumber: pages.length + 1,
+      pageTitle: "Method and result",
+      objective:
+        pageCount === 1
+          ? "Render one dominant neural-network figure with the method signal and the core empirical takeaway."
+          : "Render one dominant neural-network figure with only compact method annotations and one empirical takeaway.",
+      insight: clampText(
+        args.briefSynthesis.pageIntents[1]?.headlineClaim ??
+          "One deterministic neural topology should anchor the method page instead of a generic chart or card grid.",
+        260,
+      ),
+      compositionHint:
+        "Use one central research figure as the dominant object, keep labels and caption compact, and avoid splitting the page into equal-weight cards.",
+      layout: "hero-proof",
+      desiredChartKind: "none",
+      composite: "none",
+      evidenceIds: args.evidenceGraph.factTable.items.slice(0, 4).map((item) => item.id),
+      moduleHints: ["core.metrics"],
+    });
+  } else if (
+    canAddEvidencePage() &&
+    args.evidenceGraph.timelineSets[0] &&
+    isStrongTimelineSet(args.evidenceGraph.timelineSets[0])
+  ) {
     const timeline = args.evidenceGraph.timelineSets[0];
     pages.push({
       pageNumber: pages.length + 1,
@@ -2940,7 +3005,12 @@ function buildStandardHeuristicRecipePlan(args: {
     });
   }
 
-  if (canAddEvidencePage() && args.evidenceGraph.comparisonSets[0] && isStrongComparisonSet(args.evidenceGraph.comparisonSets[0])) {
+  if (
+    !scientificDiagramLane &&
+    canAddEvidencePage() &&
+    args.evidenceGraph.comparisonSets[0] &&
+    isStrongComparisonSet(args.evidenceGraph.comparisonSets[0])
+  ) {
     const comparison = args.evidenceGraph.comparisonSets[0];
     const waterfallCapable = comparison.items.some((item) => (item.numericValue ?? 0) < 0);
     pages.push({
@@ -2977,9 +3047,11 @@ function buildStandardHeuristicRecipePlan(args: {
       objective: draftPageIntent?.pageQuestion ?? "Prove one additional evidence-backed point.",
       insight: clampText(fallbackClaim, 260),
       compositionHint:
-        pages.length % 2 === 0
-          ? "Use a single dominant content field with one compact supporting zone."
-          : "Use a lighter stacked editorial composition rather than another hero template.",
+        scientificDiagramLane && pages.length === 2
+          ? "Interpret the figure carefully, acknowledge the limit, and keep the page lighter than the figure stage."
+          : pages.length % 2 === 0
+            ? "Use a single dominant content field with one compact supporting zone."
+            : "Use a lighter stacked editorial composition rather than another hero template.",
       layout: "hero-proof",
       desiredChartKind: "none",
       composite: "none",
@@ -4480,8 +4552,36 @@ function resolvePageRecipe(args: {
           allowFlexibleChart: true,
         })
       : null);
+  const scientificDiagramLane = isScientificShortDeckLane({
+    thinkingMode: args.briefSynthesis.thinkingMode ?? "neutral",
+    brief: args.brief,
+    pageCount: args.totalPages,
+  });
+  const diagramSpec =
+    scientificDiagramLane &&
+    isScientificDiagramFigurePage({
+      pageNumber: args.page.pageNumber,
+      totalPages: args.totalPages,
+    })
+      ? buildScientificDiagramSpec({
+          brief: args.brief,
+          subject: args.briefSynthesis.subject,
+          page: {
+            pageTitle: args.page.pageTitle,
+            heroClaim: args.page.insight,
+            objective: args.page.objective,
+            takeaway: args.page.objective,
+            supportBullets: resolveSupportBullets(args.page, args.evidenceGraph),
+            evidenceBullets: resolveEvidenceBullets(args.page, args.evidenceGraph),
+          },
+        })
+      : null;
   const effectiveLayout =
-    args.page.layout === "chart-insight" && !chartSpec ? "comparison" : args.page.layout;
+    diagramSpec
+      ? "hero-proof"
+      : args.page.layout === "chart-insight" && !chartSpec
+        ? "comparison"
+        : args.page.layout;
   const pageClass =
     args.page.pageClass ?? resolveLongFormPageClass(args.page.pageNumber, args.totalPages);
   const densityBudget = resolvePageDensityBudget(pageClass);
@@ -4496,14 +4596,16 @@ function resolvePageRecipe(args: {
             manifest.kind === "phases",
           )
         : args.manifests;
-  const moduleBinding = pickBestModuleManifest({
-    page: {
-      ...args.page,
-      layout: effectiveLayout,
-    },
-    manifests: candidateManifests,
-    chartKind: chartSpec?.kind ?? null,
-  });
+  const moduleBinding = diagramSpec
+    ? null
+    : pickBestModuleManifest({
+        page: {
+          ...args.page,
+          layout: effectiveLayout,
+        },
+        manifests: candidateManifests,
+        chartKind: chartSpec?.kind ?? null,
+      });
   const composite =
     args.page.composite === "none"
       ? chartSpec
@@ -4528,9 +4630,12 @@ function resolvePageRecipe(args: {
     insight: args.page.insight,
     pageClass,
     densityBudget,
-    compositionHint,
+    compositionHint:
+      diagramSpec
+        ? "Stage one dominant scientific figure in the middle, keep method cues and caption compact, and never let the page fall back into equal-weight cards."
+        : compositionHint,
     layout: effectiveLayout,
-    chartPriority,
+    chartPriority: diagramSpec ? "none" : chartPriority,
     evidenceIds: args.page.evidenceIds,
     evidenceBundle: resolveRelevantEvidenceBundle(args.page, args.evidenceGraph),
     heroClaim: synthesizedIntent?.headlineClaim ?? args.page.insight,
@@ -4544,7 +4649,9 @@ function resolvePageRecipe(args: {
         : resolveEvidenceBullets(args.page, args.evidenceGraph),
     takeaway: synthesizedIntent?.takeaway ?? args.page.objective,
     moduleBinding,
-    chartSpec: chartSpec
+    chartSpec: diagramSpec
+      ? null
+      : chartSpec
       ? {
           ...chartSpec,
           composite:
@@ -4555,8 +4662,11 @@ function resolvePageRecipe(args: {
               : "annotation-rail",
         }
       : null,
+    diagramSpec,
     fallbackReason:
-      args.page.desiredChartKind !== "none" && !chartSpec ? "Requested chart data was not strong enough." : null,
+      !diagramSpec && args.page.desiredChartKind !== "none" && !chartSpec
+        ? "Requested chart data was not strong enough."
+        : null,
     workloadLane: args.briefSynthesis.workloadLane,
     taskGrammarPackIds: args.briefSynthesis.taskGrammarPacks.map((pack) => pack.id),
     complexitySignalPhrases: args.briefSynthesis.complexitySignalPhrases,
@@ -5042,6 +5152,7 @@ export async function runStudioGenerationV2(args: {
   const { profile: styleProfile } = resolveDeckStyleProfile({
     brief: args.payload.brief,
     moduleSemanticRoles: [],
+    preferredProfileId: resolvePreferredStyleProfileIdForThinkingMode(thinkingContext.mode),
   });
   const heroArtDirection = buildDeckHeroArtDirection({
     brief: args.payload.brief,
@@ -5186,8 +5297,10 @@ export async function runStudioGenerationV2(args: {
       type: "assistant_chunk",
       runId: args.runId,
       stage: `page-recipe-${recipe.pageNumber}`,
-      content: recipe.chartSpec
-        ? `Page ${recipe.pageNumber} is an ${recipe.pageClass} page using a ${recipe.chartSpec.kind} chart with ${recipe.chartSpec.categories.length} categories${chartPageIntent.enabled ? " in chart-first mode" : ""}.`
+      content: recipe.diagramSpec
+        ? `Page ${recipe.pageNumber} is an ${recipe.pageClass} page routed into the scientific-diagram lane with a deterministic ${recipe.diagramSpec.family} figure.`
+        : recipe.chartSpec
+          ? `Page ${recipe.pageNumber} is an ${recipe.pageClass} page using a ${recipe.chartSpec.kind} chart with ${recipe.chartSpec.categories.length} categories${chartPageIntent.enabled ? " in chart-first mode" : ""}.`
         : heroModelIntent.enabled
           ? `Page ${recipe.pageNumber} is an ${recipe.pageClass} page and will render as a dominant hero-model concept page for ${heroModelIntent.objectFocus ?? "the core system"}.`
           : `Page ${recipe.pageNumber} is an ${recipe.pageClass} page with a ${recipe.compositionHint ?? "content-led"} composition direction and ${recipe.moduleBinding?.label ?? "built-in"} template support.`,
@@ -5205,6 +5318,45 @@ export async function runStudioGenerationV2(args: {
       label: `Rendering page ${recipe.pageNumber}`,
       pageNumber: recipe.pageNumber,
     });
+    if (recipe.diagramSpec) {
+      const deterministicPage = validateGeneratedPageHtml({
+        html: composeSinglePageHtml({
+          title: alignedRecipePlan.title,
+          sectionHtml: composeDeterministicPageSection(recipe, styleProfile),
+          styleProfile: reportStyleProfile,
+          htmlOutputMode: args.payload.htmlOutputMode,
+        }),
+        expectedPageNumber: recipe.pageNumber,
+        expectedPageTitle: recipe.pageTitle,
+        htmlOutputMode: args.payload.htmlOutputMode,
+      });
+      await emit({
+        type: "assistant_chunk",
+        runId: args.runId,
+        stage: `page-render-${recipe.pageNumber}`,
+        content: `Page ${recipe.pageNumber} matched the scientific-diagram lane, so Studio rendered the figure deterministically instead of asking the model to author raw diagram HTML.`,
+      });
+      if (waitForPageOneReady) {
+        await pageOneReadyGate;
+      }
+      await emit({
+        type: "page_ready",
+        runId: args.runId,
+        pageNumber: recipe.pageNumber,
+        pageTitle: deterministicPage.pageTitle,
+        pageHtml: deterministicPage.pageHtml,
+      });
+      if (recipe.pageNumber === 1) {
+        releasePageOneReady?.();
+        releasePageOneReady = null;
+      }
+      return {
+        pageNumber: recipe.pageNumber,
+        sectionHtml: deterministicPage.sectionHtml,
+        model: args.agentConfig.model,
+        animationPage: deterministicPage.animationPage ?? null,
+      };
+    }
     const eligibleModuleOptions = resolvePageModuleOptions({
       moduleUsageMode: args.payload.moduleUsageMode,
       pageClass: recipe.pageClass,
@@ -5542,7 +5694,7 @@ export async function runStudioGenerationV2(args: {
     label: "Finalizing editable deck",
   });
 
-  const finalReport = buildSanitizedFinalReport({
+  const baseFinalReport = buildSanitizedFinalReport({
     html: composeDeckHtml({
       title: alignedRecipePlan.title,
       sections: pageSections,
@@ -5555,6 +5707,7 @@ export async function runStudioGenerationV2(args: {
     htmlOutputMode: args.payload.htmlOutputMode,
     animationStructure: { pages: pageAnimationPages },
   });
+  const finalReport = baseFinalReport;
 
   await emit({
     type: "final_report",
@@ -5614,6 +5767,7 @@ export async function runStudioGenerationV1(args: {
   const { profile: styleProfile } = resolveDeckStyleProfile({
     brief: args.payload.brief,
     moduleSemanticRoles: [],
+    preferredProfileId: resolvePreferredStyleProfileIdForThinkingMode(thinkingContext.mode),
   });
   const heroArtDirection = buildDeckHeroArtDirection({
     brief: args.payload.brief,
@@ -5728,6 +5882,7 @@ export async function runStudioGenerationV1(args: {
       takeaway: page.goal,
       moduleBinding: null,
       chartSpec: null,
+      diagramSpec: null,
       fallbackReason: null,
     };
   });
@@ -5878,7 +6033,7 @@ export async function runStudioGenerationV1(args: {
     label: "Assembling final deck",
   });
 
-  const finalReport = buildSanitizedFinalReport({
+  const baseFinalReport = buildSanitizedFinalReport({
     html: composeDeckHtml({
       title: alignedDeckPlan.title,
       sections: pageSections,
@@ -5891,6 +6046,7 @@ export async function runStudioGenerationV1(args: {
     htmlOutputMode: args.payload.htmlOutputMode,
     animationStructure: { pages: pageAnimationPages },
   });
+  const finalReport = baseFinalReport;
 
   await emit({
     type: "final_report",
@@ -6016,7 +6172,7 @@ export async function runStudioRevision(args: {
     preferredProfileId:
       (args.payload.report as { styleProfileId?: string }).styleProfileId ??
       (args.payload.report as { styleProfile?: { id?: string } }).styleProfile?.id ??
-      null,
+      resolvePreferredStyleProfileIdForThinkingMode(thinkingContext.mode),
   });
   const reportStyleProfile = toGeneratedReportStyleProfile(styleProfile);
   const deckSections = extractDeckSections(args.payload.report.html);
@@ -6197,13 +6353,18 @@ export async function runStudioRevision(args: {
       chartPageIntent,
       heroModelIntent,
     });
+    const scientificDiagramPage = currentSection.sectionHtml.includes(
+      `data-html-module-kind="${SCIENTIFIC_DIAGRAM_MODULE_KIND}"`,
+    );
     const shrunkSectionHtml = deterministicShrink.sectionHtml;
-    const deterministicOnlyRepair = shouldApplyDeterministicOnlyRepair({
-      measurement,
-      changed: deterministicShrink.changed,
-      chartPageIntent,
-      repairProfile,
-    });
+    const deterministicOnlyRepair =
+      scientificDiagramPage ||
+      shouldApplyDeterministicOnlyRepair({
+        measurement,
+        changed: deterministicShrink.changed,
+        chartPageIntent,
+        repairProfile,
+      });
 
     await emit({
       type: "page_started",
@@ -6401,7 +6562,7 @@ export async function runStudioRevision(args: {
     label: "Finalizing repaired deck",
   });
 
-  const finalReport = buildSanitizedFinalReport({
+  const baseFinalReport = buildSanitizedFinalReport({
     html: composeDeckHtml({
       title: deckTitle,
       sections: deckSections
@@ -6426,6 +6587,7 @@ export async function runStudioRevision(args: {
         .filter((page): page is HtmlAnimationPage => Boolean(page)),
     },
   });
+  const finalReport = baseFinalReport;
 
   await emit({
     type: "final_report",

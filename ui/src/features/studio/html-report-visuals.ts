@@ -22,6 +22,14 @@ import {
 } from "./html-report-canvas";
 import { collectHtmlEditableCandidates, extractHtmlEditableStructure } from "./html-report-structure";
 import { getIndustryStyleProfile } from "./industry-style";
+import {
+  SCIENTIFIC_DIAGRAM_MODULE_KIND,
+  SCIENTIFIC_DIAGRAM_SPEC_ATTRIBUTE,
+  buildScientificDiagramTheme,
+  parseScientificDiagramSpec,
+  renderScientificDiagramModule,
+  serializeScientificDiagramSpec,
+} from "./scientific-diagram";
 
 const GENERAL_CONSULTING_PROFILE = getIndustryStyleProfile("general-consulting");
 const DEFAULT_PAGE_BACKGROUND = GENERAL_CONSULTING_PROFILE.tokens.pageBackground;
@@ -208,6 +216,7 @@ function buildVisualIdentitySignature(args: {
   const ariaToken = normalizeVisualIdentityToken(args.element.getAttribute("aria-label"));
   const moduleId = normalizeVisualIdentityToken(args.element.getAttribute("data-html-module-id"));
   const moduleLabel = normalizeVisualIdentityToken(args.element.getAttribute("data-html-module-label"));
+  const moduleKind = normalizeVisualIdentityToken(args.element.getAttribute("data-html-module-kind"));
   const childSignature = collectVisualChildSignature(args.element);
   const textTagSignature = collectVisualTextTagSignature(args.element);
   const ancestorSignature = collectVisualAncestorSignature(args.element).join("/");
@@ -220,6 +229,7 @@ function buildVisualIdentitySignature(args: {
     ariaToken ? `aria:${ariaToken}` : "",
     moduleId ? `module:${moduleId}` : "",
     moduleLabel ? `label:${moduleLabel}` : "",
+    moduleKind ? `module-kind:${moduleKind}` : "",
     childSignature ? `children:${childSignature}` : "",
     textTagSignature ? `text-tags:${textTagSignature}` : "",
     ancestorSignature ? `ancestors:${ancestorSignature}` : "",
@@ -358,6 +368,17 @@ export function inferVisualKind(element: Element): HtmlVisualNodeKind | null {
 
 function isLikelyVisualElement(element: Element) {
   if (element.matches("section.page")) {
+    return false;
+  }
+
+  const scientificDiagramRoot = element.closest(
+    `[data-html-module-kind="${SCIENTIFIC_DIAGRAM_MODULE_KIND}"]`,
+  );
+  if (
+    scientificDiagramRoot &&
+    scientificDiagramRoot !== element &&
+    !element.hasAttribute("data-html-visual-kind")
+  ) {
     return false;
   }
 
@@ -527,6 +548,11 @@ function extractPageVisualNodes(
     const persistentId = element.getAttribute("data-html-visual-key")?.trim();
     const moduleId = element.getAttribute("data-html-module-id")?.trim();
     const moduleLabel = element.getAttribute("data-html-module-label")?.trim();
+    const moduleKind = element.getAttribute("data-html-module-kind")?.trim();
+    const diagramSpec =
+      moduleKind === SCIENTIFIC_DIAGRAM_MODULE_KIND
+        ? parseScientificDiagramSpec(element.getAttribute(SCIENTIFIC_DIAGRAM_SPEC_ATTRIBUTE))
+        : null;
     const fallbackSignature = buildVisualIdentitySignature({
       element,
       kind,
@@ -548,6 +574,8 @@ function extractPageVisualNodes(
       sourceIndex,
       moduleId: moduleId || undefined,
       moduleLabel: moduleLabel || undefined,
+      moduleKind: moduleKind === SCIENTIFIC_DIAGRAM_MODULE_KIND ? SCIENTIFIC_DIAGRAM_MODULE_KIND : undefined,
+      diagramSpec,
       fitParticipation: resolveHtmlVisualFitParticipation({
         kind,
         explicitFitParticipation: readHtmlFitParticipation(element),
@@ -1213,7 +1241,92 @@ export function updateGeneratedHtmlReportVisualNode(args: {
     element.removeAttribute("data-html-module-label");
   }
 
-  applyVisualNodeStyleToElement(element, nextKind, nextStyle);
+  let targetElement = element;
+  if (targetNode.moduleKind === SCIENTIFIC_DIAGRAM_MODULE_KIND && targetNode.diagramSpec) {
+    const template = document.createElement("template");
+    template.innerHTML = renderScientificDiagramModule({
+      spec: targetNode.diagramSpec,
+      theme: buildScientificDiagramTheme({
+        report: args.report,
+        accent: nextStyle.accent ?? null,
+        border: nextStyle.border ?? null,
+        background: nextStyle.background ?? null,
+      }),
+    });
+    const replacement = template.content.firstElementChild as HTMLElement | null;
+    if (replacement) {
+      replacement.setAttribute("data-html-visual-key", targetNode.id);
+      targetElement = replacement;
+      element.replaceWith(replacement);
+    }
+  }
+
+  applyVisualNodeStyleToElement(targetElement, nextKind, nextStyle);
+
+  return refreshReportVisualArtifacts({
+    report: args.report,
+    document,
+  });
+}
+
+export function updateGeneratedHtmlReportScientificDiagram(args: {
+  report: GeneratedHtmlReport;
+  pageNumber: number;
+  nodeId: string;
+  diagramSpec: HtmlVisualNode["diagramSpec"];
+}) {
+  if (typeof DOMParser === "undefined") {
+    return args.report;
+  }
+
+  const visualStructure = ensureHtmlVisualStructure(args.report);
+  const targetPage = visualStructure.pages.find((page) => page.pageNumber === args.pageNumber) ?? null;
+  const targetNode = targetPage?.nodes.find((node) => node.id === args.nodeId) ?? null;
+  if (!targetPage || !targetNode || targetNode.moduleKind !== SCIENTIFIC_DIAGRAM_MODULE_KIND) {
+    return args.report;
+  }
+
+  const { document, page } = buildPageScopedReport(args);
+  if (!page) {
+    return args.report;
+  }
+
+  const element = findVisualNodeElement({
+    page,
+    node: targetNode,
+  });
+  if (!element) {
+    return args.report;
+  }
+
+  const nextSpec = args.diagramSpec ? parseScientificDiagramSpec(serializeScientificDiagramSpec(args.diagramSpec)) : null;
+  if (!nextSpec) {
+    return args.report;
+  }
+
+  const template = document.createElement("template");
+  template.innerHTML = renderScientificDiagramModule({
+    spec: nextSpec,
+    theme: buildScientificDiagramTheme({
+      report: args.report,
+      accent: targetNode.style.accent ?? null,
+      border: targetNode.style.border ?? null,
+      background: targetNode.style.background ?? null,
+    }),
+  });
+  const replacement = template.content.firstElementChild as HTMLElement | null;
+  if (!replacement) {
+    return args.report;
+  }
+
+  replacement.setAttribute("data-html-visual-key", targetNode.id);
+  replacement.setAttribute("data-html-module-kind", SCIENTIFIC_DIAGRAM_MODULE_KIND);
+  replacement.setAttribute(SCIENTIFIC_DIAGRAM_SPEC_ATTRIBUTE, serializeScientificDiagramSpec(nextSpec));
+  element.replaceWith(replacement);
+  applyVisualNodeStyleToElement(replacement, targetNode.kind, {
+    ...targetNode.style,
+    accent: targetNode.style.accent ?? args.report.styleProfile?.accentColor ?? targetNode.style.accent,
+  });
 
   return refreshReportVisualArtifacts({
     report: args.report,

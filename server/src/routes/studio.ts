@@ -3,11 +3,17 @@ import { Router } from "express";
 import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
 import {
+  createStudioBridgeLaunchRequestSchema,
   generateStudioReportRequestSchema,
   reviseStudioReportRequestSchema,
+  type CreateStudioBridgeLaunchRequest,
   type GenerateStudioReportRequest,
   type ReviseStudioReportRequest,
 } from "../lib/studio-engine/schemas.js";
+import {
+  createStudioBridgeLaunch,
+  consumeStudioBridgeLaunch,
+} from "../lib/studio-engine/bridge-launch.js";
 import {
   createStreamWriter,
   getBlockingAgentChecks,
@@ -32,6 +38,51 @@ export function studioRoutes() {
   loadStudio3dHeroSkill();
   const router = Router();
 
+  router.post("/studio/bridge/launch", validate(createStudioBridgeLaunchRequestSchema), (req, res) => {
+    const payload = req.body as CreateStudioBridgeLaunchRequest;
+    const launch = createStudioBridgeLaunch(payload);
+
+    logger.info(
+      {
+        launchId: launch.launchId,
+        mode: payload.mode ?? "inject-and-generate",
+        generationMode: payload.generationMode ?? "standard",
+        requestedPageCount: payload.requestedPageCount ?? null,
+      },
+      "studio bridge launch created",
+    );
+
+    res.json(launch);
+  });
+
+  router.get("/studio/bridge/launch/:launchId", (req, res) => {
+    const launchId = typeof req.params.launchId === "string" ? req.params.launchId.trim() : "";
+    if (!launchId) {
+      res.status(404).json({
+        error: "Studio launch link was not found or has already expired.",
+      });
+      return;
+    }
+
+    const payload = consumeStudioBridgeLaunch(launchId);
+    if (!payload) {
+      res.status(404).json({
+        error: "Studio launch link was not found or has already expired.",
+      });
+      return;
+    }
+
+    logger.info(
+      {
+        launchId,
+        mode: payload.mode,
+      },
+      "studio bridge launch consumed",
+    );
+
+    res.json(payload);
+  });
+
   router.post("/studio/generate-html", validate(generateStudioReportRequestSchema), async (req, res) => {
     const payload = req.body as GenerateStudioReportRequest;
     const compactedBrief = compactBriefForGeneration(
@@ -53,6 +104,7 @@ export function studioRoutes() {
           briefCompacted: compactedBrief.compacted,
           pageCount: payload.pageCount,
           generationMode: payload.generationMode,
+          attachmentCount: preparedPayload.attachments.length,
           command: agentConfig.command,
           model: agentConfig.model,
           runId,
@@ -164,6 +216,7 @@ export function studioRoutes() {
           briefCompacted: compactedBrief.compacted,
           pageCount: payload.pageCount,
           generationMode: payload.generationMode,
+          attachmentCount: preparedPayload.attachments.length,
           command: agentConfig.command,
           model: agentConfig.model,
           runId,

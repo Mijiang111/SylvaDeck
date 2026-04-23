@@ -66,6 +66,112 @@ function chartMarkup({ title, bars, footnote = "" }) {
   `;
 }
 
+function scientificDiagramMarkup({
+  title,
+  caption,
+  topLabel,
+  bottomLabel,
+  layers,
+  leftNote = "",
+  rightNote = "",
+}) {
+  const width = 860;
+  const height = 360;
+  const xPadding = 80;
+  const yPadding = 44;
+  const spacing = layers.length > 1 ? (width - xPadding * 2) / (layers.length - 1) : 0;
+  const geometry = layers.map((layer, layerIndex) => {
+    const x = xPadding + spacing * layerIndex;
+    const radius = Math.max(14, Math.min(24, 26 - Math.max(0, layer.nodeCount - 4) * 1.5));
+    const ySpacing = layer.nodeCount > 1 ? (height - yPadding * 2) / (layer.nodeCount - 1) : 0;
+    const nodes = Array.from({ length: layer.nodeCount }, (_, nodeIndex) => ({
+      x,
+      y: layer.nodeCount === 1 ? height / 2 : yPadding + ySpacing * nodeIndex,
+      radius,
+    }));
+    return {
+      ...layer,
+      x,
+      leftPercent: (x / width) * 100,
+      nodes,
+    };
+  });
+  const spec = {
+    family: "neural-network",
+    title,
+    caption,
+    layers: layers.map((layer) => ({
+      id: layer.id,
+      role: layer.role,
+      label: layer.label,
+      nodeCount: layer.nodeCount,
+    })),
+    connectivity: "dense",
+    topLabel,
+    bottomLabel,
+    sideNotes: [
+      ...(leftNote ? [{ id: "note-1", text: leftNote, side: "left" }] : []),
+      ...(rightNote ? [{ id: "note-2", text: rightNote, side: "right" }] : []),
+    ],
+    stylePreset: "paper-white",
+  };
+  return `
+    <div class="scientific-diagram-shell" data-html-visual-kind="chart-frame" data-html-fit-role="content" data-html-module-kind="scientific-diagram" data-html-module-label="Scientific diagram" data-html-diagram-spec="${escapeHtml(JSON.stringify(spec))}" style="position:relative;border:1px solid rgba(47,93,132,0.16);border-radius:32px;background:#ffffff;padding:24px 32px 28px;min-height:560px;display:flex;flex-direction:column;gap:18px;overflow:hidden;">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;">
+        <div>
+          <div class="scientific-diagram-kicker" style="margin-bottom:10px;font-size:12px;letter-spacing:0.18em;text-transform:uppercase;color:#6f88a0;">Research figure</div>
+          <h3 class="scientific-diagram-title" style="margin:0;font-size:30px;line-height:1.15;font-weight:600;color:#17283a;max-width:860px;">${escapeHtml(title)}</h3>
+          <p class="scientific-diagram-top-label" style="margin:10px 0 0 0;font-size:15px;line-height:1.5;color:#617182;">${escapeHtml(topLabel)}</p>
+        </div>
+        <div style="display:inline-flex;align-items:center;padding:8px 12px;border:1px solid rgba(47,93,132,0.14);background:rgba(246,248,251,0.72);font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:#2f5d84;">Dense</div>
+      </div>
+      <div class="scientific-diagram-figure" style="position:relative;flex:1;min-height:360px;padding:24px 168px 36px;">
+        ${
+          leftNote
+            ? `<p class="scientific-diagram-side-note scientific-diagram-side-note-left" style="position:absolute;left:0;top:24px;width:148px;margin:0;padding:12px 14px;border:1px solid rgba(47,93,132,0.12);background:rgba(246,248,251,0.92);font-size:14px;line-height:1.45;color:#617182;">${escapeHtml(leftNote)}</p>`
+            : ""
+        }
+        ${
+          rightNote
+            ? `<p class="scientific-diagram-side-note scientific-diagram-side-note-right" style="position:absolute;right:0;top:84px;width:148px;margin:0;padding:12px 14px;border:1px solid rgba(47,93,132,0.12);background:rgba(246,248,251,0.92);font-size:14px;line-height:1.45;color:#617182;">${escapeHtml(rightNote)}</p>`
+            : ""
+        }
+        <svg class="scientific-diagram-network" viewBox="0 0 860 360" role="img" aria-label="${escapeHtml(title)}" style="display:block;width:100%;height:360px;">
+          ${geometry
+            .slice(0, -1)
+            .map((sourceLayer, layerIndex) =>
+              sourceLayer.nodes
+                .flatMap((sourceNode) =>
+                  geometry[layerIndex + 1].nodes.map(
+                    (targetNode) =>
+                      `<line x1="${sourceNode.x}" y1="${sourceNode.y}" x2="${targetNode.x}" y2="${targetNode.y}" stroke="rgba(47,93,132,0.34)" stroke-width="2.2" />`,
+                  ),
+                )
+                .join(""),
+            )
+            .join("")}
+          ${geometry
+            .flatMap((entry) =>
+              entry.nodes.map(
+                (node) =>
+                  `<circle cx="${node.x}" cy="${node.y}" r="${node.radius}" fill="rgba(47,93,132,0.12)" stroke="rgba(47,93,132,0.82)" stroke-width="3" />`,
+              ),
+            )
+            .join("")}
+        </svg>
+        ${geometry
+          .map(
+            (entry) =>
+              `<p class="scientific-diagram-layer-label" style="position:absolute;top:0;left:calc(${entry.leftPercent}% - 68px);width:136px;margin:0;text-align:center;font-size:13px;letter-spacing:0.08em;text-transform:uppercase;color:#617182;">${escapeHtml(entry.label)}</p>`,
+          )
+          .join("")}
+        <p class="scientific-diagram-bottom-label" style="position:absolute;left:50%;bottom:0;transform:translateX(-50%);margin:0;font-size:14px;line-height:1.4;color:#617182;text-align:center;">${escapeHtml(bottomLabel)}</p>
+      </div>
+      <p class="scientific-diagram-caption" style="margin:0;border-top:1px solid rgba(47,93,132,0.12);padding-top:14px;font-size:15px;line-height:1.55;color:#617182;">${escapeHtml(caption)}</p>
+    </div>
+  `;
+}
+
 function heroModelMarkup() {
   return `
     <div class="hero-model-shell" data-html-visual-kind="surface">
@@ -1378,7 +1484,67 @@ const academicResearchPages = createSectionPages([
     `,
   },
 ]);
+
+const academicNeuralNetworkPages = createSectionPages([
+  {
+    title: "Research question",
+    eyebrow: "Conference readout",
+    left: `
+      <h1>Can a compact reranking MLP improve long-context retrieval without destabilizing latency?</h1>
+      <p class="lede">The study isolates one neural reranking stage after retrieval, keeps the rest of the stack fixed, and measures whether the extra topology sharpens relevance under long-context load.</p>
+      <div class="surface-grid">
+        ${card("Question", "Does one dense reranking network recover relevance when context length grows past the baseline retriever's comfort zone?")}
+        ${card("Setup", "The experiment holds the retriever constant, adds one deterministic reranking network, and compares relevance lift against a latency budget.")}
+      </div>
+    `,
+    right: `
+      <div class="surface-grid">
+        ${card("Metric", "nDCG@10 is the primary ranking metric; latency remains a hard boundary rather than a soft preference.")}
+        ${card("Boundary", "The page stays paper-white and figure-led, not a consulting summary with recommendation cards.")}
+      </div>
+    `,
+    footer: "Research setup: isolate one reranking intervention before interpreting broader system implications.",
+  },
+  {
+    title: "Method and result",
+    eyebrow: "Deterministic neural figure",
+    left: scientificDiagramMarkup({
+      title: "Dense reranking network",
+      topLabel: "Method topology for the reranking stage",
+      bottomLabel: "Output score for final document order",
+      caption:
+        "A dense reranking MLP concentrates the method page into one editable figure: compact input features flow through two hidden layers before producing a final relevance score.",
+      leftNote: "Input features bundle lexical overlap, retrieval score, and context-quality signals.",
+      rightNote: "The output score reorders candidates while keeping end-to-end latency inside the paper's stated budget.",
+      layers: [
+        { id: "layer-input", role: "input", label: "Input layer", nodeCount: 4 },
+        { id: "layer-hidden-1", role: "hidden", label: "Hidden 1", nodeCount: 5 },
+        { id: "layer-hidden-2", role: "hidden", label: "Hidden 2", nodeCount: 5 },
+        { id: "layer-output", role: "output", label: "Output score", nodeCount: 1 },
+      ],
+    }),
+    footer: "Result cue: the deterministic figure page keeps one dominant scientific object with compact annotations only.",
+  },
+  {
+    title: "Interpretation and next work",
+    eyebrow: "Interpretation",
+    left: `
+      <h1>The reranking network helps most when retrieval remains decent but long-context scoring starts to blur relevance.</h1>
+      <p class="lede">The gain is real but bounded: the model sharpens ordering when features remain informative, yet it cannot rescue cases where retrieval never surfaces the right candidates.</p>
+      <div class="surface-grid">
+        ${card("Interpretation", "The neural stage is best read as a targeted ranking refinement, not a full substitute for retrieval quality.")}
+        ${card("Limitation", "The dense topology is still sensitive to weak input features, so relevance lift tapers when recall collapses.")}
+        ${card("Next work", "Extend the study with broader datasets and compare the dense MLP against lighter calibration heads before increasing model depth.")}
+      </div>
+    `,
+    footer: "Research close: interpret carefully, state the limitation explicitly, then name the next experiment.",
+  },
+]);
 const academicResearchReport = createReport("Reranking research presentation", academicResearchPages);
+const academicNeuralNetworkReport = createReport(
+  "Neural reranking research presentation",
+  academicNeuralNetworkPages,
+);
 
 const valuationDeepLanePages = createSectionPages([
   {
@@ -1754,6 +1920,13 @@ const scenarioMap = {
     prompt:
       "Create a 3-page academic research presentation about a reranking experiment, with a research question, method and result, then interpretation and next work.",
     report: academicResearchReport,
+    reviseReports: [],
+  },
+  "academic-neural-network-3page": {
+    id: "academic-neural-network-3page",
+    prompt:
+      "Create a 3-page scientific presentation on a neural-network reranking experiment, with a research question, one method-and-result figure page, then interpretation and next work.",
+    report: academicNeuralNetworkReport,
     reviseReports: [],
   },
   "valuation-deep-1page": {

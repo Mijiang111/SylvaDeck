@@ -635,6 +635,7 @@ test("skill-backed page prompt keeps a compact raw-brief-first workspace", () =>
       takeaway: "The case should open on the operational challenge before diving into specific applications.",
       moduleBinding: null,
       chartSpec: null,
+      diagramSpec: null,
       fallbackReason: null,
     },
     allPages: [
@@ -666,6 +667,7 @@ test("skill-backed page prompt keeps a compact raw-brief-first workspace", () =>
         takeaway: "Open with the case challenge.",
         moduleBinding: null,
         chartSpec: null,
+        diagramSpec: null,
         fallbackReason: null,
       },
     ],

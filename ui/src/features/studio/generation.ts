@@ -434,6 +434,7 @@ function summarizeHtmlReportRequest(payload: HtmlReportRequest) {
     moduleUsageMode: payload.moduleUsageMode ?? "disabled",
     htmlOutputMode: payload.htmlOutputMode ?? "static",
     publishedModuleCount: payload.publishedModules?.length ?? 0,
+    attachmentCount: payload.attachments?.length ?? 0,
   };
 }
 
@@ -1678,7 +1679,11 @@ export async function streamGenerateHtmlReport(
   options?: StreamGenerateHtmlReportOptions,
 ): Promise<HtmlReportGenerationResult> {
   const briefText = buildReportSourceInput({ sourceText }).briefText;
-  const payload = createGenerationRequestPayload(briefText, aiSettings, options?.intent);
+  const payload = createGenerationRequestPayload(
+    briefText,
+    aiSettings,
+    options?.intent,
+  );
 
   workbenchDebugLog("html_report_stream_started", summarizeHtmlReportRequest(payload));
 
@@ -3036,7 +3041,11 @@ export async function generateHtmlReport(
   signal?: AbortSignal,
 ): Promise<HtmlReportGenerationResult> {
   const briefText = buildReportSourceInput({ sourceText }).briefText;
-  const payload = createGenerationRequestPayload(briefText, aiSettings, intent);
+  const payload = createGenerationRequestPayload(
+    briefText,
+    aiSettings,
+    intent,
+  );
   const response = await requestModelHtmlReport(payload, signal);
 
   if (!response.htmlReport) {

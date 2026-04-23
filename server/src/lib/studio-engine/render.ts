@@ -17,6 +17,9 @@ import {
   htmlPageAnimationManifestSchema,
 } from "./schemas.js";
 import {
+  renderScientificDiagramShell,
+} from "./scientific-diagram.js";
+import {
   assessGeneratedTitleQuality,
   compactBoardTitle,
   deriveEvidenceTitle,
@@ -1525,11 +1528,34 @@ function renderComparisonSection(recipe: PageRecipe, theme: DeterministicRenderT
   </div>`;
 }
 
+function renderResearchFigureSection(recipe: PageRecipe, theme: DeterministicRenderTheme) {
+  if (!recipe.diagramSpec) {
+    return renderHeroProofSection(recipe, theme);
+  }
+
+  return `<div data-page-body style="display:flex;flex-direction:column;gap:22px;min-height:100%;">
+    ${renderScientificDiagramShell({
+      spec: recipe.diagramSpec,
+      theme: {
+        surfacePrimary: theme.surfacePrimary,
+        surfaceSecondary: theme.surfaceSecondary,
+        textPrimary: theme.textPrimary,
+        textMuted: theme.textMuted,
+        accentPrimary: theme.accentPrimary,
+        accentSecondary: theme.accentSecondary,
+        borderSubtle: theme.borderSubtle,
+      },
+    })}
+  </div>`;
+}
+
 export function composeDeterministicPageSection(recipe: PageRecipe, styleProfile: DeckStyleProfile) {
   const theme = resolveDeterministicRenderTheme(styleProfile);
-  const moduleLabel = recipe.moduleBinding?.label ?? "Built-in renderer";
+  const moduleLabel = recipe.diagramSpec ? "Scientific diagram" : recipe.moduleBinding?.label ?? "Built-in renderer";
   const body =
-    recipe.layout === "sequence"
+    recipe.diagramSpec
+      ? renderResearchFigureSection(recipe, theme)
+      : recipe.layout === "sequence"
       ? renderSequenceSection(recipe, theme)
       : recipe.layout === "chart-insight"
         ? renderChartInsightSection(recipe, theme)

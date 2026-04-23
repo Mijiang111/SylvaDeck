@@ -21,7 +21,6 @@ import {
   Trash2,
 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
-import { detectImplicitLongFormClarification } from "@/features/studio/generation";
 import { storeModuleAuthoringHandoff } from "@/features/studio/module-authoring-handoff";
 import {
   buildStarterDeckPages,
@@ -38,6 +37,11 @@ import type { WorkbenchAgentProvider } from "@/features/studio/ai-settings";
 import type { HtmlOutputMode, StarterPackManifest, WorkbenchModuleUsageMode } from "@/features/studio/types";
 import { createIntakeThread } from "./runtime-intake";
 import { formatProjectTimestamp } from "./runtime-presentational";
+import {
+  startAiConversationFromPrompt,
+} from "./start-ai-conversation";
+import { useStudioBridgeLaunchBootstrap } from "./hooks/useStudioBridgeLaunchBootstrap";
+import { useStudioInstallGate } from "./hooks/useStudioInstallGate";
 import {
   fireAndForget,
   getAsyncActionErrorMessage,
@@ -80,19 +84,6 @@ const HTML_OUTPUT_MODE_OPTIONS: Array<{ value: HtmlOutputMode; label: string }> 
   { value: "static", label: "Static HTML" },
   { value: "animated-preview-js", label: "Animated HTML" },
 ];
-
-function deriveProjectNameFromPrompt(prompt: string) {
-  const normalized = prompt
-    .replace(/\s+/g, " ")
-    .replace(/[.?!:;，。！？；：]+$/g, "")
-    .trim();
-  if (!normalized) {
-    return "New AI report";
-  }
-
-  const compact = normalized.length > 48 ? `${normalized.slice(0, 45).trimEnd()}...` : normalized;
-  return compact;
-}
 
 function EmptyState({
   eyebrow,
@@ -236,6 +227,15 @@ export function StudioHomePage() {
     () => listStarterPackManifests("layout").slice(0, 4),
     [],
   );
+
+  useStudioBridgeLaunchBootstrap({
+    shellBootState: shell.bootState,
+    onLaunchConsumed: () => setAiPrompt(""),
+  });
+  useStudioInstallGate({
+    enabled: shell.bootState === "ready",
+    returnPath: "/",
+  });
 
   useEffect(() => {
     if (libraryCards.length === 0) {
@@ -396,80 +396,21 @@ export function StudioHomePage() {
   }
 
   function handleCreateConversation() {
-    const nextPrompt = aiPrompt.trim();
-    if (!nextPrompt) {
-      setStatusLine("Describe the PPT you want before opening a new conversation.");
-      return;
-    }
-
-    const clarificationSuggestion = detectImplicitLongFormClarification(nextPrompt, {
+    const result = startAiConversationFromPrompt({
+      prompt: aiPrompt,
       generationMode: "standard",
+      moduleUsageMode,
+      htmlOutputMode,
       requestedPageCount: null,
+      queueGeneration: true,
     });
-
-    const nextProjectName = deriveProjectNameFromPrompt(nextPrompt);
-    createProject(nextProjectName);
-
-    const state = useWorkbenchStudioStore.getState();
-    const project = state.document.project;
-    if (!project) {
-      setStatusLine("Studio could not create a new AI session.");
+    if (!result.ok) {
+      setStatusLine(result.reason);
       return;
     }
 
-    replaceCurrentProject(
-      createProjectBundle({
-        ...project,
-        projectName: nextProjectName,
-        sourceText: nextPrompt,
-        generationMode: "standard",
-        moduleUsageMode,
-        htmlOutputMode,
-        requestedPageCount: null,
-        longFormClarification:
-          clarificationSuggestion?.trigger === "explicit-8-9-pages"
-            ? {
-                status: "pending",
-                trigger: clarificationSuggestion.trigger,
-                resolution: null,
-              }
-            : {
-                status: "idle",
-                trigger: null,
-                resolution: null,
-              },
-        briefMessages: [{ role: "user", text: nextPrompt }],
-        workflowStage: "intake",
-        updatedAt: new Date().toISOString(),
-      }),
-      {
-        history: {
-          scope: "brief",
-          label: "Start AI conversation",
-          fields: [
-            "projectName",
-            "sourceText",
-            "generationMode",
-            "moduleUsageMode",
-            "htmlOutputMode",
-            "requestedPageCount",
-            "briefMessages",
-            "workflowStage",
-          ],
-        },
-        mode: "editor",
-        resetSelection: true,
-        statusLine:
-          clarificationSuggestion?.trigger === "explicit-8-9-pages"
-            ? "Opened a new AI conversation. Pick 10 or 12 pages before Studio generates the deck."
-            : "Opened a new AI conversation and queued the first draft.",
-      },
-    );
-
-    setHomeSection("ai");
-    setSelectedChatProjectId(project.id);
     setAiPrompt("");
-    navigate(`/projects/${project.id}/edit`);
+    navigate(`/projects/${result.projectId}/edit`);
   }
 
   if (shell.bootState === "booting") {

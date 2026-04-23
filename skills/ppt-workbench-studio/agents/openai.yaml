@@ -1,0 +1,4 @@
+interface:
+  display_name: "PPT Workbench Studio"
+  short_description: "Read the source first, bridge the prompt into Studio, open the launch URL in the default browser, then stop"
+  default_prompt: "Use $ppt-workbench-studio to read source links first in the user's default browser, synthesize a concise Studio prompt, call /api/studio/bridge/launch, open the returned launch URL in the same browser profile, and stop once the browser has opened that URL."

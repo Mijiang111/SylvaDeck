@@ -1,5 +1,6 @@
 export type IndustryStyleProfileId =
   | "general-consulting"
+  | "academic"
   | "technology"
   | "finance"
   | "healthcare"
@@ -44,6 +45,32 @@ const INDUSTRY_SIGNAL_REGISTRY: Array<{
   source: StyleSignalSource;
   keywords: string[];
 }> = [
+  {
+    id: "academic",
+    source: "brief",
+    keywords: [
+      "research",
+      "academic",
+      "scientific",
+      "paper",
+      "study",
+      "experiment",
+      "result",
+      "results",
+      "method",
+      "methods",
+      "hypothesis",
+      "dataset",
+      "evaluation",
+      "conference",
+      "journal",
+      "literature review",
+      "neural network",
+      "mlp",
+      "encoder",
+      "decoder",
+    ],
+  },
   {
     id: "technology",
     source: "brief",
@@ -162,6 +189,11 @@ const INDUSTRY_SIGNAL_REGISTRY: Array<{
     ],
   },
   {
+    id: "academic",
+    source: "module",
+    keywords: ["research", "scientific", "paper", "experiment", "result", "method"],
+  },
+  {
     id: "technology",
     source: "module",
     keywords: ["technology", "product", "digital", "software", "ai", "platform"],
@@ -225,6 +257,40 @@ const INDUSTRY_STYLE_PROFILES: Record<IndustryStyleProfileId, DeckStyleProfile> 
       accentSecondary: "#c4973d",
       borderSubtle: "#d8e3ea",
       chartPalette: ["#173d57", "#c4973d", "#6a879a", "#8fa39a"],
+    },
+  },
+  academic: {
+    id: "academic",
+    label: "Academic Paper",
+    industryLabel: "Academic / scientific / research",
+    summary: "Paper-white research presentation profile with crisp blue-black ink and restrained figure accents.",
+    materialDirection: "Conference readout white canvas with thin rules, editorial restraint, and figure-first annotation language.",
+    toneNotes: [
+      "Treat the page like a paper readout, not an executive memo.",
+      "Let white space, thin rules, and careful typographic hierarchy carry authority.",
+      "Use accents sparingly for figure structure, captions, and method cues.",
+    ],
+    promptGuidance: [
+      "Make the deck feel academic, white-paper, and figure-led.",
+      "Use paper-white backgrounds, blue-black typography, thin borders, and highly restrained note surfaces.",
+      "Prefer one dominant result figure with compact annotations over heavy card walls or executive summary chrome.",
+    ],
+    avoidPatterns: [
+      "Do not use warm consulting gradients or heavy dashboard slabs.",
+      "Do not phrase the page like a leadership recommendation memo.",
+      "Do not build dense equal-weight card grids on figure-led pages.",
+    ],
+    tokens: {
+      pageBackground: "#fbfbf8",
+      bodyBackground: "#f3f4f3",
+      surfacePrimary: "#ffffff",
+      surfaceSecondary: "#f6f8fb",
+      textPrimary: "#17283a",
+      textMuted: "#617182",
+      accentPrimary: "#2f5d84",
+      accentSecondary: "#6f88a0",
+      borderSubtle: "#d8e0e8",
+      chartPalette: ["#2f5d84", "#6f88a0", "#95a9b8", "#5a7f76"],
     },
   },
   technology: {
