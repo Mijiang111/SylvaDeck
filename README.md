@@ -16,6 +16,45 @@ This repository is still an `alpha`, but the core loop already works:
 
 This is also my first open-source GitHub project, so if you try it and something feels off, I’d really appreciate issues, suggestions, or setup feedback.
 
+## Demo
+<table>
+  <tr>
+    <td align="center"><b>演示视频 A</b></td>
+    <td align="center"><b>演示视频 B</b></td>
+  </tr>
+  <tr>
+    <td>
+
+https://github.com/user-attachments/assets/e75017d0-33bd-4315-bc36-0d8e36dd6906
+
+   </td>
+    <td>
+
+https://github.com/user-attachments/assets/f44fef6a-efa0-4c5d-b1f0-766061ff56c5
+
+   </td>
+  </tr>
+</table>
+<table>
+  <tr>
+    <td align="center"><b>科研图</b></td>
+  </tr>
+  <tr>
+    <td><img src="https://github.com/user-attachments/assets/1ab5af8d-4450-4341-b777-ac7325b0c2ed"></td>
+  </tr>
+</table>
+
+<table>
+  <tr>
+    <td align="center"><b>演示场景一</b></td>
+    <td align="center"><b>演示场景二</b></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/picture1.png" alt="Demo picture 1"></td>
+    <td><img src="docs/assets/picture2.png" alt="Demo picture 2"></td>
+  </tr>
+</table>
+
 ## Start Here
 
 There are only **two ways to start**:
@@ -62,45 +101,6 @@ Then open:
 - Supports template authoring with explicit AI text slots, charts, and decorative geometry
 - Reviews generated pages for layout fit, title leaks, density, and repair opportunities
 - Exports publishable HTML and editable `.pptx`
-
-## Demo
-<table>
-  <tr>
-    <td align="center"><b>演示视频 A</b></td>
-    <td align="center"><b>演示视频 B</b></td>
-  </tr>
-  <tr>
-    <td>
-
-https://github.com/user-attachments/assets/e75017d0-33bd-4315-bc36-0d8e36dd6906
-
-   </td>
-    <td>
-
-https://github.com/user-attachments/assets/f44fef6a-efa0-4c5d-b1f0-766061ff56c5
-
-   </td>
-  </tr>
-</table>
-<table>
-  <tr>
-    <td align="center"><b>科研图</b></td>
-  </tr>
-  <tr>
-    <td><img src="https://github.com/user-attachments/assets/1ab5af8d-4450-4341-b777-ac7325b0c2ed"></td>
-  </tr>
-</table>
-
-<table>
-  <tr>
-    <td align="center"><b>演示场景一</b></td>
-    <td align="center"><b>演示场景二</b></td>
-  </tr>
-  <tr>
-    <td><img src="docs/assets/picture1.png" alt="Demo picture 1"></td>
-    <td><img src="docs/assets/picture2.png" alt="Demo picture 2"></td>
-  </tr>
-</table>
 
 ## Current Status
 
