@@ -16,8 +16,32 @@ async function ensurePropertiesPanelVisible(page) {
     return sidebar;
   }
 
-  await page.getByRole("button", { name: "Properties", exact: true }).click();
-  await expect(sidebar).toBeVisible({ timeout: 10_000 });
+  const propertiesButton = page.getByRole("button", { name: "Properties", exact: true });
+  await expect(propertiesButton).toBeVisible({ timeout: 10_000 });
+
+  // The editor can briefly restore the sidebar after streaming/review settles.
+  // Give that passive recovery window a moment before we force-open it.
+  try {
+    await expect(sidebar).toBeVisible({ timeout: 1_500 });
+    return sidebar;
+  } catch {
+    // Fall through to the explicit Properties toggle path.
+  }
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (await sidebar.isVisible().catch(() => false)) {
+      return sidebar;
+    }
+
+    await propertiesButton.click();
+    try {
+      await expect(sidebar).toBeVisible({ timeout: 4_000 });
+      return sidebar;
+    } catch {
+      await page.waitForTimeout(250);
+    }
+  }
+
   return sidebar;
 }
 
