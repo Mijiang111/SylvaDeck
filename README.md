@@ -1,5 +1,5 @@
 # Claw Design
-<img width="1362" height="760" alt="Claw-design" src="https://github.com/user-attachments/assets/574733ac-3581-42f1-b2c0-c6f334492d08" />
+<img width="1774" height="887" alt="image" src="https://github.com/user-attachments/assets/ef455a0d-ec4c-4eeb-9c58-e1ea12abfa72" />
 
 Claw Design is a local-first AI presentation workbench with an Agent Bridge: a repo skill teaches your agent how to work, and a local bridge launches Studio in the browser so the result lands in a real editable 16:9 deck.
 
