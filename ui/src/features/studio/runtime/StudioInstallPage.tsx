@@ -250,13 +250,13 @@ export function StudioInstallPage() {
         <div className="flex items-center justify-between gap-4 border border-[var(--studio-line)] bg-[rgba(8,8,8,0.92)] px-5 py-4">
           <div>
             <div className="text-[10px] font-semibold uppercase tracking-[0.28em] text-[var(--studio-muted)]">
-              Studio Install
+              Agent Bridge Setup
             </div>
             <h1 className="mt-2 text-[1.6rem] font-semibold tracking-[-0.04em] text-[var(--studio-ink)]">
-              Two ways to get started
+              Install the skill, then let your agent launch Studio for you
             </h1>
             <p className="mt-3 max-w-3xl text-[13px] leading-7 text-[var(--studio-muted-strong)]">
-              Start with an AI coding agent if you can. If not, use the local manual path and open Studio yourself.
+              Agent Bridge gives your AI a skill to understand Claw Design and a local bridge to launch Studio in your real browser session. If you prefer, you can still use the local manual path and open Studio yourself.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -291,13 +291,12 @@ export function StudioInstallPage() {
               </div>
               <span className="inline-flex items-center gap-2 border border-[rgba(0,242,255,0.28)] bg-[rgba(0,242,255,0.08)] px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--studio-ink)]">
                 <Sparkles className="h-3.5 w-3.5 text-[var(--studio-accent)]" />
-                Skill first
+                Agent Bridge
               </span>
             </div>
 
             <p className="mt-4 max-w-2xl text-[13px] leading-7 text-[var(--studio-muted-strong)]">
-              Install the Claw Design skill, refresh your agent, then simply describe the deck you want.
-              The skill teaches the agent to read sources, shape a Studio-ready prompt, and launch Studio through the local bridge.
+              Install the Claw Design skill, refresh your agent, then simply describe the deck you want. Agent Bridge teaches the agent how Claw Design works, then lets it launch Studio into your real browser session instead of relying on fragile browser typing.
             </p>
 
             <div className="mt-6 border border-[var(--studio-line)] bg-[rgba(0,0,0,0.32)] p-4">
@@ -317,10 +316,13 @@ export function StudioInstallPage() {
               </div>
             </div>
 
-            <div className="mt-5 space-y-3 text-[12px] leading-7 text-[var(--studio-muted-strong)]">
-              <div>1. Install the repo skill.</div>
-              <div>2. Restart or refresh your AI coding agent.</div>
-              <div>3. Tell the agent what deck you want. It will use the repo skill + Studio bridge.</div>
+            <div className="mt-5 border border-[var(--studio-line)] bg-[rgba(255,255,255,0.03)] p-4">
+              <div className="text-[10px] uppercase tracking-[0.18em] text-[var(--studio-muted)]">How Agent Bridge works</div>
+              <div className="mt-3 space-y-3 text-[12px] leading-7 text-[var(--studio-muted-strong)]">
+                <div>1. Install the repo skill and refresh your AI coding agent.</div>
+                <div>2. Ask for the deck you want. The agent reads sources and shapes a Studio-ready prompt.</div>
+                <div>3. The agent launches Studio through the local bridge, and the result lands in the real browser session.</div>
+              </div>
             </div>
 
             <div className="mt-6 flex flex-wrap gap-3">
@@ -362,7 +364,7 @@ export function StudioInstallPage() {
             </div>
 
             <p className="mt-4 max-w-2xl text-[13px] leading-7 text-[var(--studio-muted-strong)]">
-              If you do not want the skill path, bootstrap the local environment yourself, then open Studio in the browser.
+              If you do not want the skill path, bootstrap the local environment yourself and open the same Studio manually in the browser.
             </p>
 
             <div className="mt-6 space-y-4">

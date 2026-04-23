@@ -1,7 +1,7 @@
 # Claw Design
 <img width="1362" height="760" alt="Claw-design" src="https://github.com/user-attachments/assets/574733ac-3581-42f1-b2c0-c6f334492d08" />
 
-Claw Design is a local-first AI presentation workbench for generating, repairing, editing, and exporting 16:9 slide-like HTML decks.
+Claw Design is a local-first AI presentation workbench with an Agent Bridge: a repo skill teaches your agent how to work, and a local bridge launches Studio in the browser so the result lands in a real editable 16:9 deck.
 
 This repository is still an `alpha`, but the core loop already works:
 
@@ -50,6 +50,10 @@ Then open:
 
 - UI: [http://127.0.0.1:5174](http://127.0.0.1:5174)
 - Install guide: [http://127.0.0.1:5174/install](http://127.0.0.1:5174/install)
+
+## What is Agent Bridge?
+
+Agent Bridge is the pattern behind Claw Design’s AI workflow: instead of asking an agent to blindly click through a UI, you install a skill that teaches it how Claw Design works, then let the agent send a launch task through a local bridge API. Studio consumes that task inside the real browser session, creates a local project, and starts generation, so the handoff from AI reasoning to human editing happens inside the actual product rather than in a temporary automation sandbox.
 
 ## What It Does
 
