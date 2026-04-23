@@ -76,6 +76,23 @@ function getDefaultFontSizeForTagAndKind(tagName: string, kind: HtmlEditableBloc
   return inferFallbackFontSize(tagName, kind);
 }
 
+function buildElementSourcePath(root: Element, element: Element) {
+  const parts: number[] = [];
+  let current: Element | null = element;
+
+  while (current && current !== root) {
+    const parent: Element | null = current.parentElement;
+    if (!parent) {
+      break;
+    }
+    const index = Array.from(parent.children).indexOf(current);
+    parts.push(index);
+    current = parent;
+  }
+
+  return parts.reverse().join(".");
+}
+
 function createTextBlock(
   id: string,
   kind: HtmlEditableBlockKind,
@@ -266,6 +283,8 @@ function extractPageBlocks(page: Element) {
     if (!block) {
       return;
     }
+
+    block.sourcePath = buildElementSourcePath(page, element);
 
     const signature = block.text
       ? `${block.kind}:${block.text.toLowerCase()}`

@@ -20,6 +20,7 @@ test("decorative shared surfaces do not force text blocks into frame sizing", ()
       linkedVisualNodeId: "card-visual",
       linkedVisualKind: "surface",
       linkedVisualFitParticipation: "decorative",
+      linkedVisualAtomizationRole: "leaf",
       sharesSource: true,
     }),
     "text-auto",
@@ -33,8 +34,23 @@ test("true shared content containers switch text blocks to frame-only sizing", (
       linkedVisualNodeId: "chart-frame-visual",
       linkedVisualKind: "chart-frame",
       linkedVisualFitParticipation: "content",
+      linkedVisualAtomizationRole: "leaf",
       sharesSource: true,
     }),
     "frame-only",
+  );
+});
+
+test("shared containers do not switch text blocks to frame-only sizing", () => {
+  assert.equal(
+    resolvePreviewBlockSizingBehavior({
+      blockKind: "paragraph",
+      linkedVisualNodeId: "container-visual",
+      linkedVisualKind: "surface",
+      linkedVisualFitParticipation: "content",
+      linkedVisualAtomizationRole: "container",
+      sharesSource: true,
+    }),
+    "text-auto",
   );
 });

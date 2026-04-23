@@ -1,7 +1,9 @@
 import type {
   HtmlEditableBlockKind,
   HtmlFitParticipation,
+  HtmlVisualAtomizationRole,
   HtmlVisualNodeKind,
+  HtmlVisualSelectionPriority,
 } from "../types";
 
 export type PreviewSelectionPreference = "page" | "text" | "visual";
@@ -34,10 +36,14 @@ export type PreviewSelectableCandidate = {
   depth: number;
   area: number;
   layerIndex: number;
+  blockId?: string | null;
+  visualNodeId?: string | null;
   fitParticipation?: HtmlFitParticipation | null;
   blockKind?: HtmlEditableBlockKind | null;
   visualKind?: HtmlVisualNodeKind | null;
   sharesSource?: boolean;
+  atomizationRole?: HtmlVisualAtomizationRole | null;
+  selectionPriority?: HtmlVisualSelectionPriority | null;
 };
 
 export type PreviewSelectionContext = {
@@ -61,6 +67,46 @@ function isDecorativeVisualCandidate(candidate: PreviewSelectableCandidate) {
   return candidate.type === "visual" && candidate.fitParticipation === "decorative";
 }
 
+function getVisualAtomizationRank(
+  candidate: PreviewSelectableCandidate,
+  preference: PreviewSelectionPreference,
+) {
+  if (preference === "visual" && candidate.type === "block") {
+    return 5;
+  }
+
+  const role = candidate.atomizationRole ?? "leaf";
+  const priority = candidate.selectionPriority ?? "secondary";
+  const isContent = candidate.fitParticipation === "content";
+
+  if (preference === "visual") {
+    if (role === "leaf") {
+      return priority === "primary" ? 0 : isContent ? 1 : 2;
+    }
+    if (role === "container") {
+      return 3;
+    }
+    if (role === "scaffold") {
+      return 4;
+    }
+    return 6;
+  }
+
+  if (role === "leaf" && priority === "primary") {
+    return 0;
+  }
+  if (role === "leaf") {
+    return isContent ? 2 : 3;
+  }
+  if (role === "container") {
+    return 4;
+  }
+  if (role === "scaffold") {
+    return 5;
+  }
+  return 6;
+}
+
 function isPageContentVisualCandidate(candidate: PreviewSelectableCandidate) {
   if (candidate.type !== "visual") {
     return false;
@@ -78,13 +124,27 @@ function isPageContentVisualCandidate(candidate: PreviewSelectableCandidate) {
 
 function getPageSemanticRank(candidate: PreviewSelectableCandidate) {
   if (candidate.type === "block") {
-    return candidate.blockKind &&
-      PREVIEW_TEXT_PRIORITY_BLOCK_KINDS.includes(candidate.blockKind)
-      ? 0
-      : 1;
+    return 1;
   }
 
-  return isPageContentVisualCandidate(candidate) ? 2 : 3;
+  const visualRank = getVisualAtomizationRank(candidate, "page");
+  if (visualRank === 0) {
+    return 0;
+  }
+  if (visualRank === 2) {
+    return 2;
+  }
+  if (visualRank === 3) {
+    return 3;
+  }
+  if (visualRank === 4) {
+    return 4;
+  }
+  if (visualRank === 5) {
+    return 5;
+  }
+
+  return isPageContentVisualCandidate(candidate) ? 0 : 6;
 }
 
 export function rankPreviewSelectableCandidates(args: {
@@ -108,6 +168,12 @@ export function rankPreviewSelectableCandidates(args: {
         const rightSemanticRank = getPageSemanticRank(right);
         if (leftSemanticRank !== rightSemanticRank) {
           return leftSemanticRank - rightSemanticRank;
+        }
+      } else if (args.context.preferredSelectionType === "visual" && !args.preferredType) {
+        const leftVisualRank = getVisualAtomizationRank(left, "visual");
+        const rightVisualRank = getVisualAtomizationRank(right, "visual");
+        if (leftVisualRank !== rightVisualRank) {
+          return leftVisualRank - rightVisualRank;
         }
       }
 
@@ -137,7 +203,33 @@ export function choosePreviewSelectableCandidate(args: {
   candidates: PreviewSelectableCandidate[];
   context: PreviewSelectionContext;
   preferredType?: PreviewSelectableType | null;
+  directBlockId?: string | null;
+  directBlockDepth?: number | null;
+  directVisualDepth?: number | null;
 }) {
+  const directBlockCandidate =
+    args.directBlockId &&
+    args.preferredType !== "visual" &&
+    args.context.preferredSelectionType !== "visual" &&
+    (!Number.isFinite(args.directVisualDepth ?? Number.NaN) ||
+      !Number.isFinite(args.directBlockDepth ?? Number.NaN) ||
+      (args.directVisualDepth ?? Number.MAX_SAFE_INTEGER) >=
+        (args.directBlockDepth ?? Number.MAX_SAFE_INTEGER))
+      ? args.candidates.find(
+          (candidate) =>
+            candidate.type === "block" &&
+            candidate.blockId === args.directBlockId &&
+            Boolean(
+              candidate.blockKind &&
+                PREVIEW_TEXT_PRIORITY_BLOCK_KINDS.includes(candidate.blockKind),
+            ),
+        ) ?? null
+      : null;
+
+  if (directBlockCandidate) {
+    return directBlockCandidate;
+  }
+
   const ranked = rankPreviewSelectableCandidates(args);
   return ranked[0] ?? null;
 }

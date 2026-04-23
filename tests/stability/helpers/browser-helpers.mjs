@@ -6,11 +6,28 @@ export async function goToAiChat(page) {
   await expect(page.getByTestId("ai-chat-prompt")).toBeVisible();
 }
 
+function getSidebar(page) {
+  return page.locator(".studio-editor-sidebar");
+}
+
+async function ensurePropertiesPanelVisible(page) {
+  const sidebar = getSidebar(page);
+  if (await sidebar.isVisible().catch(() => false)) {
+    return sidebar;
+  }
+
+  await page.getByRole("button", { name: "Properties", exact: true }).click();
+  await expect(sidebar).toBeVisible({ timeout: 10_000 });
+  return sidebar;
+}
+
 export async function generateDeckFromPrompt(page, prompt, options = {}) {
   await goToAiChat(page);
   await page.getByTestId("ai-chat-prompt").fill(prompt);
-  await page.getByTestId("ai-chat-generate").click();
-  await page.waitForURL(/\/projects\/.+\/edit/);
+  await Promise.all([
+    page.waitForURL(/\/projects\/.+\/edit/),
+    page.getByTestId("ai-chat-generate").click({ force: true, noWaitAfter: true }),
+  ]);
   await expect(page.locator('[data-ppt-report-root="studio-main"]')).toBeVisible({
     timeout: 60_000,
   });
@@ -50,12 +67,12 @@ export async function renameFirstHeadline(page, nextText) {
     .locator('[data-ppt-report-root="studio-main"]')
     .frameLocator('[data-testid="report-page-frame-1"]');
   const headline = frame.locator('[data-html-block-id="block-1"]').first();
-  await headline.dblclick({ force: true });
-  await expect(page.getByTestId("quick-edit-popover")).toBeVisible({ timeout: 10_000 });
-  await page.getByTestId("quick-edit-input").fill(nextText);
-  await page.getByTestId("quick-edit-apply").click();
-  await expect(page.getByTestId("quick-edit-popover")).toBeHidden({ timeout: 10_000 });
-  await expect(frame.locator("body")).toContainText(nextText);
+  await headline.click({ force: true });
+  await ensurePropertiesPanelVisible(page);
+  const contentInput = page.locator('[data-testid^="inspector-textarea-block-content-"]').first();
+  await expect(contentInput).toBeVisible({ timeout: 10_000 });
+  await contentInput.fill(nextText);
+  await expect(headline).toContainText(nextText, { timeout: 10_000 });
 }
 
 export async function selectFilmstripPage(page, pageNumber) {

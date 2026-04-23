@@ -38,6 +38,7 @@ function makeReport(): GeneratedHtmlReport {
               fontSize: 40,
               sourceTag: "div",
               sourceIndex: 0,
+              sourcePath: "0",
             },
             {
               id: "shared-card-copy",
@@ -45,6 +46,7 @@ function makeReport(): GeneratedHtmlReport {
               text: "Shared card copy",
               sourceTag: "section",
               sourceIndex: 2,
+              sourcePath: "2",
             },
           ],
         },
@@ -62,6 +64,9 @@ function makeReport(): GeneratedHtmlReport {
               pageNumber: 1,
               sourceTag: "div",
               sourceIndex: 1,
+              sourcePath: "1",
+              atomizationRole: "scaffold",
+              selectionPriority: "secondary",
               style: {},
             },
             {
@@ -71,6 +76,9 @@ function makeReport(): GeneratedHtmlReport {
               pageNumber: 1,
               sourceTag: "section",
               sourceIndex: 2,
+              sourcePath: "2",
+              atomizationRole: "leaf",
+              selectionPriority: "primary",
               style: {},
             },
           ],
@@ -129,6 +137,38 @@ test("structural visuals default to background while dual-role visuals stay fore
       report: withSharedCard,
       pageNumber: 1,
       nodeId: "shared-card-visual",
+    })?.layer,
+    "foreground",
+  );
+});
+
+test("leaf visuals keep their own default layer even when the DOM path does not match a block", () => {
+  const report = makeReport();
+  report.visualStructure?.pages[0]?.nodes.push({
+    id: "same-tag-different-path",
+    kind: "surface",
+    fitParticipation: "content",
+    pageNumber: 1,
+    sourceTag: "section",
+    sourceIndex: 2,
+    sourcePath: "2.1",
+    atomizationRole: "leaf",
+    selectionPriority: "primary",
+    style: {},
+  });
+
+  const moved = updateGeneratedHtmlReportCanvasVisualTransform({
+    report,
+    pageNumber: 1,
+    id: "same-tag-different-path",
+    frame: FRAME,
+  });
+
+  assert.equal(
+    getGeneratedHtmlReportVisualCanvasTransform({
+      report: moved,
+      pageNumber: 1,
+      nodeId: "same-tag-different-path",
     })?.layer,
     "foreground",
   );

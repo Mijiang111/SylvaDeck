@@ -442,11 +442,11 @@ function buildFallbackPageMission(args: {
         6,
       ),
       mission: isLast
-        ? `Close the same ${subject} story without adding a new thesis.`
-        : `Add one focused proof step for ${subject}.`,
+        ? `Close the ${subject} story with a distinct final synthesis step.`
+        : `Develop proof step ${index - 1} for ${subject}.`,
       headlineClaim: isLast
-        ? `${subject} should close on the same through-line, not a new argument.`
-        : `${subject} is best supported through one focused proof pattern per page.`,
+        ? `${subject} should end with a distinct closing synthesis instead of repeating an earlier proof page.`
+        : `${subject} needs a distinct proof step on this page instead of reusing another page mission.`,
       supportPoints: ["Keep support short and subordinate.", "Do not split the page into equal-weight zones."],
       evidenceNotes:
         args.evidenceTier === "source-backed"
@@ -618,6 +618,7 @@ function buildMissionFromExplicitPageSegment(args: {
   evidenceTier: StudioEvidenceTier;
 }) {
   const structureCue = normalizeStructureCue(undefined, args.segment.text);
+  const scopedSegmentSummary = clampText(args.segment.text, 140);
   const title = resolveExplicitMissionTitle({
     segment: args.segment.text,
     pageNumber: args.segment.pageNumber,
@@ -626,19 +627,19 @@ function buildMissionFromExplicitPageSegment(args: {
   });
   const mission =
     structureCue === "matrix" || structureCue === "quadrant"
-      ? `Frame ${args.subject || "the subject"} through one BCG-style 2x2 matrix.`
+      ? `Frame ${args.subject || "the subject"} through one BCG-style 2x2 matrix focused on ${scopedSegmentSummary}.`
       : structureCue === "chart"
-        ? `Explain ${args.subject || "the subject"} through one chart-led evidence view.`
+        ? `Explain ${args.subject || "the subject"} through one chart-led evidence view focused on ${scopedSegmentSummary}.`
         : /\b(?:3d|three-dimensional)\b/i.test(args.segment.text) || /(?:3D|三维|立体|建模)/i.test(args.segment.text)
-          ? `Explain ${args.subject || "the subject"} through one 3D-model-centered page.`
+          ? `Explain ${args.subject || "the subject"} through one 3D-model-centered page focused on ${scopedSegmentSummary}.`
           : `Resolve page ${args.segment.pageNumber} around: ${clampText(args.segment.text, 140)}.`;
   const headlineClaim =
     structureCue === "matrix" || structureCue === "quadrant"
-      ? `${args.subject || "The subject"} should be positioned through one quadrant matrix before deeper explanation.`
+      ? `${args.subject || "The subject"} should be positioned through one quadrant matrix that specifically answers ${scopedSegmentSummary}.`
       : structureCue === "chart"
-        ? `${args.subject || "The subject"} is best supported through one chart-led proof pattern.`
+        ? `${args.subject || "The subject"} is best supported through one chart-led proof pattern that specifically answers ${scopedSegmentSummary}.`
         : /\b(?:3d|three-dimensional)\b/i.test(args.segment.text) || /(?:3D|三维|立体|建模)/i.test(args.segment.text)
-          ? `${args.subject || "The subject"} is best explained through one dominant 3D product or system model.`
+          ? `${args.subject || "The subject"} is best explained through one dominant 3D product or system model focused on ${scopedSegmentSummary}.`
           : clampText(args.segment.text, 180);
 
   return sanitizeMission(

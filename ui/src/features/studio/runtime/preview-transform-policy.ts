@@ -1,6 +1,7 @@
 import type {
   HtmlEditableBlockKind,
   HtmlFitParticipation,
+  HtmlVisualAtomizationRole,
   HtmlVisualNodeKind,
 } from "../types";
 
@@ -11,6 +12,7 @@ export function resolvePreviewBlockSizingBehavior(args: {
   linkedVisualNodeId?: string | null;
   linkedVisualKind?: HtmlVisualNodeKind | null;
   linkedVisualFitParticipation?: HtmlFitParticipation | null;
+  linkedVisualAtomizationRole?: HtmlVisualAtomizationRole | null;
   sharesSource?: boolean;
 }) {
   if (!args.linkedVisualNodeId || !args.sharesSource) {
@@ -18,6 +20,10 @@ export function resolvePreviewBlockSizingBehavior(args: {
   }
 
   if (args.linkedVisualFitParticipation !== "content") {
+    return "text-auto";
+  }
+
+  if (args.linkedVisualAtomizationRole !== "leaf") {
     return "text-auto";
   }
 

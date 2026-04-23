@@ -21,6 +21,49 @@ export async function installStudioFixtureRoutes(page, scenarioId) {
     reviseCalls: [],
   };
 
+  await page.route("**/api/install/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+      },
+      body: JSON.stringify({
+        serverHealthy: true,
+        repoPath: "/tmp/ppt-workbench-studio",
+        platform: "darwin",
+        nodeReady: true,
+        pnpmReady: true,
+        nodeVersion: "v22.0.0",
+        pnpmVersion: "10.0.0",
+        recommendedAgentId: "codex",
+        skillSourcePath: "/tmp/ppt-workbench-studio/skills/ppt-workbench-studio",
+        skillGithubUrl:
+          "https://github.com/Mijiang111/claw-design/tree/main/skills/ppt-workbench-studio",
+        bootstrapCommands: {
+          onboard: "pnpm studio:onboard",
+          doctor: "pnpm studio:doctor",
+          dev: "pnpm dev",
+        },
+        agents: [
+          {
+            id: "codex",
+            label: "Codex",
+            visible: true,
+            supported: true,
+            detected: true,
+            authReady: true,
+            skillInstalled: true,
+            status: "ready",
+            installMode: "skill",
+            targetPath: null,
+            notes: [],
+          },
+        ],
+      }),
+    });
+  });
+
   await page.route("**/api/studio/generate-html/stream", async (route) => {
     state.generateCalls.push(
       parseJson(route.request().postData() ?? "") ?? {

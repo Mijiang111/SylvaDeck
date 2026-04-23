@@ -77,7 +77,6 @@ function HtmlReportFrame({
   selectedVisualNodeId,
   onSelectBlock,
   onSelectVisualNode,
-  onQuickEditBlock,
   onCommitBlockTransform,
   onCommitVisualTransform,
   onReturnBlockToFlow,
@@ -100,11 +99,6 @@ function HtmlReportFrame({
     pageNumber: number,
     nodeId: string,
     kind: HtmlVisualNodeKind,
-  ) => void;
-  onQuickEditBlock?: (
-    pageNumber: number,
-    blockId: string,
-    nextContent: { text?: string; items?: string[] },
   ) => void;
   onCommitBlockTransform?: (
     pageNumber: number,
@@ -263,7 +257,6 @@ function HtmlReportFrame({
                     previewScale={previewScale}
                     onSelectVisualNode={onSelectVisualNode}
                     onSelectBlock={onSelectBlock}
-                    onQuickEditBlock={onQuickEditBlock}
                     onCommitBlockTransform={onCommitBlockTransform}
                     onCommitVisualTransform={onCommitVisualTransform}
                     onReturnBlockToFlow={onReturnBlockToFlow}
@@ -448,7 +441,6 @@ function HtmlReportCanvasFrame({
   selectedVisualNodeId,
   onSelectBlock,
   onSelectVisualNode,
-  onQuickEditBlock,
   onCommitBlockTransform,
   onCommitVisualTransform,
   onReturnBlockToFlow,
@@ -475,11 +467,6 @@ function HtmlReportCanvasFrame({
     pageNumber: number,
     nodeId: string,
     kind: HtmlVisualNodeKind,
-  ) => void;
-  onQuickEditBlock?: (
-    pageNumber: number,
-    blockId: string,
-    nextContent: { text?: string; items?: string[] },
   ) => void;
   onCommitBlockTransform?: (
     pageNumber: number,
@@ -692,7 +679,6 @@ function HtmlReportCanvasFrame({
                     previewScale={resolvedScale}
                     onSelectVisualNode={onSelectVisualNode}
                     onSelectBlock={onSelectBlock}
-                    onQuickEditBlock={onQuickEditBlock}
                     onCommitBlockTransform={onCommitBlockTransform}
                     onCommitVisualTransform={onCommitVisualTransform}
                     onReturnBlockToFlow={onReturnBlockToFlow}
@@ -933,7 +919,6 @@ function WorkbenchReportView({
   selectedHtmlVisualNodeId,
   onSelectHtmlBlock,
   onSelectHtmlVisualNode,
-  onQuickEditHtmlBlock,
   onCommitHtmlBlockTransform,
   onCommitHtmlVisualTransform,
   onReturnHtmlBlockToFlow,
@@ -965,11 +950,6 @@ function WorkbenchReportView({
     pageNumber: number,
     nodeId: string,
     kind: HtmlVisualNodeKind,
-  ) => void;
-  onQuickEditHtmlBlock?: (
-    pageNumber: number,
-    blockId: string,
-    nextContent: { text?: string; items?: string[] },
   ) => void;
   onCommitHtmlBlockTransform?: (
     pageNumber: number,
@@ -1018,7 +998,6 @@ function WorkbenchReportView({
           selectedVisualNodeId={selectedHtmlVisualNodeId}
           onSelectBlock={onSelectHtmlBlock}
           onSelectVisualNode={onSelectHtmlVisualNode}
-          onQuickEditBlock={onQuickEditHtmlBlock}
           onCommitBlockTransform={onCommitHtmlBlockTransform}
           onCommitVisualTransform={onCommitHtmlVisualTransform}
           onReturnBlockToFlow={onReturnHtmlBlockToFlow}
@@ -1054,7 +1033,6 @@ function WorkbenchReportView({
           selectedVisualNodeId={selectedHtmlVisualNodeId}
           onSelectBlock={onSelectHtmlBlock}
           onSelectVisualNode={onSelectHtmlVisualNode}
-          onQuickEditBlock={onQuickEditHtmlBlock}
           onCommitBlockTransform={onCommitHtmlBlockTransform}
           onCommitVisualTransform={onCommitHtmlVisualTransform}
           onReturnBlockToFlow={onReturnHtmlBlockToFlow}

@@ -47,7 +47,10 @@ test("topmost painted candidate wins before depth or area heuristics", () => {
 test("visual mode prefers visual over block on the same ambiguous target", () => {
   const ranked = rankPreviewSelectableCandidates({
     candidates: [
-      candidate("block:card", "block", { blockKind: "paragraph" }),
+      candidate("block:card", "block", {
+        blockKind: "paragraph",
+        fitParticipation: "content",
+      }),
       candidate("visual:card", "visual", {
         visualKind: "surface",
         fitParticipation: "decorative",
@@ -110,6 +113,8 @@ test("page mode filters decorative surfaces while keeping content visuals select
       candidate("visual:closing", "visual", {
         visualKind: "surface",
         fitParticipation: "decorative",
+        atomizationRole: "leaf",
+        selectionPriority: "secondary",
       }),
       candidate("visual:chart", "visual", {
         visualKind: "chart-frame",
@@ -121,4 +126,94 @@ test("page mode filters decorative surfaces while keeping content visuals select
   });
 
   assert.equal(chosen?.key, "visual:chart");
+});
+
+test("page mode prefers primary leaf visuals over blocks when they overlap", () => {
+  const chosen = choosePreviewSelectableCandidate({
+    candidates: [
+      candidate("block:label", "block", { blockKind: "paragraph" }),
+      candidate("visual:node", "visual", {
+        visualKind: "node",
+        fitParticipation: "content",
+        atomizationRole: "leaf",
+        selectionPriority: "primary",
+      }),
+    ],
+    context: { preferredSelectionType: "page" },
+  });
+
+  assert.equal(chosen?.key, "visual:node");
+});
+
+test("page mode keeps direct text targets on blocks even when overlapping visuals are primary leaves", () => {
+  const chosen = choosePreviewSelectableCandidate({
+    candidates: [
+      candidate("block:label", "block", {
+        blockId: "label",
+        blockKind: "paragraph",
+      }),
+      candidate("visual:label-surface", "visual", {
+        visualNodeId: "label-surface",
+        visualKind: "label-surface",
+        fitParticipation: "content",
+        atomizationRole: "leaf",
+        selectionPriority: "primary",
+      }),
+    ],
+    context: { preferredSelectionType: "page" },
+    directBlockId: "label",
+    directBlockDepth: 0,
+    directVisualDepth: 0,
+  });
+
+  assert.equal(chosen?.key, "block:label");
+});
+
+test("visual mode still keeps primary visuals ahead of direct text blocks", () => {
+  const chosen = choosePreviewSelectableCandidate({
+    candidates: [
+      candidate("block:label", "block", {
+        blockId: "label",
+        blockKind: "paragraph",
+      }),
+      candidate("visual:label-surface", "visual", {
+        visualNodeId: "label-surface",
+        visualKind: "label-surface",
+        fitParticipation: "content",
+        atomizationRole: "leaf",
+        selectionPriority: "primary",
+      }),
+    ],
+    context: { preferredSelectionType: "visual" },
+    directBlockId: "label",
+    directBlockDepth: 0,
+    directVisualDepth: 0,
+  });
+
+  assert.equal(chosen?.key, "visual:label-surface");
+});
+
+test("visual mode prefers leaf visuals over scaffold shells", () => {
+  const ranked = rankPreviewSelectableCandidates({
+    candidates: [
+      candidate("visual:shell", "visual", {
+        visualKind: "surface",
+        fitParticipation: "decorative",
+        atomizationRole: "scaffold",
+        selectionPriority: "secondary",
+      }),
+      candidate("visual:card", "visual", {
+        visualKind: "surface",
+        fitParticipation: "content",
+        atomizationRole: "leaf",
+        selectionPriority: "primary",
+      }),
+    ],
+    context: { preferredSelectionType: "visual" },
+  });
+
+  assert.deepEqual(
+    ranked.map((entry) => entry.key),
+    ["visual:card", "visual:shell"],
+  );
 });

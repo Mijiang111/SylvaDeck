@@ -80,6 +80,17 @@ export type ModuleDataColumnType =
   | "currency"
   | "date";
 export type ModuleChartKind = "bar" | "stacked" | "line" | "waterfall";
+export type DataTableColumn = {
+  id: string;
+  label: string;
+  type: ModuleDataColumnType;
+};
+export type DataTableModel = {
+  raw: string;
+  hasHeader: boolean;
+  columns: DataTableColumn[];
+  rows: string[][];
+};
 export type ModuleThinkingFlowBranch = "yes" | "no";
 export type ModuleThinkingFlowToolAdapterId =
   | "support"
@@ -195,16 +206,7 @@ export type ModuleTemplateField = {
     length?: ModuleFieldOutputLength;
     mustInclude?: string;
   };
-  dataTable?: {
-    raw: string;
-    hasHeader: boolean;
-    columns: Array<{
-      id: string;
-      label: string;
-      type: ModuleDataColumnType;
-    }>;
-    rows: string[][];
-  };
+  dataTable?: DataTableModel;
   chartSpec?: {
     kind: ModuleChartKind;
   };
@@ -1025,6 +1027,7 @@ export type HtmlEditableBlock = {
   fontSize?: number;
   sourceTag: string;
   sourceIndex: number;
+  sourcePath?: string;
 };
 
 export type HtmlEditablePage = {
@@ -1046,7 +1049,11 @@ export type HtmlVisualNodeKind =
   | "highlight"
   | "annotation"
   | "rail"
-  | "chart-frame";
+  | "chart-frame"
+  | "shape"
+  | "connector"
+  | "node"
+  | "label-surface";
 
 export type ScientificDiagramFamily = "neural-network";
 
@@ -1090,7 +1097,63 @@ export type NeuralNetworkDiagramSpec = {
 
 export type ScientificDiagramSpec = NeuralNetworkDiagramSpec;
 
-export type HtmlVisualModuleKind = "scientific-diagram";
+export type HtmlChartKind = ModuleChartKind | "combo" | "bubble";
+export type HtmlChartSeriesRole = "bar" | "line";
+export type HtmlChartAxisRole = "primary" | "secondary";
+export type HtmlChartSeries = {
+  id: string;
+  label: string;
+  values: number[];
+  color?: string | null;
+  role?: HtmlChartSeriesRole;
+  axis?: HtmlChartAxisRole;
+};
+export type HtmlBubblePoint = {
+  id: string;
+  label: string;
+  x: number;
+  y: number;
+  size: number;
+  color?: string | null;
+  group?: string | null;
+};
+export type HtmlBasicChartSpec = {
+  kind: "bar" | "stacked" | "line" | "waterfall";
+  title: string;
+  subtitle: string;
+  insight: string;
+  unit: string;
+  categories: string[];
+  series: HtmlChartSeries[];
+};
+export type HtmlComboChartSpec = {
+  kind: "combo";
+  title: string;
+  subtitle: string;
+  insight: string;
+  unit: string;
+  secondaryUnit?: string;
+  categories: string[];
+  series: HtmlChartSeries[];
+};
+export type HtmlBubbleChartSpec = {
+  kind: "bubble";
+  title: string;
+  subtitle: string;
+  insight: string;
+  unit: string;
+  xLabel: string;
+  yLabel: string;
+  sizeLabel: string;
+  points: HtmlBubblePoint[];
+};
+export type HtmlChartSpec =
+  | HtmlBasicChartSpec
+  | HtmlComboChartSpec
+  | HtmlBubbleChartSpec;
+export type HtmlTableSpec = DataTableModel;
+
+export type HtmlVisualModuleKind = "scientific-diagram" | "chart" | "table";
 
 export type HtmlFitParticipation = "content" | "decorative";
 
@@ -1107,6 +1170,9 @@ export type HtmlVisualNodeStyle = {
   padding?: number;
 };
 
+export type HtmlVisualAtomizationRole = "leaf" | "container" | "scaffold";
+export type HtmlVisualSelectionPriority = "primary" | "secondary";
+
 export type HtmlVisualNode = {
   id: string;
   kind: HtmlVisualNodeKind;
@@ -1118,6 +1184,14 @@ export type HtmlVisualNode = {
   moduleLabel?: string;
   moduleKind?: HtmlVisualModuleKind;
   diagramSpec?: ScientificDiagramSpec | null;
+  chartSpec?: HtmlChartSpec | null;
+  tableSpec?: HtmlTableSpec | null;
+  dataTable?: DataTableModel | null;
+  sourcePath?: string;
+  parentId?: string | null;
+  childIds?: string[];
+  atomizationRole?: HtmlVisualAtomizationRole;
+  selectionPriority?: HtmlVisualSelectionPriority;
   style: HtmlVisualNodeStyle;
 };
 

@@ -37,6 +37,24 @@ test("content-first visual kinds default to content participation", () => {
     }),
     "content",
   );
+  assert.equal(
+    resolveHtmlVisualFitParticipation({
+      kind: "node",
+    }),
+    "content",
+  );
+  assert.equal(
+    resolveHtmlVisualFitParticipation({
+      kind: "connector",
+    }),
+    "content",
+  );
+  assert.equal(
+    resolveHtmlVisualFitParticipation({
+      kind: "shape",
+    }),
+    "content",
+  );
 });
 
 test("decorative-first visual kinds default to decorative participation", () => {

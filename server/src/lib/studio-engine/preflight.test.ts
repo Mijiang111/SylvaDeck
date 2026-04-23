@@ -331,3 +331,50 @@ test("preflight parser synthesizes missing later page missions instead of reusin
   assert.notEqual(plan.pageMissions[0]?.title, plan.pageMissions[1]?.title);
   assert.equal(plan.pageMissions[1]?.missionScope, "page");
 });
+
+test("explicit chart-heavy page plans keep distinct page missions after normalization", () => {
+  const brief = `Create a 6-page English consulting-style data-story deck.
+Page 1: Executive headline and market shape.
+Page 2: Use a composite bar-and-line chart to compare regional AI infrastructure capex by region against utilization growth on a secondary axis.
+Page 3: Use a bubble chart to position major provider archetypes by scale, utilization, and margin quality.
+Page 4: Use a premium analytical data table to compare operators across capacity, power cost, gross margin, and deployment lead time.
+Page 5: Use a waterfall chart or economics bridge to explain how revenue converts into margin pressure through power, GPU depreciation, and networking cost.
+Page 6: Use a matrix-first recommendation page to show where investment should focus across regions and operating models.`;
+  const summary = JSON.stringify({
+    rawBrief: brief,
+    subject: "Global AI infrastructure economics in 2026",
+    deliverable: "6-page PPT",
+    pageCount: 6,
+    audienceOrQualityBar: "consulting-style data-story",
+    coreTask: "Show consultant-grade data-storytelling.",
+    evidencePolicy: {
+      tier: "explicit assumption",
+      summary: "Use internally consistent sample data.",
+      lines: ["Do not present the scenario as a factual market report."],
+    },
+    pageMissions: [],
+    visualThinking: {
+      dominantVisualAnchor: "one dominant analytical object per page",
+      readingPath: "headline to chart to compact annotation",
+      regionStrategy: "one dominant chart field with minimal support",
+      densityPosture: "low-to-medium",
+      avoidPattern: "equal-weight card walls",
+    },
+    capabilityActivations: [],
+    assumptionPolicy: ["Use illustrative numbers only."],
+  });
+
+  const plan = parseStudioPreflightPlan({
+    text: summary,
+    brief,
+    requestedPageCount: 6,
+  });
+
+  assert.equal(plan.pageMissions.length, 6);
+  assert.equal(plan.pageMissions[1]?.missionScope, "page");
+  assert.equal(plan.pageMissions[4]?.missionScope, "page");
+  assert.match(plan.pageMissions[1]?.mission ?? "", /regional ai infrastructure capex|utilization growth/i);
+  assert.match(plan.pageMissions[4]?.mission ?? "", /margin pressure|gpu depreciation|networking cost/i);
+  assert.notEqual(plan.pageMissions[1]?.mission, plan.pageMissions[4]?.mission);
+  assert.notEqual(plan.pageMissions[1]?.headlineClaim, plan.pageMissions[4]?.headlineClaim);
+});

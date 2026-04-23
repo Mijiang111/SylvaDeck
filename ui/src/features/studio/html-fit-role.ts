@@ -65,6 +65,10 @@ export function resolveHtmlVisualFitParticipation(args: {
     case "annotation":
     case "rail":
     case "chart-frame":
+    case "shape":
+    case "connector":
+    case "node":
+    case "label-surface":
       return "content";
     case "surface":
     case "divider":

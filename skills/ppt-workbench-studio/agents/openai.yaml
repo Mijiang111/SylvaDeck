@@ -1,4 +1,4 @@
 interface:
   display_name: "PPT Workbench Studio"
-  short_description: "Read the source first, bridge the prompt into Studio, open the launch URL in the default browser, then stop"
-  default_prompt: "Use $ppt-workbench-studio to read source links first in the user's default browser, synthesize a concise Studio prompt, call /api/studio/bridge/launch, open the returned launch URL in the same browser profile, and stop once the browser has opened that URL."
+  short_description: "Read the source first, shape a visually strong Studio prompt, bridge it into Studio, open the exact returned launch URL in the default browser, then stop"
+  default_prompt: "Use $ppt-workbench-studio to read source links first in the user's default browser, synthesize a concise Studio prompt with one visual thesis per page, prefer current Studio cues such as figure-led, chart-led, matrix-first, or hero + rail layouts where appropriate, avoid equal-weight card walls and dashboard clutter, call /api/studio/bridge/launch, parse the returned openUrl, open that exact launch URL in the same browser profile instead of the Studio homepage, and stop once the browser has opened that URL."

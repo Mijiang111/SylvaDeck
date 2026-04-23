@@ -56,10 +56,19 @@ import {
   extractGeneratedHtmlReportVisualNodeContent,
   extractHtmlPageVisualStyle,
   type HtmlVisualInsertionMode,
+  updateGeneratedHtmlReportChartModule,
   updateGeneratedHtmlReportScientificDiagram,
+  updateGeneratedHtmlReportTableModule,
   updateGeneratedHtmlReportVisualNode,
   updateGeneratedHtmlReportVisualStyle,
 } from "@/features/studio/html-report-visuals";
+import {
+  CHART_MODULE_KIND,
+  TABLE_MODULE_KIND,
+  buildHtmlChartDataTable,
+  buildHtmlTableSpecFromRaw,
+  updateHtmlChartSpecFromRawData,
+} from "@/features/studio/html-report-data-modules";
 import { loadPublishedModuleManifests } from "@/features/studio/module-assets";
 import { buildReportSourceInput } from "@/features/studio/module-runtime-input";
 import {
@@ -91,10 +100,14 @@ import {
 } from "@/features/studio/starter-packs";
 import type { WorkbenchAgentProvider } from "@/features/studio/ai-settings";
 import type {
+  DataTableModel,
   GeneratedDraftAsset,
   HtmlOutputMode,
   HtmlCanvasFrame,
   HtmlEditableBlock,
+  HtmlChartSeriesRole,
+  HtmlChartAxisRole,
+  HtmlChartSpec,
   HtmlLayoutZone,
   HtmlVisualContentNode,
   HtmlVisualNode,
@@ -173,6 +186,34 @@ const HTML_OUTPUT_MODE_OPTIONS: Array<{
 }> = [
   { value: "static", label: "Static HTML" },
   { value: "animated-preview-js", label: "Animated HTML" },
+];
+
+const HTML_CHART_KIND_OPTIONS: Array<{
+  value: HtmlChartSpec["kind"];
+  label: string;
+}> = [
+  { value: "bar", label: "Bar" },
+  { value: "stacked", label: "Stacked" },
+  { value: "line", label: "Line" },
+  { value: "waterfall", label: "Waterfall" },
+  { value: "combo", label: "Combo" },
+  { value: "bubble", label: "Bubble" },
+];
+
+const CHART_SERIES_ROLE_OPTIONS: Array<{
+  value: HtmlChartSeriesRole;
+  label: string;
+}> = [
+  { value: "bar", label: "Bar series" },
+  { value: "line", label: "Line series" },
+];
+
+const CHART_AXIS_ROLE_OPTIONS: Array<{
+  value: HtmlChartAxisRole;
+  label: string;
+}> = [
+  { value: "primary", label: "Primary axis" },
+  { value: "secondary", label: "Secondary axis" },
 ];
 
 const GENERAL_CONSULTING_PROFILE = getIndustryStyleProfile("general-consulting");
@@ -366,6 +407,8 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
   const [streamUi, setStreamUi] = useState<StreamUiState>(DEFAULT_STREAM_UI_STATE);
   const canvasMoreButtonRef = useRef<HTMLButtonElement | null>(null);
   const canvasMoreMenuRef = useRef<HTMLDivElement | null>(null);
+  const previousStreamingPreviewRef = useRef(false);
+  const propertiesVisibleBeforeStreamingPreviewRef = useRef(true);
 
   const shell = useStudioShellState();
   const library = useStudioLibraryState();
@@ -708,6 +751,24 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
     }
     return activeHtmlVisualNode.diagramSpec ?? null;
   }, [activeHtmlVisualNode]);
+  const activeChartSpec = useMemo<HtmlChartSpec | null>(() => {
+    if (activeHtmlVisualNode?.moduleKind !== CHART_MODULE_KIND) {
+      return null;
+    }
+    return activeHtmlVisualNode.chartSpec ?? null;
+  }, [activeHtmlVisualNode]);
+  const activeTableSpec = useMemo<DataTableModel | null>(() => {
+    if (activeHtmlVisualNode?.moduleKind !== TABLE_MODULE_KIND) {
+      return null;
+    }
+    return activeHtmlVisualNode.tableSpec ?? activeHtmlVisualNode.dataTable ?? null;
+  }, [activeHtmlVisualNode]);
+  const activeChartDataTable = useMemo<DataTableModel | null>(() => {
+    if (!activeChartSpec) {
+      return null;
+    }
+    return buildHtmlChartDataTable(activeChartSpec);
+  }, [activeChartSpec]);
 
   useEffect(() => {
     if (!activeHtmlStructurePage || !selection.selectedHtmlBlockId) {
@@ -1413,6 +1474,81 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
     updateActiveScientificDiagramSpec(updater(activeScientificDiagramSpec));
   }
 
+  function updateActiveChartSpec(nextChartSpec: HtmlChartSpec) {
+    if (
+      !project?.generatedDraft?.htmlReport ||
+      !selection.selectedVisualNodeId ||
+      !activeChartSpec
+    ) {
+      return;
+    }
+
+    const nextHtmlReport = updateGeneratedHtmlReportChartModule({
+      report: project.generatedDraft.htmlReport,
+      pageNumber: activePageNumber,
+      nodeId: selection.selectedVisualNodeId,
+      chartSpec: nextChartSpec,
+    });
+
+    if (nextHtmlReport.html === project.generatedDraft.htmlReport.html) {
+      return;
+    }
+
+    updateGeneratedDraft({
+      generatedDraft: {
+        ...project.generatedDraft,
+        htmlReport: nextHtmlReport,
+      },
+      label: "Edit chart module",
+      scope: "visual",
+      inspectorTab: "visual",
+      statusLine: "Updated the chart module.",
+    });
+  }
+
+  function patchActiveChartSpec(updater: (current: HtmlChartSpec) => HtmlChartSpec | null) {
+    if (!activeChartSpec) {
+      return;
+    }
+    const nextSpec = updater(activeChartSpec);
+    if (!nextSpec) {
+      return;
+    }
+    updateActiveChartSpec(nextSpec);
+  }
+
+  function updateActiveTableSpec(nextTableSpec: DataTableModel) {
+    if (
+      !project?.generatedDraft?.htmlReport ||
+      !selection.selectedVisualNodeId ||
+      !activeTableSpec
+    ) {
+      return;
+    }
+
+    const nextHtmlReport = updateGeneratedHtmlReportTableModule({
+      report: project.generatedDraft.htmlReport,
+      pageNumber: activePageNumber,
+      nodeId: selection.selectedVisualNodeId,
+      tableSpec: nextTableSpec,
+    });
+
+    if (nextHtmlReport.html === project.generatedDraft.htmlReport.html) {
+      return;
+    }
+
+    updateGeneratedDraft({
+      generatedDraft: {
+        ...project.generatedDraft,
+        htmlReport: nextHtmlReport,
+      },
+      label: "Edit table module",
+      scope: "visual",
+      inspectorTab: "visual",
+      statusLine: "Updated the table module.",
+    });
+  }
+
   function updateHtmlVisualTransformOnPage(
     pageNumber: number,
     nodeId: string,
@@ -1989,13 +2125,17 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
   }, [shell.canvasDrawer]);
 
   useEffect(() => {
-    if (!hasStreamingPreview) {
-      return;
+    if (hasStreamingPreview) {
+      if (!previousStreamingPreviewRef.current) {
+        propertiesVisibleBeforeStreamingPreviewRef.current = propertiesVisible;
+      }
+      setPropertiesVisible(false);
+      setCanvasDrawer(null);
+    } else if (previousStreamingPreviewRef.current) {
+      setPropertiesVisible(propertiesVisibleBeforeStreamingPreviewRef.current);
     }
-
-    setPropertiesVisible(false);
-    setCanvasDrawer(null);
-  }, [hasStreamingPreview, setCanvasDrawer]);
+    previousStreamingPreviewRef.current = hasStreamingPreview;
+  }, [hasStreamingPreview, propertiesVisible, setCanvasDrawer]);
 
   useEffect(() => {
     if (lastPptxExportResult?.warningCount) {
@@ -2356,10 +2496,40 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
       return pageInspectorSchema;
     }
 
+    const contentField =
+      activeHtmlBlock.kind === "list"
+        ? {
+            id: `block-items-${activeHtmlBlock.id}`,
+            kind: "textarea" as const,
+            label: "List items",
+            value: (activeHtmlBlock.items ?? []).join("\n"),
+            description: "One line per item. Updates the selected list directly from the side panel.",
+            onChange: (value: string) =>
+              updateHtmlBlockOnPage(activePageNumber, activeHtmlBlock.id, {
+                items: value
+                  .split("\n")
+                  .map((item) => item.trim())
+                  .filter(Boolean),
+              }),
+            debounceMs: 180,
+          }
+        : {
+            id: `block-content-${activeHtmlBlock.id}`,
+            kind: "textarea" as const,
+            label: "Text",
+            value: activeHtmlBlock.text ?? "",
+            description: "Edit the selected text block directly from the side panel.",
+            onChange: (value: string) =>
+              updateHtmlBlockOnPage(activePageNumber, activeHtmlBlock.id, {
+                text: value,
+              }),
+            debounceMs: 180,
+          };
+
     return {
       id: "text-inspector",
       title: "Text block",
-      description: "Text editing now lives directly on the canvas. Double-click the selected block to rewrite it in place.",
+      description: "Edit copy and typography for the selected text block from the side panel.",
       sections: [
         {
           id: "meta",
@@ -2430,24 +2600,10 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
           ],
         },
         {
-          id: "canvas-editing",
-          title: "Canvas editing",
+          id: "content",
+          title: "Content",
           fields: [
-            {
-              id: `block-content-preview-${activeHtmlBlock.id}`,
-              kind: "readonly",
-              label: activeHtmlBlock.items?.length ? "Current list" : "Current text",
-              value: activeHtmlBlock.items?.length
-                ? activeHtmlBlock.items.join("\n")
-                : activeHtmlBlock.text ?? "",
-            },
-            {
-              id: `block-editing-note-${activeHtmlBlock.id}`,
-              kind: "readonly",
-              label: "How to edit",
-              value:
-                "Double-click the selected text block on the canvas to edit copy. Text controls no longer live in the side panel.",
-            },
+            contentField,
           ],
         },
       ],
@@ -2640,6 +2796,255 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
           ]
         : [];
 
+    const chartModuleSections =
+      activeHtmlVisualNode.moduleKind === CHART_MODULE_KIND && activeChartSpec && activeChartDataTable
+        ? [
+            {
+              id: "chart-module",
+              title: "Chart module",
+              description:
+                "Edit the chart as structured data so titles, series values, and labels stay in sync.",
+              fields: [
+                {
+                  id: `chart-kind-${activeHtmlVisualNode.id}`,
+                  kind: "select" as const,
+                  label: "Chart kind",
+                  value: activeChartSpec.kind,
+                  options: HTML_CHART_KIND_OPTIONS.map((option) => ({
+                    value: option.value,
+                    label: option.label,
+                  })),
+                  onChange: (value: string) =>
+                    patchActiveChartSpec((current) =>
+                      updateHtmlChartSpecFromRawData({
+                        current: {
+                          ...current,
+                          kind: value as HtmlChartSpec["kind"],
+                        } as HtmlChartSpec,
+                        raw: buildHtmlChartDataTable(current).raw,
+                      }),
+                    ),
+                },
+                {
+                  id: `chart-title-${activeHtmlVisualNode.id}`,
+                  kind: "text" as const,
+                  label: "Title",
+                  value: activeChartSpec.title,
+                  onChange: (value: string) =>
+                    patchActiveChartSpec((current) => ({
+                      ...current,
+                      title: value,
+                    })),
+                },
+                {
+                  id: `chart-subtitle-${activeHtmlVisualNode.id}`,
+                  kind: "textarea" as const,
+                  label: "Subtitle / insight",
+                  value: [activeChartSpec.subtitle, activeChartSpec.insight].filter(Boolean).join("\n"),
+                  onChange: (value: string) =>
+                    patchActiveChartSpec((current) => {
+                      const [subtitle, ...rest] = value.split("\n");
+                      return {
+                        ...current,
+                        subtitle: subtitle?.trim() ?? "",
+                        insight: rest.join(" ").trim(),
+                      };
+                    }),
+                },
+                {
+                  id: `chart-unit-${activeHtmlVisualNode.id}`,
+                  kind: "text" as const,
+                  label: "Primary unit",
+                  value: activeChartSpec.unit,
+                  onChange: (value: string) =>
+                    patchActiveChartSpec((current) => ({
+                      ...current,
+                      unit: value,
+                    })),
+                },
+                ...(activeChartSpec.kind === "combo"
+                  ? [
+                      {
+                        id: `chart-secondary-unit-${activeHtmlVisualNode.id}`,
+                        kind: "text" as const,
+                        label: "Secondary unit",
+                        value: activeChartSpec.secondaryUnit ?? "",
+                        onChange: (value: string) =>
+                          patchActiveChartSpec((current) =>
+                            current.kind === "combo"
+                              ? {
+                                  ...current,
+                                  secondaryUnit: value,
+                                }
+                              : current,
+                          ),
+                      },
+                    ]
+                  : []),
+                {
+                  id: `chart-data-${activeHtmlVisualNode.id}`,
+                  kind: "textarea" as const,
+                  label: activeChartSpec.kind === "bubble" ? "Bubble data (Label / X / Y / Size / Group)" : "Chart data (Category + series)",
+                  value: activeChartDataTable.raw,
+                  description:
+                    "Paste TSV or CSV. Studio will rebuild the chart module from this table instead of loose SVG labels.",
+                  onChange: (value: string) =>
+                    patchActiveChartSpec((current) =>
+                      updateHtmlChartSpecFromRawData({
+                        current,
+                        raw: value,
+                      }),
+                    ),
+                },
+                {
+                  id: `chart-summary-${activeHtmlVisualNode.id}`,
+                  kind: "readonly" as const,
+                  label: "Data summary",
+                  value:
+                    activeChartSpec.kind === "bubble"
+                      ? `${activeChartSpec.points.length} points · ${activeChartDataTable.columns.length} columns`
+                      : `${activeChartDataTable.rows.length} categories · ${activeChartSpec.series.length} series`,
+                },
+                {
+                  id: `chart-accent-${activeHtmlVisualNode.id}`,
+                  kind: "color" as const,
+                  label: "Accent color",
+                  value: activeHtmlVisualNode.style.accent ?? "#2a6f97",
+                  onChange: (value: string) => updateActiveHtmlVisualNodeStyle({ accent: value }),
+                },
+              ],
+            },
+            ...(activeChartSpec.kind === "combo"
+              ? activeChartSpec.series.map((series, index) => ({
+                  id: `chart-series-${index + 1}`,
+                  title: `Series ${index + 1}`,
+                  fields: [
+                    {
+                      id: `chart-series-label-${activeHtmlVisualNode.id}-${series.id}`,
+                      kind: "text" as const,
+                      label: "Series label",
+                      value: series.label,
+                      onChange: (value: string) =>
+                        patchActiveChartSpec((current) =>
+                          current.kind === "combo"
+                            ? {
+                                ...current,
+                                series: current.series.map((entry) =>
+                                  entry.id === series.id ? { ...entry, label: value } : entry,
+                                ),
+                              }
+                            : current,
+                        ),
+                    },
+                    {
+                      id: `chart-series-role-${activeHtmlVisualNode.id}-${series.id}`,
+                      kind: "select" as const,
+                      label: "Series role",
+                      value: series.role ?? "bar",
+                      options: CHART_SERIES_ROLE_OPTIONS.map((option) => ({
+                        value: option.value,
+                        label: option.label,
+                      })),
+                      onChange: (value: string) =>
+                        patchActiveChartSpec((current) =>
+                          current.kind === "combo"
+                            ? {
+                                ...current,
+                                series: current.series.map((entry) =>
+                                  entry.id === series.id
+                                    ? { ...entry, role: value as HtmlChartSeriesRole }
+                                    : entry,
+                                ),
+                              }
+                            : current,
+                        ),
+                    },
+                    {
+                      id: `chart-series-axis-${activeHtmlVisualNode.id}-${series.id}`,
+                      kind: "select" as const,
+                      label: "Axis",
+                      value: series.axis ?? "primary",
+                      options: CHART_AXIS_ROLE_OPTIONS.map((option) => ({
+                        value: option.value,
+                        label: option.label,
+                      })),
+                      onChange: (value: string) =>
+                        patchActiveChartSpec((current) =>
+                          current.kind === "combo"
+                            ? {
+                                ...current,
+                                series: current.series.map((entry) =>
+                                  entry.id === series.id
+                                    ? { ...entry, axis: value as HtmlChartAxisRole }
+                                    : entry,
+                                ),
+                              }
+                            : current,
+                        ),
+                    },
+                    {
+                      id: `chart-series-color-${activeHtmlVisualNode.id}-${series.id}`,
+                      kind: "color" as const,
+                      label: "Series color",
+                      value: series.color ?? "#2a6f97",
+                      onChange: (value: string) =>
+                        patchActiveChartSpec((current) =>
+                          current.kind === "combo"
+                            ? {
+                                ...current,
+                                series: current.series.map((entry) =>
+                                  entry.id === series.id ? { ...entry, color: value } : entry,
+                                ),
+                              }
+                            : current,
+                        ),
+                    },
+                  ],
+                }))
+              : []),
+          ]
+        : [];
+
+    const tableModuleSections =
+      activeHtmlVisualNode.moduleKind === TABLE_MODULE_KIND && activeTableSpec
+        ? [
+            {
+              id: "table-module",
+              title: "Table module",
+              description:
+                "Edit the whole table as raw structured data instead of trying to select cell-by-cell surfaces.",
+              fields: [
+                {
+                  id: `table-data-${activeHtmlVisualNode.id}`,
+                  kind: "textarea" as const,
+                  label: "Table data (TSV / CSV)",
+                  value: activeTableSpec.raw,
+                  onChange: (value: string) => updateActiveTableSpec(buildHtmlTableSpecFromRaw(value)),
+                },
+                {
+                  id: `table-summary-${activeHtmlVisualNode.id}`,
+                  kind: "readonly" as const,
+                  label: "Shape",
+                  value: `${activeTableSpec.columns.length} columns · ${activeTableSpec.rows.length} rows`,
+                },
+                {
+                  id: `table-columns-${activeHtmlVisualNode.id}`,
+                  kind: "readonly" as const,
+                  label: "Columns",
+                  value: activeTableSpec.columns.map((column) => `${column.label} · ${column.type}`).join(" | "),
+                },
+                {
+                  id: `table-accent-${activeHtmlVisualNode.id}`,
+                  kind: "color" as const,
+                  label: "Accent color",
+                  value: activeHtmlVisualNode.style.accent ?? "#2a6f97",
+                  onChange: (value: string) => updateActiveHtmlVisualNodeStyle({ accent: value }),
+                },
+              ],
+            },
+          ]
+        : [];
+
     return {
       id: "visual-inspector",
       title: "Visual module",
@@ -2728,6 +3133,8 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
             ]
           : []),
         ...scientificDiagramSections,
+        ...chartModuleSections,
+        ...tableModuleSections,
         {
           id: "new-node",
           title: "Add nearby module",
@@ -2865,10 +3272,13 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
       ],
     };
   }, [
+    activeChartDataTable,
+    activeChartSpec,
     activeScientificDiagramSpec,
     activeHtmlVisualContentNodes,
     activeHtmlVisualNode,
     activeHtmlVisualCanvasTransform,
+    activeTableSpec,
     extractSelectionAsModule,
     pageInspectorSchema,
     recommendedModuleManifests,
@@ -3614,14 +4024,6 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                           ? undefined
                           : (pageNumber, nodeId, _kind) =>
                               selectVisualNode(pageNumber, nodeId)
-                      }
-                      onQuickEditHtmlBlock={
-                        isDeckReviewLocked
-                          ? undefined
-                          : (pageNumber, blockId, nextContent) => {
-                              selectHtmlBlock(pageNumber, blockId);
-                              updateHtmlBlockOnPage(pageNumber, blockId, nextContent);
-                            }
                       }
                       onCommitHtmlBlockTransform={
                         isDeckReviewLocked

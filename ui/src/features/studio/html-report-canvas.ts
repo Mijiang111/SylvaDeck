@@ -342,9 +342,10 @@ function blockSharesVisualSource(block: HtmlEditableBlock | null, visualNode: Ht
     return false;
   }
 
-  return (
-    block.sourceIndex === visualNode.sourceIndex &&
-    block.sourceTag.toLowerCase() === visualNode.sourceTag.toLowerCase()
+  return Boolean(
+    block.sourcePath &&
+      visualNode.sourcePath &&
+      block.sourcePath === visualNode.sourcePath,
   );
 }
 
@@ -363,8 +364,11 @@ function resolveDefaultLayer(args: {
     return "foreground" satisfies HtmlCanvasLayer;
   }
 
-  const structuralKinds = new Set<HtmlVisualNode["kind"]>(["surface", "divider", "rail"]);
-  if (!structuralKinds.has(visualNode.kind)) {
+  if (visualNode.atomizationRole === "scaffold") {
+    return "background" satisfies HtmlCanvasLayer;
+  }
+
+  if (visualNode.atomizationRole === "leaf" || visualNode.atomizationRole === "container") {
     return "foreground" satisfies HtmlCanvasLayer;
   }
 

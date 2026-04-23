@@ -1,14 +1,32 @@
 import type {
+  DataTableModel,
   GeneratedHtmlReport,
+  HtmlFitParticipation,
+  HtmlVisualAtomizationRole,
+  HtmlChartSpec,
   HtmlPageVisualStyle,
   HtmlVisualContentNode,
   HtmlVisualContentNodeKind,
   HtmlVisualNode,
   HtmlVisualNodeKind,
+  HtmlVisualSelectionPriority,
   HtmlVisualNodeStyle,
   HtmlVisualPage,
   HtmlVisualStructure,
 } from "./types";
+import {
+  CHART_MODULE_KIND,
+  HTML_CHART_SPEC_ATTRIBUTE,
+  HTML_TABLE_SPEC_ATTRIBUTE,
+  TABLE_MODULE_KIND,
+  canonicalizeDataBackedModulesOnPage,
+  parseHtmlChartSpec,
+  parseHtmlTableSpec,
+  renderHtmlChartModule,
+  renderHtmlTableModule,
+  serializeHtmlChartSpec,
+  serializeHtmlTableSpec,
+} from "./html-report-data-modules";
 import {
   HTML_FIT_ROLE_ATTRIBUTE,
   readHtmlFitParticipation,
@@ -37,7 +55,7 @@ const DEFAULT_DIVIDER_COLOR = GENERAL_CONSULTING_PROFILE.tokens.borderSubtle;
 const DEFAULT_SURFACE_FILL = GENERAL_CONSULTING_PROFILE.tokens.surfacePrimary;
 const DEFAULT_SURFACE_BORDER = GENERAL_CONSULTING_PROFILE.tokens.borderSubtle;
 const DEFAULT_ACCENT_COLOR = GENERAL_CONSULTING_PROFILE.tokens.accentPrimary;
-const VISUAL_SELECTOR = "div, aside, article, section, hr, figure";
+const VISUAL_SELECTOR = "div, aside, article, section, hr, figure, table, svg, g, rect, circle, ellipse, line, path";
 const TEXTUAL_SELECTOR = "h1, h2, h3, h4, h5, h6, p, ul, ol, li";
 const DEFAULT_ELEMENT_INSERTION_KINDS = new Set<HtmlVisualNodeKind>([
   "surface",
@@ -47,6 +65,27 @@ const DEFAULT_ELEMENT_INSERTION_KINDS = new Set<HtmlVisualNodeKind>([
   "annotation",
 ]);
 export type HtmlVisualInsertionMode = "page-end" | "below" | "beside";
+
+type InternalVisualCandidate = {
+  element: Element;
+  sourceIndex: number;
+  sourcePath: string;
+  sourceTag: string;
+  kind: HtmlVisualNodeKind;
+  parentIndex: number | null;
+  childIndices: number[];
+  moduleId?: string;
+  moduleLabel?: string;
+  moduleKind?: string;
+  diagramSpec?: HtmlVisualNode["diagramSpec"];
+  chartSpec?: HtmlChartSpec | null;
+  tableSpec?: HtmlVisualNode["tableSpec"];
+  dataTable?: DataTableModel | null;
+  fitParticipation: HtmlFitParticipation;
+  atomizationRole: HtmlVisualAtomizationRole;
+  selectionPriority: HtmlVisualSelectionPriority;
+  style: HtmlVisualNodeStyle;
+};
 
 function resolveReportStyleFallback(
   report: Pick<GeneratedHtmlReport, "styleProfile" | "styleProfileId"> | null | undefined,
@@ -110,6 +149,27 @@ function normalizeOpacity(value: string | null | undefined) {
   return Math.max(0.1, Math.min(1, parsed));
 }
 
+function normalizePlainText(value: string | null | undefined) {
+  return (value ?? "").replace(/\s+/g, " ").trim();
+}
+
+function buildElementSourcePath(root: Element, element: Element) {
+  const parts: number[] = [];
+  let current: Element | null = element;
+
+  while (current && current !== root) {
+    const parent: Element | null = current.parentElement;
+    if (!parent) {
+      break;
+    }
+    const index = Array.from(parent.children).indexOf(current);
+    parts.push(index);
+    current = parent;
+  }
+
+  return parts.reverse().join(".");
+}
+
 function buildPageBackground(background: string) {
   return `linear-gradient(180deg, rgba(255,255,255,0.34), rgba(255,255,255,0.08)), ${background}`;
 }
@@ -126,7 +186,11 @@ function shouldPromoteEditableVisualToContent(kind: HtmlVisualNodeKind) {
     kind === "badge" ||
     kind === "annotation" ||
     kind === "rail" ||
-    kind === "chart-frame"
+    kind === "chart-frame" ||
+    kind === "shape" ||
+    kind === "connector" ||
+    kind === "node" ||
+    kind === "label-surface"
   );
 }
 
@@ -280,6 +344,15 @@ function hasVisualKeyword(tokens: string[]) {
   );
 }
 
+function isTextLikeVisualSurface(element: Element) {
+  const text = normalizePlainText(element.textContent);
+  if (!text || text.length > 96) {
+    return false;
+  }
+
+  return !element.querySelector(TEXTUAL_SELECTOR);
+}
+
 export function inferVisualKind(element: Element): HtmlVisualNodeKind | null {
   const tagName = element.tagName.toUpperCase();
   const tokens = getClassTokens(element);
@@ -292,9 +365,37 @@ export function inferVisualKind(element: Element): HtmlVisualNodeKind | null {
     explicitKind === "highlight" ||
     explicitKind === "annotation" ||
     explicitKind === "rail" ||
-    explicitKind === "chart-frame"
+    explicitKind === "chart-frame" ||
+    explicitKind === "shape" ||
+    explicitKind === "connector" ||
+    explicitKind === "node" ||
+    explicitKind === "label-surface"
   ) {
     return explicitKind;
+  }
+
+  if (tagName === "LINE" || tagName === "PATH") {
+    return "connector";
+  }
+
+  if (tagName === "CIRCLE" || tagName === "ELLIPSE") {
+    return "node";
+  }
+
+  if (tagName === "RECT") {
+    return "shape";
+  }
+
+  if (tagName === "SVG") {
+    return "chart-frame";
+  }
+
+  if (tagName === "TABLE") {
+    return "surface";
+  }
+
+  if (tagName === "G") {
+    return "surface";
   }
 
   if (
@@ -331,7 +432,8 @@ export function inferVisualKind(element: Element): HtmlVisualNodeKind | null {
   if (
     tokens.some((token) => token.includes("chart") || token.includes("plot") || token.includes("graph")) ||
     style.includes("aspect-ratio") ||
-    style.includes("min-height")
+    (style.includes("min-height") &&
+      (tokens.some((token) => token.includes("chart")) || element.querySelector("svg")))
   ) {
     return "chart-frame";
   }
@@ -360,7 +462,7 @@ export function inferVisualKind(element: Element): HtmlVisualNodeKind | null {
     style.includes("border-radius") ||
     style.includes("box-shadow")
   ) {
-    return "surface";
+    return isTextLikeVisualSurface(element) ? "label-surface" : "surface";
   }
 
   return null;
@@ -368,17 +470,6 @@ export function inferVisualKind(element: Element): HtmlVisualNodeKind | null {
 
 function isLikelyVisualElement(element: Element) {
   if (element.matches("section.page")) {
-    return false;
-  }
-
-  const scientificDiagramRoot = element.closest(
-    `[data-html-module-kind="${SCIENTIFIC_DIAGRAM_MODULE_KIND}"]`,
-  );
-  if (
-    scientificDiagramRoot &&
-    scientificDiagramRoot !== element &&
-    !element.hasAttribute("data-html-visual-kind")
-  ) {
     return false;
   }
 
@@ -394,9 +485,34 @@ function isLikelyVisualElement(element: Element) {
   const tokens = getClassTokens(element);
   const hasInlineStyle = Boolean((element.getAttribute("style") ?? "").trim());
   const hasStrongKeyword = hasVisualKeyword(tokens);
+  const tagName = element.tagName.toUpperCase();
+  const isSvgPrimitive =
+    tagName === "SVG" ||
+    tagName === "G" ||
+    tagName === "RECT" ||
+    tagName === "CIRCLE" ||
+    tagName === "ELLIPSE" ||
+    tagName === "LINE" ||
+    tagName === "PATH";
 
-  if (!hasInlineStyle && !hasStrongKeyword && element.children.length > 6) {
+  if (!isSvgPrimitive && !hasInlineStyle && !hasStrongKeyword && element.children.length > 6) {
     return false;
+  }
+
+  const moduleRoot = element.closest("[data-html-module-kind]");
+  const moduleKind = moduleRoot?.getAttribute("data-html-module-kind")?.trim();
+
+  if (moduleRoot && moduleRoot !== element) {
+    if (moduleKind === CHART_MODULE_KIND || moduleKind === TABLE_MODULE_KIND) {
+      return false;
+    }
+    if (
+      moduleKind === SCIENTIFIC_DIAGRAM_MODULE_KIND &&
+      !hasInlineStyle &&
+      !isSvgPrimitive
+    ) {
+      return false;
+    }
   }
 
   return true;
@@ -461,6 +577,40 @@ function buildDefaultVisualNodeStyle(
         border: pageStyle.dividerColor,
         borderWidth: 1,
         radius: 18,
+        accent: pageStyle.accentColor,
+        opacity: 1,
+      };
+    case "label-surface":
+      return {
+        background: pageStyle.surfaceFill,
+        border: pageStyle.dividerColor,
+        borderWidth: 1,
+        radius: 14,
+        accent: pageStyle.accentColor,
+        opacity: 1,
+      };
+    case "shape":
+      return {
+        background: pageStyle.surfaceFill,
+        border: pageStyle.dividerColor,
+        borderWidth: 1,
+        radius: 12,
+        opacity: 1,
+      };
+    case "connector":
+      return {
+        background: "transparent",
+        border: pageStyle.dividerColor,
+        borderWidth: 2,
+        accent: pageStyle.accentColor,
+        opacity: 1,
+      };
+    case "node":
+      return {
+        background: pageStyle.surfaceFill,
+        border: pageStyle.accentColor,
+        borderWidth: 2,
+        radius: 999,
         accent: pageStyle.accentColor,
         opacity: 1,
       };
@@ -534,18 +684,60 @@ function extractNodeStyle(
   };
 }
 
-function extractPageVisualNodes(
-  page: Element,
-  pageNumber: number,
-  pageStyle: HtmlPageVisualStyle,
-) {
-  const candidates = collectHtmlVisualCandidates(page);
-  const editableCandidates = new Set(collectHtmlEditableCandidates(page));
-  const fallbackIdCounts = new Map<string, number>();
+function getCandidateSelectionPriority(
+  fitParticipation: HtmlFitParticipation,
+): HtmlVisualSelectionPriority {
+  return fitParticipation === "content" ? "primary" : "secondary";
+}
 
-  return candidates.map((element, sourceIndex) => {
+function getCandidateAtomizationRole(args: {
+  kind: HtmlVisualNodeKind;
+  childCount: number;
+  fitParticipation: HtmlFitParticipation;
+  moduleKind?: string;
+  sourceTag: string;
+}) {
+  if (args.moduleKind === CHART_MODULE_KIND || args.moduleKind === TABLE_MODULE_KIND) {
+    return "leaf" satisfies HtmlVisualAtomizationRole;
+  }
+
+  if (args.childCount === 0) {
+    return "leaf" satisfies HtmlVisualAtomizationRole;
+  }
+
+  if (args.sourceTag === "svg" || args.sourceTag === "g") {
+    return "container" satisfies HtmlVisualAtomizationRole;
+  }
+
+  if (args.kind === "chart-frame" || args.kind === "annotation" || args.kind === "label-surface") {
+    return "container" satisfies HtmlVisualAtomizationRole;
+  }
+
+  if (
+    args.kind === "surface" ||
+    args.kind === "divider" ||
+    args.kind === "rail" ||
+    args.moduleKind === SCIENTIFIC_DIAGRAM_MODULE_KIND
+  ) {
+    return "scaffold" satisfies HtmlVisualAtomizationRole;
+  }
+
+  return args.fitParticipation === "content" ? "container" : "scaffold";
+}
+
+function buildAtomizedVisualNodes(args: {
+  page: Element;
+  pageNumber: number;
+  pageStyle: HtmlPageVisualStyle;
+}) {
+  const candidates = collectHtmlVisualCandidates(args.page);
+  const editableCandidates = new Set(collectHtmlEditableCandidates(args.page));
+  const fallbackIdCounts = new Map<string, number>();
+  const indexByElement = new Map<Element, number>();
+
+  const prepared: InternalVisualCandidate[] = candidates.map((element, sourceIndex) => {
+    indexByElement.set(element, sourceIndex);
     const kind = inferVisualKind(element) ?? "surface";
-    const persistentId = element.getAttribute("data-html-visual-key")?.trim();
     const moduleId = element.getAttribute("data-html-module-id")?.trim();
     const moduleLabel = element.getAttribute("data-html-module-label")?.trim();
     const moduleKind = element.getAttribute("data-html-module-kind")?.trim();
@@ -553,39 +745,131 @@ function extractPageVisualNodes(
       moduleKind === SCIENTIFIC_DIAGRAM_MODULE_KIND
         ? parseScientificDiagramSpec(element.getAttribute(SCIENTIFIC_DIAGRAM_SPEC_ATTRIBUTE))
         : null;
-    const fallbackSignature = buildVisualIdentitySignature({
-      element,
+    const chartSpec =
+      moduleKind === CHART_MODULE_KIND
+        ? parseHtmlChartSpec(element.getAttribute(HTML_CHART_SPEC_ATTRIBUTE))
+        : null;
+    const tableSpec =
+      moduleKind === TABLE_MODULE_KIND
+        ? parseHtmlTableSpec(element.getAttribute(HTML_TABLE_SPEC_ATTRIBUTE))
+        : null;
+    const fitParticipation = resolveHtmlVisualFitParticipation({
       kind,
+      explicitFitParticipation: readHtmlFitParticipation(element),
+      hasModuleBinding: Boolean(moduleId || moduleLabel),
+      hasEditableText:
+        editableCandidates.has(element) &&
+        shouldPromoteEditableVisualToContent(kind),
+    });
+
+    return {
+      element,
+      sourceIndex,
+      sourceTag: element.tagName.toLowerCase(),
+      sourcePath: buildElementSourcePath(args.page, element),
+      kind,
+      moduleId,
+      moduleLabel,
+      moduleKind,
+      diagramSpec,
+      chartSpec,
+      tableSpec,
+      dataTable: tableSpec,
+      fitParticipation,
+      parentIndex: null,
+      childIndices: [] as number[],
+      atomizationRole: "leaf" as HtmlVisualAtomizationRole,
+      selectionPriority: "secondary" as HtmlVisualSelectionPriority,
+      style: extractNodeStyle(element, kind, args.pageStyle),
+    };
+  });
+
+  prepared.forEach((candidate, index) => {
+    let parent = candidate.element.parentElement;
+    while (parent && parent !== args.page) {
+      const parentIndex = indexByElement.get(parent);
+      if (typeof parentIndex === "number") {
+        candidate.parentIndex = parentIndex;
+        prepared[parentIndex]?.childIndices.push(index);
+        break;
+      }
+      parent = parent.parentElement;
+    }
+  });
+
+  const ids = prepared.map((candidate) => {
+    const persistentId = candidate.element.getAttribute("data-html-visual-key")?.trim();
+    if (persistentId) {
+      return persistentId;
+    }
+
+    const fallbackSignature = buildVisualIdentitySignature({
+      element: candidate.element,
+      kind: candidate.kind,
     });
     const fallbackOrdinal = fallbackIdCounts.get(fallbackSignature) ?? 0;
     fallbackIdCounts.set(fallbackSignature, fallbackOrdinal + 1);
+    return buildStableVisualFallbackId({
+      pageNumber: args.pageNumber,
+      kind: candidate.kind,
+      signature: fallbackSignature,
+      duplicateOrdinal: fallbackOrdinal,
+    });
+  });
+
+  return prepared.map((candidate, index) => {
+    const atomizationRole = getCandidateAtomizationRole({
+      kind: candidate.kind,
+      childCount: candidate.childIndices.length,
+      fitParticipation: candidate.fitParticipation,
+      moduleKind: candidate.moduleKind,
+      sourceTag: candidate.sourceTag,
+    });
+    candidate.atomizationRole = atomizationRole;
+    candidate.selectionPriority =
+      candidate.moduleKind === CHART_MODULE_KIND || candidate.moduleKind === TABLE_MODULE_KIND
+        ? "primary"
+        : atomizationRole === "leaf"
+        ? getCandidateSelectionPriority(candidate.fitParticipation)
+        : "secondary";
     return {
-      id:
-        persistentId ||
-        buildStableVisualFallbackId({
-          pageNumber,
-          kind,
-          signature: fallbackSignature,
-          duplicateOrdinal: fallbackOrdinal,
-        }),
-      kind,
-      pageNumber,
-      sourceTag: element.tagName.toLowerCase(),
-      sourceIndex,
-      moduleId: moduleId || undefined,
-      moduleLabel: moduleLabel || undefined,
-      moduleKind: moduleKind === SCIENTIFIC_DIAGRAM_MODULE_KIND ? SCIENTIFIC_DIAGRAM_MODULE_KIND : undefined,
-      diagramSpec,
-      fitParticipation: resolveHtmlVisualFitParticipation({
-        kind,
-        explicitFitParticipation: readHtmlFitParticipation(element),
-        hasModuleBinding: Boolean(moduleId || moduleLabel),
-        hasEditableText:
-          editableCandidates.has(element) &&
-          shouldPromoteEditableVisualToContent(kind),
-      }),
-      style: extractNodeStyle(element, kind, pageStyle),
+      id: ids[index]!,
+      kind: candidate.kind,
+      fitParticipation: candidate.fitParticipation,
+      pageNumber: args.pageNumber,
+      sourceTag: candidate.sourceTag,
+      sourceIndex: candidate.sourceIndex,
+      sourcePath: candidate.sourcePath,
+      moduleId: candidate.moduleId || undefined,
+      moduleLabel: candidate.moduleLabel || undefined,
+      moduleKind:
+        candidate.moduleKind === SCIENTIFIC_DIAGRAM_MODULE_KIND ||
+        candidate.moduleKind === CHART_MODULE_KIND ||
+        candidate.moduleKind === TABLE_MODULE_KIND
+          ? candidate.moduleKind
+          : undefined,
+      diagramSpec: candidate.diagramSpec,
+      chartSpec: candidate.chartSpec,
+      tableSpec: candidate.tableSpec,
+      dataTable: candidate.dataTable,
+      parentId: candidate.parentIndex == null ? null : ids[candidate.parentIndex]!,
+      childIds: candidate.childIndices.map((childIndex) => ids[childIndex]!).filter(Boolean),
+      atomizationRole,
+      selectionPriority: candidate.selectionPriority,
+      style: candidate.style,
     } satisfies HtmlVisualNode;
+  });
+}
+
+function extractPageVisualNodes(
+  page: Element,
+  pageNumber: number,
+  pageStyle: HtmlPageVisualStyle,
+) {
+  return buildAtomizedVisualNodes({
+    page,
+    pageNumber,
+    pageStyle,
   });
 }
 
@@ -640,6 +924,7 @@ export function extractHtmlVisualStructure(args: {
   const parser = new DOMParser();
   const document = parser.parseFromString(args.html, "text/html");
   const pages = Array.from(document.querySelectorAll("section.page")).map((page, index) => {
+    canonicalizeDataBackedModulesOnPage(page);
     const pageNumber = index + 1;
     const pageStyle = {
       pageBackground: normalizeCssPaint(
@@ -695,6 +980,18 @@ export function ensureHtmlVisualStructure(
     : false;
 
   if (hasReusableStructure && report.visualStructure) {
+    const extractedIntroducesModules = extracted.pages.some((page, pageIndex) => {
+      const existingPage = report.visualStructure?.pages[pageIndex];
+      return page.nodes.some((node, nodeIndex) => {
+        const existingNode = existingPage?.nodes[nodeIndex];
+        return Boolean(node.moduleKind && !existingNode?.moduleKind);
+      });
+    });
+
+    if (extractedIntroducesModules) {
+      return extracted;
+    }
+
     const extractedHasMoreCoverage = extracted.pages.some((page, pageIndex) => {
       const existingPage = report.visualStructure?.pages[pageIndex];
       if (!existingPage) {
@@ -712,6 +1009,7 @@ export function ensureHtmlVisualStructure(
 }
 
 export function annotateHtmlFitRolesOnPage(pageElement: Element): void {
+  canonicalizeDataBackedModulesOnPage(pageElement);
   const explicitRoles = new Map<Element, NonNullable<ReturnType<typeof readHtmlFitParticipation>>>();
   pageElement
     .querySelectorAll(`[${HTML_FIT_ROLE_ATTRIBUTE}]`)
@@ -940,6 +1238,9 @@ function buildPageScopedReport(args: {
   const parser = new DOMParser();
   const document = parser.parseFromString(args.report.html, "text/html");
   const page = document.querySelectorAll("section.page")[args.pageNumber - 1];
+  if (page) {
+    canonicalizeDataBackedModulesOnPage(page);
+  }
   return {
     document,
     page: page as HTMLElement | undefined,
@@ -1259,6 +1560,34 @@ export function updateGeneratedHtmlReportVisualNode(args: {
       targetElement = replacement;
       element.replaceWith(replacement);
     }
+  } else if (targetNode.moduleKind === CHART_MODULE_KIND && targetNode.chartSpec) {
+    const template = document.createElement("template");
+    template.innerHTML = renderHtmlChartModule({
+      spec: targetNode.chartSpec,
+      accent: nextStyle.accent ?? null,
+      border: nextStyle.border ?? null,
+      background: nextStyle.background ?? null,
+    });
+    const replacement = template.content.firstElementChild as HTMLElement | null;
+    if (replacement) {
+      replacement.setAttribute("data-html-visual-key", targetNode.id);
+      targetElement = replacement;
+      element.replaceWith(replacement);
+    }
+  } else if (targetNode.moduleKind === TABLE_MODULE_KIND && targetNode.tableSpec) {
+    const template = document.createElement("template");
+    template.innerHTML = renderHtmlTableModule({
+      tableSpec: targetNode.tableSpec,
+      accent: nextStyle.accent ?? null,
+      border: nextStyle.border ?? null,
+      background: nextStyle.background ?? null,
+    });
+    const replacement = template.content.firstElementChild as HTMLElement | null;
+    if (replacement) {
+      replacement.setAttribute("data-html-visual-key", targetNode.id);
+      targetElement = replacement;
+      element.replaceWith(replacement);
+    }
   }
 
   applyVisualNodeStyleToElement(targetElement, nextKind, nextStyle);
@@ -1324,6 +1653,130 @@ export function updateGeneratedHtmlReportScientificDiagram(args: {
   replacement.setAttribute(SCIENTIFIC_DIAGRAM_SPEC_ATTRIBUTE, serializeScientificDiagramSpec(nextSpec));
   element.replaceWith(replacement);
   applyVisualNodeStyleToElement(replacement, targetNode.kind, {
+    ...targetNode.style,
+    accent: targetNode.style.accent ?? args.report.styleProfile?.accentColor ?? targetNode.style.accent,
+  });
+
+  return refreshReportVisualArtifacts({
+    report: args.report,
+    document,
+  });
+}
+
+export function updateGeneratedHtmlReportChartModule(args: {
+  report: GeneratedHtmlReport;
+  pageNumber: number;
+  nodeId: string;
+  chartSpec: HtmlVisualNode["chartSpec"];
+}) {
+  if (typeof DOMParser === "undefined") {
+    return args.report;
+  }
+
+  const visualStructure = ensureHtmlVisualStructure(args.report);
+  const targetPage = visualStructure.pages.find((page) => page.pageNumber === args.pageNumber) ?? null;
+  const targetNode = targetPage?.nodes.find((node) => node.id === args.nodeId) ?? null;
+  if (!targetPage || !targetNode || targetNode.moduleKind !== CHART_MODULE_KIND) {
+    return args.report;
+  }
+
+  const { document, page } = buildPageScopedReport(args);
+  if (!page) {
+    return args.report;
+  }
+
+  const element = findVisualNodeElement({
+    page,
+    node: targetNode,
+  });
+  if (!element) {
+    return args.report;
+  }
+
+  const nextSpec = args.chartSpec ? parseHtmlChartSpec(serializeHtmlChartSpec(args.chartSpec)) : null;
+  if (!nextSpec) {
+    return args.report;
+  }
+
+  const template = document.createElement("template");
+  template.innerHTML = renderHtmlChartModule({
+    spec: nextSpec,
+    accent: targetNode.style.accent ?? null,
+    border: targetNode.style.border ?? null,
+    background: targetNode.style.background ?? null,
+  });
+  const replacement = template.content.firstElementChild as HTMLElement | null;
+  if (!replacement) {
+    return args.report;
+  }
+
+  replacement.setAttribute("data-html-visual-key", targetNode.id);
+  replacement.setAttribute("data-html-module-kind", CHART_MODULE_KIND);
+  replacement.setAttribute(HTML_CHART_SPEC_ATTRIBUTE, serializeHtmlChartSpec(nextSpec));
+  element.replaceWith(replacement);
+  applyVisualNodeStyleToElement(replacement, "chart-frame", {
+    ...targetNode.style,
+    accent: targetNode.style.accent ?? args.report.styleProfile?.accentColor ?? targetNode.style.accent,
+  });
+
+  return refreshReportVisualArtifacts({
+    report: args.report,
+    document,
+  });
+}
+
+export function updateGeneratedHtmlReportTableModule(args: {
+  report: GeneratedHtmlReport;
+  pageNumber: number;
+  nodeId: string;
+  tableSpec: HtmlVisualNode["tableSpec"];
+}) {
+  if (typeof DOMParser === "undefined") {
+    return args.report;
+  }
+
+  const visualStructure = ensureHtmlVisualStructure(args.report);
+  const targetPage = visualStructure.pages.find((page) => page.pageNumber === args.pageNumber) ?? null;
+  const targetNode = targetPage?.nodes.find((node) => node.id === args.nodeId) ?? null;
+  if (!targetPage || !targetNode || targetNode.moduleKind !== TABLE_MODULE_KIND) {
+    return args.report;
+  }
+
+  const { document, page } = buildPageScopedReport(args);
+  if (!page) {
+    return args.report;
+  }
+
+  const element = findVisualNodeElement({
+    page,
+    node: targetNode,
+  });
+  if (!element) {
+    return args.report;
+  }
+
+  const nextSpec = args.tableSpec ? parseHtmlTableSpec(serializeHtmlTableSpec(args.tableSpec)) : null;
+  if (!nextSpec) {
+    return args.report;
+  }
+
+  const template = document.createElement("template");
+  template.innerHTML = renderHtmlTableModule({
+    tableSpec: nextSpec,
+    accent: targetNode.style.accent ?? null,
+    border: targetNode.style.border ?? null,
+    background: targetNode.style.background ?? null,
+  });
+  const replacement = template.content.firstElementChild as HTMLElement | null;
+  if (!replacement) {
+    return args.report;
+  }
+
+  replacement.setAttribute("data-html-visual-key", targetNode.id);
+  replacement.setAttribute("data-html-module-kind", TABLE_MODULE_KIND);
+  replacement.setAttribute(HTML_TABLE_SPEC_ATTRIBUTE, serializeHtmlTableSpec(nextSpec));
+  element.replaceWith(replacement);
+  applyVisualNodeStyleToElement(replacement, "surface", {
     ...targetNode.style,
     accent: targetNode.style.accent ?? args.report.styleProfile?.accentColor ?? targetNode.style.accent,
   });

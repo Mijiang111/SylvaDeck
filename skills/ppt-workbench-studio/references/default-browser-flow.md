@@ -53,13 +53,21 @@ curl -X POST http://127.0.0.1:3101/api/studio/bridge/launch \
   }'
 ```
 
-Then open the returned `openUrl` in the **same default browser profile** so project/browser state persists.
+Then parse the returned `openUrl` and open that exact URL in the **same default browser profile** so project/browser state persists.
+
+Example:
+
+```bash
+open 'http://127.0.0.1:5174/?bridgeLaunch=<launch-id>'
+```
+
+Opening `http://127.0.0.1:5174/` alone is not enough.
 
 ### 4. Let Studio consume the launch
 
 Do not try to type into the UI.
 
-The launch URL makes Studio:
+The exact returned launch URL makes Studio:
 
 - consume the prompt payload
 - create a local project in browser storage

@@ -230,6 +230,7 @@ export function StudioHomePage() {
 
   useStudioBridgeLaunchBootstrap({
     shellBootState: shell.bootState,
+    workspaceReady: shell.bootState === "ready" && Boolean(library.snapshot),
     onLaunchConsumed: () => setAiPrompt(""),
   });
   useStudioInstallGate({

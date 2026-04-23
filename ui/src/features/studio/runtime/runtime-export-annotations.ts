@@ -7,6 +7,7 @@ import { findHtmlAnimationPage } from "@/features/studio/html-report-animation";
 import { collectHtmlLayoutCandidates } from "@/features/studio/html-report-layout";
 import { collectHtmlEditableCandidates } from "@/features/studio/html-report-structure";
 import { HTML_FIT_ROLE_ATTRIBUTE } from "@/features/studio/html-fit-role";
+import { canonicalizeDataBackedModulesOnPage } from "@/features/studio/html-report-data-modules";
 import {
   annotateHtmlFitRolesOnPage,
   collectHtmlVisualCandidates,
@@ -111,6 +112,18 @@ function annotatePreviewVisualNodes(pageElement: Element, visualPage: HtmlVisual
 
     element.setAttribute("data-html-visual-id", node.id);
     element.setAttribute("data-html-visual-kind", node.kind);
+    if (node.parentId) {
+      element.setAttribute("data-html-visual-parent-id", node.parentId);
+    }
+    if (node.childIds?.length) {
+      element.setAttribute("data-html-visual-child-ids", node.childIds.join(","));
+    }
+    if (node.atomizationRole) {
+      element.setAttribute("data-html-visual-atomization-role", node.atomizationRole);
+    }
+    if (node.selectionPriority) {
+      element.setAttribute("data-html-visual-selection-priority", node.selectionPriority);
+    }
   });
 }
 
@@ -439,6 +452,7 @@ function buildHtmlReportPageDocument(
   });
 
   const pageClone = pageElement.cloneNode(true) as Element;
+  canonicalizeDataBackedModulesOnPage(pageClone);
   annotatePreviewPageBlocks(pageClone, pageStructure);
   annotatePreviewVisualNodes(pageClone, visualPage);
   annotatePreviewPageExportMetadata(pageClone, pageStyle);
@@ -521,10 +535,13 @@ function buildHtmlReportPageDocument(
         selectedBlockId: null,
         selectedVisualNodeId: null,
       };
-      let recentBlockSelection = {
-        blockId: null,
-        timestamp: 0,
-      };
+      function syncSelectionContextAttribute() {
+        document.documentElement.setAttribute(
+          "data-ppt-selection-mode",
+          selectionContext.preferredSelectionType || "page",
+        );
+      }
+      syncSelectionContextAttribute();
 
       function getPageRoot() {
         return document.querySelector("section.page");
@@ -542,6 +559,28 @@ function buildHtmlReportPageDocument(
         return candidate.type === "visual" && candidate.fitParticipation === "decorative";
       }
 
+      function getVisualAtomizationRank(candidate, preference) {
+        if (preference === "visual" && candidate.type === "block") {
+          return 5;
+        }
+        const role = candidate.atomizationRole || "leaf";
+        const priority = candidate.selectionPriority || "secondary";
+        const isContent = candidate.fitParticipation === "content";
+
+        if (preference === "visual") {
+          if (role === "leaf") return priority === "primary" ? 0 : isContent ? 1 : 2;
+          if (role === "container") return 3;
+          if (role === "scaffold") return 4;
+          return 6;
+        }
+
+        if (role === "leaf" && priority === "primary") return 0;
+        if (role === "leaf") return isContent ? 2 : 3;
+        if (role === "container") return 4;
+        if (role === "scaffold") return 5;
+        return 6;
+      }
+
       function isPageContentVisualCandidate(candidate) {
         return (
           candidate.type === "visual" &&
@@ -552,10 +591,16 @@ function buildHtmlReportPageDocument(
 
       function getPageSemanticRank(candidate) {
         if (candidate.type === "block") {
-          return textPriorityBlockKinds.has(candidate.blockKind) ? 0 : 1;
+          return 1;
         }
 
-        return isPageContentVisualCandidate(candidate) ? 2 : 3;
+        const visualRank = getVisualAtomizationRank(candidate, "page");
+        if (visualRank === 0) return 0;
+        if (visualRank === 2) return 2;
+        if (visualRank === 3) return 3;
+        if (visualRank === 4) return 4;
+        if (visualRank === 5) return 5;
+        return isPageContentVisualCandidate(candidate) ? 0 : 6;
       }
 
       function resolveBlockSizingBehavior(blockCandidate, blockElement) {
@@ -564,6 +609,8 @@ function buildHtmlReportPageDocument(
         const linkedVisualFitParticipation = normalizeFitParticipation(
           blockElement.getAttribute(fitRoleAttribute),
         );
+        const linkedVisualAtomizationRole =
+          blockElement.getAttribute("data-html-visual-atomization-role");
         const sharesSource = Boolean(linkedVisualNodeId);
 
         if (!linkedVisualNodeId || !sharesSource) {
@@ -574,8 +621,8 @@ function buildHtmlReportPageDocument(
           return "text-auto";
         }
 
-        if (textPriorityBlockKinds.has(blockCandidate.blockKind)) {
-          return "frame-only";
+        if (linkedVisualAtomizationRole !== "leaf") {
+          return "text-auto";
         }
 
         return "frame-only";
@@ -1451,44 +1498,9 @@ function buildHtmlReportPageDocument(
         );
       }
 
-      function collectSelectableCandidates(target, clientX, clientY) {
-        if (!(target instanceof Element)) {
-          return [];
-        }
-
-        const pageRoot = document.querySelector("section.page");
+      function collectSelectableCandidatesFromSeeds(seeds, pageRoot) {
         const candidates = [];
         const seen = new Set();
-        const seeds = [];
-        const seenSeeds = new Set();
-        const pushSeed = (element, layerIndex) => {
-          if (!(element instanceof Element)) {
-            return;
-          }
-          if (seenSeeds.has(element)) {
-            return;
-          }
-          seenSeeds.add(element);
-          seeds.push({ element, layerIndex });
-        };
-
-        pushSeed(target, 0);
-
-        if (Number.isFinite(clientX) && Number.isFinite(clientY)) {
-          const probeOffsets = [
-            [0, 0],
-            [-6, 0],
-            [6, 0],
-            [0, -6],
-            [0, 6],
-          ];
-          probeOffsets.forEach(([offsetX, offsetY], probeIndex) => {
-            const pointTargets = document.elementsFromPoint(clientX + offsetX, clientY + offsetY);
-            pointTargets.forEach((element, elementIndex) => {
-              pushSeed(element, probeIndex * 100 + elementIndex + 1);
-            });
-          });
-        }
 
         seeds.forEach(({ element: seed, layerIndex }) => {
           let current = seed;
@@ -1530,6 +1542,8 @@ function buildHtmlReportPageDocument(
                 blockKind,
                 visualKind: current.getAttribute("data-html-visual-kind"),
                 sharesSource: Boolean(current.getAttribute("data-html-visual-id")),
+                atomizationRole: current.getAttribute("data-html-visual-atomization-role"),
+                selectionPriority: current.getAttribute("data-html-visual-selection-priority"),
               });
               seen.add("block:" + blockId);
             }
@@ -1549,6 +1563,8 @@ function buildHtmlReportPageDocument(
                 visualKind,
                 blockKind: current.getAttribute("data-html-block-kind"),
                 sharesSource: Boolean(current.getAttribute("data-html-block-id")),
+                atomizationRole: current.getAttribute("data-html-visual-atomization-role"),
+                selectionPriority: current.getAttribute("data-html-visual-selection-priority"),
               });
               seen.add("visual:" + visualNodeId);
             }
@@ -1565,45 +1581,164 @@ function buildHtmlReportPageDocument(
         return candidates;
       }
 
-      function chooseSelectableCandidate(target, preferredType, clientX, clientY) {
-        const pageModeHybrid =
-          selectionContext.preferredSelectionType === "page" && !preferredType;
-        const candidates = collectSelectableCandidates(target, clientX, clientY);
-        const order = getSelectionOrder(preferredType);
-        const typeRanks = new Map(order.map((type, index) => [type, index]));
-        const pool = (pageModeHybrid
-          ? candidates.filter((candidate) => !isDecorativeVisualCandidate(candidate))
-          : candidates)
-          .filter((candidate) => typeRanks.has(candidate.type))
-          .sort((left, right) => {
-            if (pageModeHybrid) {
-              const leftSemanticRank = getPageSemanticRank(left);
-              const rightSemanticRank = getPageSemanticRank(right);
-              if (leftSemanticRank !== rightSemanticRank) {
-                return leftSemanticRank - rightSemanticRank;
-              }
-            }
-            if (left.layerIndex !== right.layerIndex) {
-              return left.layerIndex - right.layerIndex;
-            }
-            const leftRank = typeRanks.get(left.type) ?? 99;
-            const rightRank = typeRanks.get(right.type) ?? 99;
-            if (leftRank !== rightRank) {
-              return leftRank - rightRank;
-            }
-            if (left.depth !== right.depth) {
-              return left.depth - right.depth;
-            }
-            if (left.area !== right.area) {
-              return left.area - right.area;
-            }
-            return left.key.localeCompare(right.key);
+      function collectSelectableCandidates(target, clientX, clientY, options) {
+        if (!(target instanceof Element)) {
+          return [];
+        }
+
+        const pageRoot = document.querySelector("section.page");
+        const includeProbes = options?.includeProbes === true;
+        const seeds = [];
+        const seenSeeds = new Set();
+        const pushSeed = (element, layerIndex) => {
+          if (!(element instanceof Element)) {
+            return;
+          }
+          if (seenSeeds.has(element)) {
+            return;
+          }
+          seenSeeds.add(element);
+          seeds.push({ element, layerIndex });
+        };
+
+        pushSeed(target, 0);
+
+        if (includeProbes && Number.isFinite(clientX) && Number.isFinite(clientY)) {
+          const probeOffsets = [
+            [-6, 0],
+            [6, 0],
+            [0, -6],
+            [0, 6],
+          ];
+          probeOffsets.forEach(([offsetX, offsetY], probeIndex) => {
+            const pointTargets = document.elementsFromPoint(clientX + offsetX, clientY + offsetY);
+            pointTargets.forEach((element, elementIndex) => {
+              pushSeed(element, probeIndex * 100 + elementIndex + 1);
+            });
           });
-        if (pool.length === 0) {
+        }
+
+        return collectSelectableCandidatesFromSeeds(seeds, pageRoot);
+      }
+
+      function getElementAncestorDepth(target, ancestor) {
+        let current = target;
+        let depth = 0;
+        while (current && current instanceof Element) {
+          if (current === ancestor) {
+            return depth;
+          }
+          current = current.parentElement;
+          depth += 1;
+        }
+        return null;
+      }
+
+      function chooseDirectTextBlockCandidate(target, candidates, preferredType) {
+        if (!(target instanceof Element)) {
           return null;
         }
 
-        return pool[0];
+        if (preferredType === "visual" || selectionContext.preferredSelectionType === "visual") {
+          return null;
+        }
+
+        const directBlockElement = target.closest("[data-html-block-id]");
+        if (!(directBlockElement instanceof Element)) {
+          return null;
+        }
+
+        const directBlockId = directBlockElement.getAttribute("data-html-block-id");
+        const directBlockKind = directBlockElement.getAttribute("data-html-block-kind");
+        if (!directBlockId || !directBlockKind || !textPriorityBlockKinds.has(directBlockKind)) {
+          return null;
+        }
+
+        const directBlockDepth = getElementAncestorDepth(target, directBlockElement);
+        if (!Number.isFinite(directBlockDepth)) {
+          return null;
+        }
+
+        const directVisualElement = target.closest("[data-html-visual-id]");
+        const directVisualDepth =
+          directVisualElement instanceof Element
+            ? getElementAncestorDepth(target, directVisualElement)
+            : null;
+        if (Number.isFinite(directVisualDepth) && directVisualDepth < directBlockDepth) {
+          return null;
+        }
+
+        return (
+          candidates.find(
+            (candidate) =>
+              candidate.type === "block" && candidate.blockId === directBlockId,
+          ) ?? null
+        );
+      }
+
+      function chooseSelectableCandidate(target, preferredType, clientX, clientY) {
+        const pageModeHybrid =
+          selectionContext.preferredSelectionType === "page" && !preferredType;
+        const order = getSelectionOrder(preferredType);
+        const typeRanks = new Map(order.map((type, index) => [type, index]));
+        const rankCandidates = (candidates) => {
+          const pool = (pageModeHybrid
+            ? candidates.filter((candidate) => !isDecorativeVisualCandidate(candidate))
+            : candidates)
+            .filter((candidate) => typeRanks.has(candidate.type))
+            .sort((left, right) => {
+              if (pageModeHybrid) {
+                const leftSemanticRank = getPageSemanticRank(left);
+                const rightSemanticRank = getPageSemanticRank(right);
+                if (leftSemanticRank !== rightSemanticRank) {
+                  return leftSemanticRank - rightSemanticRank;
+                }
+              } else if (selectionContext.preferredSelectionType === "visual" && !preferredType) {
+                const leftVisualRank = getVisualAtomizationRank(left, "visual");
+                const rightVisualRank = getVisualAtomizationRank(right, "visual");
+                if (leftVisualRank !== rightVisualRank) {
+                  return leftVisualRank - rightVisualRank;
+                }
+              }
+              if (left.layerIndex !== right.layerIndex) {
+                return left.layerIndex - right.layerIndex;
+              }
+              const leftRank = typeRanks.get(left.type) ?? 99;
+              const rightRank = typeRanks.get(right.type) ?? 99;
+              if (leftRank !== rightRank) {
+                return leftRank - rightRank;
+              }
+              if (left.depth !== right.depth) {
+                return left.depth - right.depth;
+              }
+              if (left.area !== right.area) {
+                return left.area - right.area;
+              }
+              return left.key.localeCompare(right.key);
+            });
+          return pool[0] ?? null;
+        };
+
+        const exactTargetCandidates = collectSelectableCandidates(target, clientX, clientY, {
+          includeProbes: false,
+        });
+        const directTextBlockCandidate = chooseDirectTextBlockCandidate(
+          target,
+          exactTargetCandidates,
+          preferredType,
+        );
+        if (directTextBlockCandidate) {
+          return directTextBlockCandidate;
+        }
+
+        const exactTargetCandidate = rankCandidates(exactTargetCandidates);
+        if (exactTargetCandidate) {
+          return exactTargetCandidate;
+        }
+
+        return rankCandidates(
+          collectSelectableCandidates(target, clientX, clientY, { includeProbes: true }),
+        );
       }
 
       function buildBlockPayload(blockCandidate) {
@@ -1621,6 +1756,10 @@ function buildHtmlReportPageDocument(
         const linkedVisualFitParticipation = normalizeFitParticipation(
           blockElement.getAttribute(fitRoleAttribute),
         );
+        const linkedVisualAtomizationRole =
+          blockElement.getAttribute("data-html-visual-atomization-role");
+        const linkedVisualSelectionPriority =
+          blockElement.getAttribute("data-html-visual-selection-priority");
         const sharesSource = Boolean(linkedVisualNodeId);
         const sizingBehavior = resolveBlockSizingBehavior(blockCandidate, blockElement);
 
@@ -1637,6 +1776,8 @@ function buildHtmlReportPageDocument(
           linkedVisualNodeId: linkedVisualNodeId || undefined,
           linkedVisualKind: linkedVisualKind || undefined,
           linkedVisualFitParticipation: linkedVisualFitParticipation || undefined,
+          linkedVisualAtomizationRole: linkedVisualAtomizationRole || undefined,
+          linkedVisualSelectionPriority: linkedVisualSelectionPriority || undefined,
           sharesSource,
           sizingBehavior,
           whiteSpace:
@@ -1660,12 +1801,15 @@ function buildHtmlReportPageDocument(
       document.addEventListener("click", (event) => {
         const target = event.target;
         if (!(target instanceof Element)) return;
-        const candidate = chooseSelectableCandidate(target, null, event.clientX, event.clientY);
+        const preferredType =
+          selectionContext.preferredSelectionType === "visual" ? "visual" : null;
+        const candidate = chooseSelectableCandidate(
+          target,
+          preferredType,
+          event.clientX,
+          event.clientY,
+        );
         if (!candidate) {
-          recentBlockSelection = {
-            blockId: null,
-            timestamp: 0,
-          };
           window.parent.postMessage(
             {
               type: "ppt-html-preview-interaction",
@@ -1681,60 +1825,7 @@ function buildHtmlReportPageDocument(
           candidate.type === "block"
             ? buildBlockPayload(candidate)
             : buildVisualPayload(candidate);
-        const now = Date.now();
-        const repeatedBlockClick =
-          candidate.type === "block" &&
-          recentBlockSelection.blockId === candidate.blockId &&
-          now - recentBlockSelection.timestamp <= 900;
-        const action =
-          candidate.type === "block" &&
-          ((candidate.blockId === selectionContext.selectedBlockId &&
-            !selectionContext.selectedVisualNodeId) ||
-            repeatedBlockClick)
-            ? "edit"
-            : "select";
-        recentBlockSelection =
-          candidate.type === "block"
-            ? {
-                blockId: candidate.blockId,
-                timestamp: now,
-              }
-            : {
-                blockId: null,
-                timestamp: 0,
-              };
-        window.parent.postMessage({ ...payload, action }, "*");
-      }, true);
-
-      document.addEventListener("dblclick", (event) => {
-        const target = event.target;
-        if (!(target instanceof Element)) return;
-        const blockCandidate = chooseSelectableCandidate(
-          target,
-          "block",
-          event.clientX,
-          event.clientY,
-        );
-        if (blockCandidate) {
-          event.preventDefault();
-          event.stopPropagation();
-          window.parent.postMessage({ ...buildBlockPayload(blockCandidate), action: "edit" }, "*");
-          return;
-        }
-
-        const visualCandidate = chooseSelectableCandidate(
-          target,
-          "visual",
-          event.clientX,
-          event.clientY,
-        );
-        if (visualCandidate) {
-          event.preventDefault();
-          event.stopPropagation();
-          window.parent.postMessage({ ...buildVisualPayload(visualCandidate), action: "inspect" }, "*");
-          return;
-        }
-
+        window.parent.postMessage({ ...payload, action: "select" }, "*");
       }, true);
 
       window.addEventListener("message", (event) => {
@@ -1770,6 +1861,7 @@ function buildHtmlReportPageDocument(
                 ? event.data.selectedVisualNodeId
                 : null,
           };
+          syncSelectionContextAttribute();
           return;
         }
 
