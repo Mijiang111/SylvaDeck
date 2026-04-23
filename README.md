@@ -12,6 +12,45 @@ This repository is still an `alpha`, but the core loop already works:
 
 This is also my first open-source GitHub project, so if you try it and something feels off, I’d really appreciate issues, suggestions, or setup feedback.
 
+## Start Here
+
+There are only **two ways to start**:
+
+### Option 1: With an AI coding agent (recommended)
+
+Install the Claw Design skill:
+
+```bash
+npx --yes skills add Mijiang111/claw-design --skill ppt-workbench-studio -g -y
+```
+
+Then refresh or restart your AI agent and simply describe the deck you want.
+
+What this gives the agent:
+
+- read source links first
+- shape a Studio-ready prompt
+- launch Studio through the local bridge
+- open the result in your default browser
+
+Skill source:
+
+- GitHub: [skills/ppt-workbench-studio](https://github.com/Mijiang111/claw-design/tree/main/skills/ppt-workbench-studio)
+
+### Option 2: Local manual setup
+
+If you want to run Studio yourself:
+
+```bash
+pnpm studio:onboard
+pnpm dev
+```
+
+Then open:
+
+- UI: [http://127.0.0.1:5174](http://127.0.0.1:5174)
+- Install guide: [http://127.0.0.1:5174/install](http://127.0.0.1:5174/install)
+
 ## What It Does
 
 - Generates slide-like HTML reports from a raw brief
@@ -83,46 +122,6 @@ This repository is an `alpha`.
 - `pnpm` `9+`
 - A local Codex-compatible CLI or authenticated local agent environment
 
-### Install
-
-Fastest first-run path:
-
-```bash
-pnpm studio:onboard
-```
-
-This bootstrap command:
-
-- checks Node / pnpm / Codex readiness
-- installs workspace dependencies when needed
-- links the repo skill from `skills/ppt-workbench-studio/` into `~/.codex/skills/ppt-workbench-studio`
-
-If you prefer the manual path:
-
-```bash
-pnpm install
-```
-
-Skill source:
-
-- GitHub: [skills/ppt-workbench-studio](https://github.com/Mijiang111/claw-design/tree/main/skills/ppt-workbench-studio)
-
-Install guide:
-
-- UI route: [http://127.0.0.1:5174/install](http://127.0.0.1:5174/install)
-
-Environment doctor:
-
-```bash
-pnpm studio:doctor
-```
-
-Then, if you have not already bootstrapped dependencies:
-
-```bash
-pnpm install
-```
-
 ### Configure
 
 Copy the example env file if you want to customize ports or the local agent command:
@@ -150,16 +149,21 @@ Then open:
 - Health check: [http://127.0.0.1:3101/api/health](http://127.0.0.1:3101/api/health)
 - Install guide: [http://127.0.0.1:5174/install](http://127.0.0.1:5174/install)
 
-## Install / Onboarding
+### Manual / Troubleshooting
 
-V1 now ships with an OpenClaw-style onboarding flow:
+If you do not want the bootstrap flow:
 
-- a public `/install` page
-- a first-run Studio redirect when Codex or the repo skill is not ready
-- one-command bootstrap through `pnpm studio:onboard`
-- a local install doctor through `pnpm studio:doctor`
+```bash
+pnpm install
+cp .env.example .env
+pnpm dev
+```
 
-The onboarding page currently shows a multi-agent matrix, but V1 only automates `Codex` end-to-end. `Claude Code` and `Cursor` are visible as manual/coming-soon targets.
+Useful check:
+
+```bash
+pnpm studio:doctor
+```
 
 ## Prompt Bridge Workflow
 

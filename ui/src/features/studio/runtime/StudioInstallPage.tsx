@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Check, Copy, ExternalLink, RefreshCcw, Wrench } from "lucide-react";
+import { Check, Copy, ExternalLink, Play, RefreshCcw, Sparkles, TerminalSquare } from "lucide-react";
 import {
   fetchStudioInstallStatus,
   getInstallAgent,
   isCodexInstallReady,
   streamStudioInstallOnboard,
+  INSTALL_SKILL_COMMAND,
+  MANUAL_DOCTOR_COMMAND,
+  MANUAL_ONBOARD_COMMAND,
+  MANUAL_RUN_COMMAND,
   type InstallAgentStatus,
   type InstallStatusResponse,
   type InstallStepEvent,
@@ -13,12 +17,6 @@ import { Link, useLocation, useNavigate } from "@/lib/router";
 
 const FALLBACK_GITHUB_SKILL_URL =
   "https://github.com/Mijiang111/claw-design/tree/main/skills/ppt-workbench-studio";
-
-const FALLBACK_COMMANDS = {
-  onboard: "pnpm studio:onboard",
-  doctor: "pnpm studio:doctor",
-  dev: "pnpm dev",
-};
 
 const STATIC_AGENT_CARDS: InstallAgentStatus[] = [
   {
@@ -149,38 +147,6 @@ function AgentCard({ agent }: { agent: InstallAgentStatus }) {
   );
 }
 
-function CommandCard({
-  title,
-  command,
-  copiedKey,
-  onCopied,
-}: {
-  title: string;
-  command: string;
-  copiedKey: string | null;
-  onCopied: (label: string) => void;
-}) {
-  return (
-    <div className="border border-[var(--studio-line)] bg-[rgba(8,8,8,0.92)] p-5">
-      <div className="flex items-center justify-between gap-4">
-        <div>
-          <div className="text-[10px] uppercase tracking-[0.24em] text-[var(--studio-muted)]">{title}</div>
-          <code className="mt-3 block text-[13px] text-[var(--studio-ink)]">{command}</code>
-        </div>
-        <div className="flex flex-col items-end gap-2">
-          <CopyButton label={title} value={command} onCopied={onCopied} />
-          {copiedKey === title ? (
-            <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-[0.18em] text-emerald-200">
-              <Check className="h-3.5 w-3.5" />
-              Copied
-            </span>
-          ) : null}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function normalizeReturnPath(value: string | null) {
   if (!value || !value.startsWith("/")) {
     return "/";
@@ -222,7 +188,6 @@ export function StudioInstallPage() {
 
   const codexReady = isCodexInstallReady(status);
   const mode = status ? "connected" : statusChecked ? "docs" : "checking";
-  const commands = status?.bootstrapCommands ?? FALLBACK_COMMANDS;
   const skillGithubUrl = status?.skillGithubUrl ?? FALLBACK_GITHUB_SKILL_URL;
   const agents = status?.agents ?? STATIC_AGENT_CARDS;
   const codexAgent = getInstallAgent(status, "codex") ?? STATIC_AGENT_CARDS[0];
@@ -288,8 +253,11 @@ export function StudioInstallPage() {
               Studio Install
             </div>
             <h1 className="mt-2 text-[1.6rem] font-semibold tracking-[-0.04em] text-[var(--studio-ink)]">
-              One-command onboarding for Codex, with the skill published from this repo
+              Two ways to get started
             </h1>
+            <p className="mt-3 max-w-3xl text-[13px] leading-7 text-[var(--studio-muted-strong)]">
+              Start with an AI coding agent if you can. If not, use the local manual path and open Studio yourself.
+            </p>
           </div>
           <div className="flex items-center gap-2">
             <Link
@@ -310,28 +278,165 @@ export function StudioInstallPage() {
           </div>
         </div>
 
-        <div className="mt-6 grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
+        <div className="mt-6 grid gap-6 xl:grid-cols-2">
+          <section className="border border-[rgba(0,242,255,0.28)] bg-[linear-gradient(180deg,rgba(0,242,255,0.09),rgba(8,8,8,0.96))] p-6">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-[10px] uppercase tracking-[0.24em] text-[var(--studio-muted)]">
+                  Option 1
+                </div>
+                <div className="mt-3 text-[1.32rem] font-semibold tracking-[-0.04em] text-[var(--studio-ink)]">
+                  With an AI coding agent (recommended)
+                </div>
+              </div>
+              <span className="inline-flex items-center gap-2 border border-[rgba(0,242,255,0.28)] bg-[rgba(0,242,255,0.08)] px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--studio-ink)]">
+                <Sparkles className="h-3.5 w-3.5 text-[var(--studio-accent)]" />
+                Skill first
+              </span>
+            </div>
+
+            <p className="mt-4 max-w-2xl text-[13px] leading-7 text-[var(--studio-muted-strong)]">
+              Install the Claw Design skill, refresh your agent, then simply describe the deck you want.
+              The skill teaches the agent to read sources, shape a Studio-ready prompt, and launch Studio through the local bridge.
+            </p>
+
+            <div className="mt-6 border border-[var(--studio-line)] bg-[rgba(0,0,0,0.32)] p-4">
+              <div className="flex items-center justify-between gap-4">
+                <code className="block text-[13px] leading-7 text-[var(--studio-ink)]">
+                  {INSTALL_SKILL_COMMAND}
+                </code>
+                <div className="flex shrink-0 items-center gap-2">
+                  <CopyButton label="Agent install" value={INSTALL_SKILL_COMMAND} onCopied={handleCopied} />
+                  {copiedKey === "Agent install" ? (
+                    <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-[0.18em] text-emerald-200">
+                      <Check className="h-3.5 w-3.5" />
+                      Copied
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-5 space-y-3 text-[12px] leading-7 text-[var(--studio-muted-strong)]">
+              <div>1. Install the repo skill.</div>
+              <div>2. Restart or refresh your AI coding agent.</div>
+              <div>3. Tell the agent what deck you want. It will use the repo skill + Studio bridge.</div>
+            </div>
+
+            <div className="mt-6 flex flex-wrap gap-3">
+              <a
+                href={skillGithubUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-2 border border-[var(--studio-line)] px-4 py-3 text-[12px] font-semibold uppercase tracking-[0.16em] text-[var(--studio-ink)] transition hover:border-[rgba(0,242,255,0.28)] hover:bg-[rgba(0,242,255,0.06)]"
+              >
+                GitHub skill
+                <ExternalLink className="h-3.5 w-3.5" />
+              </a>
+              {codexReady ? (
+                <button
+                  type="button"
+                  onClick={() => navigate(returnPath)}
+                  className="inline-flex items-center gap-2 border border-[rgba(0,242,255,0.35)] bg-[rgba(0,242,255,0.08)] px-4 py-3 text-[12px] font-semibold uppercase tracking-[0.16em] text-[var(--studio-ink)] transition hover:bg-[rgba(0,242,255,0.16)]"
+                >
+                  Continue to Studio
+                </button>
+              ) : null}
+            </div>
+          </section>
+
           <section className="border border-[var(--studio-line)] bg-[rgba(8,8,8,0.92)] p-6">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <div className="text-[10px] uppercase tracking-[0.24em] text-[var(--studio-muted)]">
-                  Mode
+                  Option 2
                 </div>
-                <div className="mt-3 text-[1.24rem] font-semibold tracking-[-0.03em] text-[var(--studio-ink)]">
-                  {mode === "connected"
-                    ? "Connected local mode"
-                    : mode === "docs"
-                      ? "Public docs mode"
-                      : "Checking local environment"}
+                <div className="mt-3 text-[1.32rem] font-semibold tracking-[-0.04em] text-[var(--studio-ink)]">
+                  Local manual setup
                 </div>
-                <p className="mt-3 max-w-2xl text-[13px] leading-7 text-[var(--studio-muted-strong)]">
-                  OpenClaw-style onboarding, but tuned for this repo: a public install page, a first-run Studio guide, and a single bootstrap command that also links the repo skill into Codex.
-                </p>
               </div>
-              <span className="inline-flex items-center gap-2 border border-[rgba(0,242,255,0.28)] bg-[rgba(0,242,255,0.08)] px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--studio-ink)]">
-                <Wrench className="h-3.5 w-3.5 text-[var(--studio-accent)]" />
-                Codex first
+              <span className="inline-flex items-center gap-2 border border-[var(--studio-line)] bg-[rgba(255,255,255,0.04)] px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--studio-ink)]">
+                <TerminalSquare className="h-3.5 w-3.5" />
+                Manual
               </span>
+            </div>
+
+            <p className="mt-4 max-w-2xl text-[13px] leading-7 text-[var(--studio-muted-strong)]">
+              If you do not want the skill path, bootstrap the local environment yourself, then open Studio in the browser.
+            </p>
+
+            <div className="mt-6 space-y-4">
+              <div className="border border-[var(--studio-line)] bg-[rgba(0,0,0,0.32)] p-4">
+                <div className="flex items-center justify-between gap-4">
+                  <code className="block text-[13px] leading-7 text-[var(--studio-ink)]">
+                    {MANUAL_ONBOARD_COMMAND}
+                  </code>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <CopyButton label="Manual onboard" value={MANUAL_ONBOARD_COMMAND} onCopied={handleCopied} />
+                    {copiedKey === "Manual onboard" ? (
+                      <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-[0.18em] text-emerald-200">
+                        <Check className="h-3.5 w-3.5" />
+                        Copied
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+              <div className="border border-[var(--studio-line)] bg-[rgba(0,0,0,0.32)] p-4">
+                <div className="flex items-center justify-between gap-4">
+                  <code className="block text-[13px] leading-7 text-[var(--studio-ink)]">
+                    {MANUAL_RUN_COMMAND}
+                  </code>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <CopyButton label="Run Studio" value={MANUAL_RUN_COMMAND} onCopied={handleCopied} />
+                    {copiedKey === "Run Studio" ? (
+                      <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-[0.18em] text-emerald-200">
+                        <Check className="h-3.5 w-3.5" />
+                        Copied
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-5 space-y-3 text-[12px] leading-7 text-[var(--studio-muted-strong)]">
+              <div>1. Run local bootstrap once.</div>
+              <div>2. Start the Studio server and UI.</div>
+              <div>3. Open <span className="text-[var(--studio-ink)]">http://127.0.0.1:5174</span>.</div>
+            </div>
+          </section>
+        </div>
+
+        <details className="mt-6 border border-[var(--studio-line)] bg-[rgba(8,8,8,0.92)]">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-6 py-4 text-[12px] font-semibold uppercase tracking-[0.16em] text-[var(--studio-ink)]">
+            <span>Advanced / Diagnostics</span>
+            <span className="text-[10px] tracking-[0.18em] text-[var(--studio-muted)]">
+              {mode === "connected" ? "Local status available" : mode === "docs" ? "Docs mode" : "Checking"}
+            </span>
+          </summary>
+
+          <div className="border-t border-[var(--studio-line)] px-6 py-6">
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={() => void loadStatus()}
+                disabled={isOnboarding}
+                className="inline-flex items-center gap-2 border border-[var(--studio-line)] px-4 py-3 text-[12px] font-semibold uppercase tracking-[0.16em] text-[var(--studio-ink)] transition hover:border-[rgba(0,242,255,0.28)] hover:bg-[rgba(0,242,255,0.06)] disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                <RefreshCcw className="h-3.5 w-3.5" />
+                Refresh status
+              </button>
+              <button
+                type="button"
+                onClick={() => void startOnboarding()}
+                disabled={isOnboarding}
+                className="inline-flex items-center gap-2 border border-[rgba(0,242,255,0.35)] bg-[rgba(0,242,255,0.08)] px-4 py-3 text-[12px] font-semibold uppercase tracking-[0.16em] text-[var(--studio-ink)] transition hover:bg-[rgba(0,242,255,0.16)] disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                <Play className="h-3.5 w-3.5" />
+                {isOnboarding ? "Installing…" : "Run onboarding here"}
+              </button>
+              <CopyButton label="Doctor" value={MANUAL_DOCTOR_COMMAND} onCopied={handleCopied} />
             </div>
 
             {mode === "connected" ? (
@@ -356,7 +461,7 @@ export function StudioInstallPage() {
               </div>
             ) : mode === "docs" ? (
               <div className="mt-6 border border-[var(--studio-line)] bg-[rgba(255,255,255,0.02)] p-4 text-[12px] leading-7 text-[var(--studio-muted-strong)]">
-                Local install APIs are not reachable right now, so this page is showing the public/docs path. You can still copy the bootstrap commands and use the GitHub skill URL.
+                Local install APIs are not reachable right now, so this page is showing the public/docs path. You can still use the skill install command or the manual local setup commands above.
               </div>
             ) : (
               <div className="mt-6 border border-[var(--studio-line)] bg-[rgba(255,255,255,0.02)] p-4 text-[12px] leading-7 text-[var(--studio-muted-strong)]">
@@ -367,45 +472,36 @@ export function StudioInstallPage() {
             {statusError && mode === "docs" ? (
               <div className="mt-4 text-[12px] leading-7 text-amber-100">{statusError}</div>
             ) : null}
-          </section>
 
-          <section className="border border-[var(--studio-line)] bg-[rgba(8,8,8,0.92)] p-6">
-            <div className="text-[10px] uppercase tracking-[0.24em] text-[var(--studio-muted)]">Primary action</div>
-            <div className="mt-3 text-[1.16rem] font-semibold tracking-[-0.03em] text-[var(--studio-ink)]">
-              {codexReady ? "Codex is ready. Continue into Studio." : "Run onboarding once, then keep using the same repo skill path."}
+            <div className="mt-6">
+              <div className="grid gap-6 xl:grid-cols-[1fr_1fr]">
+                <div className="border border-[var(--studio-line)] bg-[rgba(255,255,255,0.02)] p-4">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-[var(--studio-muted)]">What gets installed</div>
+                  <ul className="mt-4 space-y-3 text-[12px] leading-7 text-[var(--studio-muted-strong)]">
+                    <li>Checks Node, pnpm, Codex CLI, and Codex authentication.</li>
+                    <li>Installs workspace dependencies when they are missing.</li>
+                    <li>Links the repo skill from <code className="text-[var(--studio-ink)]">skills/ppt-workbench-studio/</code> into the global Codex skills directory.</li>
+                    <li>Keeps Claude Code and Cursor visible in diagnostics without blocking Studio entry.</li>
+                  </ul>
+                </div>
+                <div className="border border-[var(--studio-line)] bg-[rgba(255,255,255,0.02)] p-4">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-[var(--studio-muted)]">Why this page exists</div>
+                  <ul className="mt-4 space-y-3 text-[12px] leading-7 text-[var(--studio-muted-strong)]">
+                    <li>The first screen stays simple: agent-first or manual local setup.</li>
+                    <li>The install page and the first-run Studio guide share one status source, so CLI and UI do not drift.</li>
+                    <li>The repo skill path stays stable enough to publish on GitHub and reuse in onboarding docs.</li>
+                  </ul>
+                </div>
+              </div>
             </div>
-            <p className="mt-3 text-[13px] leading-7 text-[var(--studio-muted-strong)]">
-              V1 keeps `/` as Studio, adds `/install`, and uses the repo skill as the GitHub-published source of truth.
-            </p>
 
-            <div className="mt-6 flex flex-wrap gap-3">
-              {codexReady ? (
-                <button
-                  type="button"
-                  onClick={() => navigate(returnPath)}
-                  className="inline-flex items-center gap-2 border border-[rgba(0,242,255,0.35)] bg-[rgba(0,242,255,0.08)] px-4 py-3 text-[12px] font-semibold uppercase tracking-[0.16em] text-[var(--studio-ink)] transition hover:bg-[rgba(0,242,255,0.16)]"
-                >
-                  Continue to Studio
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => void startOnboarding()}
-                  disabled={isOnboarding}
-                  className="inline-flex items-center gap-2 border border-[rgba(0,242,255,0.35)] bg-[rgba(0,242,255,0.08)] px-4 py-3 text-[12px] font-semibold uppercase tracking-[0.16em] text-[var(--studio-ink)] transition hover:bg-[rgba(0,242,255,0.16)] disabled:cursor-not-allowed disabled:opacity-45"
-                >
-                  {isOnboarding ? "Installing…" : "Set up Codex"}
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => void loadStatus()}
-                disabled={isOnboarding}
-                className="inline-flex items-center gap-2 border border-[var(--studio-line)] px-4 py-3 text-[12px] font-semibold uppercase tracking-[0.16em] text-[var(--studio-ink)] transition hover:border-[rgba(0,242,255,0.28)] hover:bg-[rgba(0,242,255,0.06)] disabled:cursor-not-allowed disabled:opacity-45"
-              >
-                <RefreshCcw className="h-3.5 w-3.5" />
-                Refresh status
-              </button>
+            <div className="mt-6">
+              <div className="text-[10px] uppercase tracking-[0.24em] text-[var(--studio-muted)]">Agent matrix</div>
+              <div className="mt-4 grid gap-4 lg:grid-cols-3">
+                {agents.filter((agent) => agent.visible).map((agent) => (
+                  <AgentCard key={agent.id} agent={agent} />
+                ))}
+              </div>
             </div>
 
             <div className="mt-6 border border-[var(--studio-line)] bg-[rgba(255,255,255,0.02)] p-4">
@@ -413,7 +509,7 @@ export function StudioInstallPage() {
               <div className="mt-3 max-h-[240px] space-y-2 overflow-y-auto text-[12px] leading-6">
                 {logs.length === 0 ? (
                   <div className="text-[var(--studio-muted-strong)]">
-                    The connected mode will stream environment checks, install steps, and completion hints here.
+                    Use this section if you want live status, onboarding logs, or manual diagnostics.
                   </div>
                 ) : (
                   logs.map((entry, index) => (
@@ -435,43 +531,8 @@ export function StudioInstallPage() {
                 )}
               </div>
             </div>
-          </section>
-        </div>
-
-        <section className="mt-6">
-          <div className="text-[10px] uppercase tracking-[0.24em] text-[var(--studio-muted)]">Agent matrix</div>
-          <div className="mt-4 grid gap-4 lg:grid-cols-3">
-            {agents.filter((agent) => agent.visible).map((agent) => (
-              <AgentCard key={agent.id} agent={agent} />
-            ))}
           </div>
-        </section>
-
-        <section className="mt-6 grid gap-4 lg:grid-cols-3">
-          <CommandCard title="Bootstrap" command={commands.onboard} copiedKey={copiedKey} onCopied={handleCopied} />
-          <CommandCard title="Doctor" command={commands.doctor} copiedKey={copiedKey} onCopied={handleCopied} />
-          <CommandCard title="Run Studio" command={commands.dev} copiedKey={copiedKey} onCopied={handleCopied} />
-        </section>
-
-        <section className="mt-6 grid gap-6 xl:grid-cols-[1fr_1fr]">
-          <div className="border border-[var(--studio-line)] bg-[rgba(8,8,8,0.92)] p-6">
-            <div className="text-[10px] uppercase tracking-[0.24em] text-[var(--studio-muted)]">What gets installed</div>
-            <ul className="mt-4 space-y-3 text-[13px] leading-7 text-[var(--studio-muted-strong)]">
-              <li>Checks Node, pnpm, Codex CLI, and Codex authentication.</li>
-              <li>Installs workspace dependencies when they are missing.</li>
-              <li>Links the repo skill from <code className="text-[var(--studio-ink)]">skills/ppt-workbench-studio/</code> into the global Codex skills directory.</li>
-              <li>Keeps Claude Code and Cursor visible in the matrix without blocking Studio entry.</li>
-            </ul>
-          </div>
-          <div className="border border-[var(--studio-line)] bg-[rgba(8,8,8,0.92)] p-6">
-            <div className="text-[10px] uppercase tracking-[0.24em] text-[var(--studio-muted)]">Why this page exists</div>
-            <ul className="mt-4 space-y-3 text-[13px] leading-7 text-[var(--studio-muted-strong)]">
-              <li>OpenClaw-style onboarding works better than hiding setup in the README alone.</li>
-              <li>The install page and the first-run Studio guide share one status source, so CLI and UI do not drift.</li>
-              <li>The repo skill path becomes stable enough to publish on GitHub and reuse in onboarding docs.</li>
-            </ul>
-          </div>
-        </section>
+        </details>
       </div>
     </article>
   );

@@ -2,6 +2,13 @@ import { API_BASE, ApiError, api } from "@/api/client";
 
 export type InstallAgentId = "codex" | "claude-code" | "cursor";
 
+export const INSTALL_SKILL_REPO = "Mijiang111/claw-design";
+export const INSTALL_SKILL_NAME = "ppt-workbench-studio";
+export const INSTALL_SKILL_COMMAND = `npx --yes skills add ${INSTALL_SKILL_REPO} --skill ${INSTALL_SKILL_NAME} -g -y`;
+export const MANUAL_ONBOARD_COMMAND = "pnpm studio:onboard";
+export const MANUAL_RUN_COMMAND = "pnpm dev";
+export const MANUAL_DOCTOR_COMMAND = "pnpm studio:doctor";
+
 export type InstallAgentStatus = {
   id: InstallAgentId;
   label: string;
