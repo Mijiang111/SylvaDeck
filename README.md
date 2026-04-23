@@ -98,13 +98,6 @@ https://github.com/user-attachments/assets/f44fef6a-efa0-4c5d-b1f0-766061ff56c5
   </tr>
 </table>
 
-## Example Outputs
-
-Recent generated sample files are checked into:
-
-- [artifacts/generated-decks/claw-design-product-intro.html](artifacts/generated-decks/claw-design-product-intro.html)
-- [artifacts/generated-decks/claw-design-product-intro.pptx](artifacts/generated-decks/claw-design-product-intro.pptx)
-
 ## Current Status
 
 This repository is an `alpha`.
