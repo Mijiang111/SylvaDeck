@@ -1,19 +1,24 @@
 # Claw Design
 <img width="1362" height="760" alt="Claw-design" src="https://github.com/user-attachments/assets/574733ac-3581-42f1-b2c0-c6f334492d08" />
 
-I’m open-sourcing this in alpha, this is a vibe coding project from uni-student
+Claw Design is a local-first AI presentation workbench for generating, repairing, editing, and exporting 16:9 slide-like HTML decks.
 
-## This is my first github project, please tell me if anything wents wrong 
+This repository is still an `alpha`, but the core loop already works:
 
-## 这是我第一次发布github项目，如果有什么做的不对的请告诉我,我很想学习. 
+- generate decks from a natural-language brief
+- review and repair layout/title/density issues
+- keep the result editable inside an iframe-based Studio
+- export publishable HTML and editable `.pptx`
 
-It already works, but it is still rough in places. Studio is a local-first AI presentation workbench for generating, refining, and authoring 16:9 HTML slide decks, and I’d really appreciate issues or feedback if you try it and hit something confusing.
+This is also my first open-source GitHub project, so if you try it and something feels off, I’d really appreciate issues, suggestions, or setup feedback.
 
-Studio combines three workflows in one repo:
+## What It Does
 
-- AI-first deck generation from a natural-language brief
-- A template workbench for building reusable page shape contracts
-- A review and repair loop for fit, title quality, density, and export readiness
+- Generates slide-like HTML reports from a raw brief
+- Keeps output on a fixed `1600x900` canvas for PPT-style composition
+- Supports template authoring with explicit AI text slots, charts, and decorative geometry
+- Reviews generated pages for layout fit, title leaks, density, and repair opportunities
+- Exports publishable HTML and editable `.pptx`
 
 ## Demo
 <table>
@@ -54,13 +59,12 @@ https://github.com/user-attachments/assets/f44fef6a-efa0-4c5d-b1f0-766061ff56c5
   </tr>
 </table>
 
-## What It Does
+## Example Outputs
 
-- Generates slide-like HTML reports from a raw brief
-- Keeps output on a fixed 1600x900 canvas for PPT-style composition
-- Supports template-authoring with explicit AI text slots, charts, and decorative geometry
-- Reviews generated pages for layout fit, title leaks, density, and repair opportunities
-- Exports publishable HTML and editable `.pptx`
+Recent generated sample files are checked into:
+
+- [artifacts/generated-decks/claw-design-product-intro.html](artifacts/generated-decks/claw-design-product-intro.html)
+- [artifacts/generated-decks/claw-design-product-intro.pptx](artifacts/generated-decks/claw-design-product-intro.pptx)
 
 ## Current Status
 
@@ -77,7 +81,7 @@ This repository is an `alpha`.
 
 - Node.js `20+`
 - `pnpm` `9+`
-- A local Codex-compatible command or authenticated local agent environment
+- A local Codex-compatible CLI or authenticated local agent environment
 
 ### Install
 
@@ -144,6 +148,30 @@ Then open:
 
 - UI: [http://127.0.0.1:5174](http://127.0.0.1:5174)
 - Health check: [http://127.0.0.1:3101/api/health](http://127.0.0.1:3101/api/health)
+- Install guide: [http://127.0.0.1:5174/install](http://127.0.0.1:5174/install)
+
+## Install / Onboarding
+
+V1 now ships with an OpenClaw-style onboarding flow:
+
+- a public `/install` page
+- a first-run Studio redirect when Codex or the repo skill is not ready
+- one-command bootstrap through `pnpm studio:onboard`
+- a local install doctor through `pnpm studio:doctor`
+
+The onboarding page currently shows a multi-agent matrix, but V1 only automates `Codex` end-to-end. `Claude Code` and `Cursor` are visible as manual/coming-soon targets.
+
+## Prompt Bridge Workflow
+
+Studio now supports a local prompt-injection bridge for agent workflows:
+
+1. the agent reads the source itself
+2. the agent writes a clean Studio prompt
+3. the agent calls `POST /api/studio/bridge/launch`
+4. the returned `openUrl` is opened in the user's default browser
+5. Studio consumes the prompt, creates a local project, and starts generation
+
+The bridge is prompt-only. URLs and PDFs are meant to be read by the agent first, not uploaded into the product as source-grounded attachments.
 
 ## Project Structure
 
@@ -172,6 +200,7 @@ claw-design/
 │   └── workspace-eval/        # Generation quality evaluation
 │
 ├── docs/                  # Documentation & demo assets
+├── skills/                # Public repo skills published to GitHub
 └── scripts/               # Local development scripts
 ```
 
@@ -201,6 +230,7 @@ Current server endpoints:
 - `GET /api/install/status`
 - `POST /api/install/onboard/stream`
 - `POST /api/studio/bridge/launch`
+- `GET /api/studio/bridge/launch/:launchId`
 - `POST /api/studio/generate-html`
 - `POST /api/studio/generate-html/stream`
 - `POST /api/studio/revise-html/stream`
@@ -223,6 +253,7 @@ pnpm test:workspace:eval
 - Generation quality depends on your local AI agent setup and model access
 - The current product is built for single-machine use, not shared cloud workspaces
 - Browser storage is the primary persistence layer today
+- The install UI is local-first and meant for source bootstrap, not packaged desktop distribution
 - The repository ships with a blank template seed only; reusable templates are expected to be authored in the workbench
 
 ## Feedback
