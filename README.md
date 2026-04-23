@@ -84,10 +84,10 @@ https://github.com/user-attachments/assets/f44fef6a-efa0-4c5d-b1f0-766061ff56c5
 </table>
 <table>
   <tr>
-    <td align="center"><b>模板工作台</b></td>
+    <td align="center"><b>科研图</b></td>
   </tr>
   <tr>
-    <td><img src="docs/assets/template-workbench.png" alt="Template workbench"></td>
+    <td><img src="https://github.com/user-attachments/assets/1ab5af8d-4450-4341-b777-ac7325b0c2ed"></td>
   </tr>
 </table>
 
