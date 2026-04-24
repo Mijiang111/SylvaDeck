@@ -8,10 +8,16 @@ import type {
   HtmlBubbleChartSpec,
   HtmlBubblePoint,
   HtmlChartAxisRole,
+  HtmlChartDensity,
+  HtmlChartExhibitPreset,
   HtmlChartKind,
+  HtmlChartPresentationAnnotation,
+  HtmlChartPresentationEmphasis,
+  HtmlChartPresentationSpec,
   HtmlChartSeries,
   HtmlChartSeriesRole,
   HtmlChartSpec,
+  HtmlChartValueFormat,
   HtmlTableSpec,
 } from "@/features/studio/types";
 
@@ -23,6 +29,19 @@ export const HTML_TABLE_SPEC_ATTRIBUTE = "data-html-table-spec" as const;
 const DEFAULT_BAR_COLORS = ["#5d7f9d", "#90adc6", "#54a6c1", "#2a6f97"];
 const DEFAULT_LINE_COLORS = ["#19c6df", "#1d617c", "#84a0b8"];
 const DEFAULT_BUBBLE_COLORS = ["#20d3ff", "#8aa1b5", "#9ec7ff", "#74b9c9", "#4f6f89"];
+const INVESTOR_CHART_COLORS = ["#173d57", "#c4973d", "#5f7f95", "#8fa39a", "#d7b66f"];
+const CHART_POSITIVE = "#4f8f78";
+const CHART_NEGATIVE = "#b85f4d";
+const CHART_MUTED = "#9fafbd";
+const CHART_EXHIBIT_PRESETS = new Set<HtmlChartExhibitPreset>([
+  "auto",
+  "headline-bars",
+  "growth-line",
+  "margin-bridge",
+  "segment-mix",
+  "combo-trend-bars",
+]);
+const CHART_DENSITIES = new Set<HtmlChartDensity>(["hero", "peer", "sidecar"]);
 
 function escapeHtml(value: string) {
   return value
@@ -96,6 +115,280 @@ function pickColor(index: number, role: HtmlChartSeriesRole = "bar") {
   return palette[index % palette.length]!;
 }
 
+function pickInvestorColor(index: number, role: HtmlChartSeriesRole = "bar") {
+  if (role === "line") {
+    return DEFAULT_LINE_COLORS[index % DEFAULT_LINE_COLORS.length]!;
+  }
+  return INVESTOR_CHART_COLORS[index % INVESTOR_CHART_COLORS.length]!;
+}
+
+function normalizeChartScale(value: unknown): HtmlChartValueFormat["scale"] {
+  return value === "thousand" || value === "million" || value === "billion" ? value : "raw";
+}
+
+function normalizeChartValueFormat(value: unknown, unit: string): HtmlChartValueFormat {
+  const inferred = inferChartValueFormat(unit);
+  if (!value || typeof value !== "object") {
+    return inferred;
+  }
+  const candidate = value as Partial<HtmlChartValueFormat>;
+  return {
+    prefix: normalizeText(candidate.prefix) || inferred.prefix,
+    suffix: normalizeText(candidate.suffix) || inferred.suffix,
+    decimals:
+      Number.isFinite(candidate.decimals) && (candidate.decimals ?? 0) >= 0
+        ? clamp(Math.round(candidate.decimals as number), 0, 3)
+        : inferred.decimals,
+    scale: normalizeChartScale(candidate.scale ?? inferred.scale),
+  };
+}
+
+function inferChartValueFormat(unit: string): HtmlChartValueFormat {
+  const normalized = normalizeText(unit);
+  if (!normalized) {
+    return { decimals: 0, scale: "raw" };
+  }
+  if (normalized.includes("%")) {
+    return { suffix: "%", decimals: 0, scale: "raw" };
+  }
+  const currency = /^([$€£¥])\s*(.*)$/.exec(normalized);
+  if (currency) {
+    const suffix = normalizeText(currency[2]);
+    return {
+      prefix: currency[1],
+      suffix,
+      decimals: suffix ? 1 : 0,
+      scale: "raw",
+    };
+  }
+  return {
+    suffix: normalized.length <= 5 ? normalized : ` ${normalized}`,
+    decimals: normalized.length <= 5 ? 0 : 1,
+    scale: "raw",
+  };
+}
+
+function chartScaleDivisor(scale: HtmlChartValueFormat["scale"] | undefined) {
+  switch (scale) {
+    case "thousand":
+      return 1_000;
+    case "million":
+      return 1_000_000;
+    case "billion":
+      return 1_000_000_000;
+    default:
+      return 1;
+  }
+}
+
+function formatChartValue(value: number, format: HtmlChartValueFormat | undefined) {
+  const divisor = chartScaleDivisor(format?.scale);
+  const scaled = value / divisor;
+  const decimals = clamp(Math.round(format?.decimals ?? (Math.abs(scaled) < 10 && scaled !== 0 ? 1 : 0)), 0, 3);
+  const absolute = Math.abs(scaled);
+  const body = absolute.toLocaleString("en-US", {
+    maximumFractionDigits: decimals,
+    minimumFractionDigits: decimals,
+  });
+  const sign = scaled < 0 ? "-" : "";
+  return `${sign}${format?.prefix ?? ""}${body}${format?.suffix ?? ""}`;
+}
+
+function normalizePresentationTarget(value: unknown): HtmlChartPresentationEmphasis["target"] | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const candidate = value as HtmlChartPresentationEmphasis["target"];
+  const category = normalizeText(candidate.category);
+  const seriesId = normalizeText(candidate.seriesId);
+  const pointIndex =
+    Number.isFinite(candidate.pointIndex) && (candidate.pointIndex ?? -1) >= 0
+      ? Math.round(candidate.pointIndex as number)
+      : undefined;
+  if (!category && !seriesId && pointIndex === undefined) {
+    return null;
+  }
+  return {
+    ...(category ? { category } : {}),
+    ...(seriesId ? { seriesId } : {}),
+    ...(pointIndex !== undefined ? { pointIndex } : {}),
+  };
+}
+
+function normalizePresentationEmphasis(value: unknown): HtmlChartPresentationEmphasis[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((item, index) => {
+    if (!item || typeof item !== "object") {
+      return [];
+    }
+    const candidate = item as Partial<HtmlChartPresentationEmphasis>;
+    const target = normalizePresentationTarget(candidate.target);
+    const role =
+      candidate.role === "positive" ||
+      candidate.role === "negative" ||
+      candidate.role === "muted" ||
+      candidate.role === "primary"
+        ? candidate.role
+        : "primary";
+    if (!target) {
+      return [];
+    }
+    return [{
+      id: normalizeText(candidate.id) || `emphasis-${index + 1}`,
+      target,
+      role,
+    }];
+  });
+}
+
+function normalizePresentationAnnotations(value: unknown): HtmlChartPresentationAnnotation[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((item, index) => {
+    if (!item || typeof item !== "object") {
+      return [];
+    }
+    const candidate = item as Partial<HtmlChartPresentationAnnotation>;
+    const target = normalizePresentationTarget(candidate.target);
+    const text = normalizeText(candidate.text);
+    const placement =
+      candidate.placement === "above" ||
+      candidate.placement === "right" ||
+      candidate.placement === "below" ||
+      candidate.placement === "auto"
+        ? candidate.placement
+        : "auto";
+    if (!target || !text) {
+      return [];
+    }
+    return [{
+      id: normalizeText(candidate.id) || `annotation-${index + 1}`,
+      target,
+      text,
+      placement,
+    }];
+  });
+}
+
+function buildDefaultChartEmphasis(spec: HtmlChartSpec): HtmlChartPresentationEmphasis[] {
+  if (spec.kind === "bubble") {
+    const largestIndex = spec.points.reduce(
+      (bestIndex, point, index) => (point.size > (spec.points[bestIndex]?.size ?? 0) ? index : bestIndex),
+      0,
+    );
+    return spec.points.length
+      ? [{
+          id: "emphasis-largest-bubble",
+          target: { pointIndex: largestIndex },
+          role: "primary",
+        }]
+      : [];
+  }
+
+  if (spec.kind === "line") {
+    return spec.categories.length
+      ? [{
+          id: "emphasis-latest-point",
+          target: {
+            category: spec.categories[spec.categories.length - 1],
+            seriesId: spec.series[0]?.id,
+            pointIndex: spec.categories.length - 1,
+          },
+          role: "primary",
+        }]
+      : [];
+  }
+
+  if (spec.kind === "combo") {
+    const lineSeries = spec.series.find((series) => (series.role ?? "bar") === "line") ?? spec.series[0];
+    return lineSeries && spec.categories.length
+      ? [{
+          id: "emphasis-latest-combo-line",
+          target: {
+            category: spec.categories[spec.categories.length - 1],
+            seriesId: lineSeries.id,
+            pointIndex: spec.categories.length - 1,
+          },
+          role: "primary",
+        }]
+      : [];
+  }
+
+  const firstSeries = spec.series[0];
+  if (!firstSeries?.values.length) {
+    return [];
+  }
+  const bestIndex = firstSeries.values.reduce(
+    (best, value, index) => (Math.abs(value) > Math.abs(firstSeries.values[best] ?? 0) ? index : best),
+    0,
+  );
+  return [{
+    id: spec.kind === "waterfall" ? "emphasis-ending-value" : "emphasis-largest-value",
+    target: {
+      category: spec.categories[bestIndex],
+      seriesId: firstSeries.id,
+      pointIndex: bestIndex,
+    },
+    role: firstSeries.values[bestIndex] && firstSeries.values[bestIndex]! < 0 ? "negative" : "primary",
+  }];
+}
+
+function inferChartExhibitPreset(spec: HtmlChartSpec): HtmlChartExhibitPreset {
+  if (spec.kind === "waterfall") {
+    return "margin-bridge";
+  }
+  if (spec.kind === "stacked") {
+    return "segment-mix";
+  }
+  if (spec.kind === "line") {
+    return "growth-line";
+  }
+  if (spec.kind === "combo") {
+    return "combo-trend-bars";
+  }
+  return "headline-bars";
+}
+
+function normalizeChartExhibitPreset(value: unknown, spec: HtmlChartSpec): HtmlChartExhibitPreset {
+  return typeof value === "string" && CHART_EXHIBIT_PRESETS.has(value as HtmlChartExhibitPreset)
+    ? value as HtmlChartExhibitPreset
+    : inferChartExhibitPreset(spec);
+}
+
+function normalizeChartDensity(value: unknown): HtmlChartDensity {
+  return typeof value === "string" && CHART_DENSITIES.has(value as HtmlChartDensity)
+    ? value as HtmlChartDensity
+    : "hero";
+}
+
+function normalizeChartPresentationSpec(
+  value: unknown,
+  spec: HtmlChartSpec,
+): HtmlChartPresentationSpec {
+  const candidate = value && typeof value === "object" ? value as Partial<HtmlChartPresentationSpec> : {};
+  const unit = spec.unit;
+  const emphasis = normalizePresentationEmphasis(candidate.emphasis);
+  return {
+    version: 2,
+    preset: "investor-editorial",
+    exhibitPreset: normalizeChartExhibitPreset(candidate.exhibitPreset, spec),
+    density: normalizeChartDensity(candidate.density),
+    valueFormat: normalizeChartValueFormat(candidate.valueFormat, unit),
+    emphasis: emphasis.length ? emphasis : buildDefaultChartEmphasis(spec as HtmlChartSpec),
+    annotations: normalizePresentationAnnotations(candidate.annotations),
+  };
+}
+
+function withNormalizedChartPresentation<T extends HtmlChartSpec>(spec: T, rawPresentation: unknown): T {
+  return {
+    ...spec,
+    presentation: normalizeChartPresentationSpec(rawPresentation, spec),
+  };
+}
+
 function normalizeChartSeries(
   series: Partial<HtmlChartSeries>,
   index: number,
@@ -116,7 +409,7 @@ function normalizeChartSeries(
 }
 
 export function serializeHtmlChartSpec(spec: HtmlChartSpec) {
-  return JSON.stringify(spec);
+  return JSON.stringify(withNormalizedChartPresentation(spec, spec.presentation));
 }
 
 export function parseHtmlChartSpec(raw: string | null | undefined): HtmlChartSpec | null {
@@ -144,7 +437,7 @@ export function parseHtmlChartSpec(raw: string | null | undefined): HtmlChartSpe
       if (!points.length) {
         return null;
       }
-      return {
+      return withNormalizedChartPresentation({
         kind: "bubble",
         title: normalizeChartText(bubble.title),
         subtitle: normalizeChartText(bubble.subtitle),
@@ -154,7 +447,7 @@ export function parseHtmlChartSpec(raw: string | null | undefined): HtmlChartSpe
         yLabel: normalizeChartText(bubble.yLabel, "Y axis"),
         sizeLabel: normalizeChartText(bubble.sizeLabel, "Bubble size"),
         points,
-      };
+      }, (parsed as { presentation?: unknown }).presentation);
     }
 
     const kind = parsed.kind;
@@ -192,7 +485,7 @@ export function parseHtmlChartSpec(raw: string | null | undefined): HtmlChartSpe
     );
 
     if (kind === "combo") {
-      return {
+      return withNormalizedChartPresentation({
         kind: "combo",
         title: normalizeChartText((parsed as { title?: string }).title),
         subtitle: normalizeChartText((parsed as { subtitle?: string }).subtitle),
@@ -204,10 +497,10 @@ export function parseHtmlChartSpec(raw: string | null | undefined): HtmlChartSpe
             ? categories
             : Array.from({ length: pointCount }, (_, index) => `Category ${index + 1}`),
         series,
-      };
+      }, (parsed as { presentation?: unknown }).presentation);
     }
 
-    return {
+    return withNormalizedChartPresentation({
       kind,
       title: normalizeChartText((parsed as { title?: string }).title),
       subtitle: normalizeChartText((parsed as { subtitle?: string }).subtitle),
@@ -218,7 +511,7 @@ export function parseHtmlChartSpec(raw: string | null | undefined): HtmlChartSpe
           ? categories
           : Array.from({ length: pointCount }, (_, index) => `Category ${index + 1}`),
       series,
-    };
+    }, (parsed as { presentation?: unknown }).presentation);
   } catch {
     return null;
   }
@@ -267,6 +560,8 @@ type ExportChartSeries = {
   value?: number;
   values?: number[];
   color?: string;
+  role?: HtmlChartSeriesRole;
+  axis?: HtmlChartAxisRole;
 };
 
 type ExportChartPayload = {
@@ -277,6 +572,8 @@ type ExportChartPayload = {
   subtitle?: string;
   insight?: string;
   unit?: string;
+  secondaryUnit?: string;
+  presentation?: HtmlChartPresentationSpec;
 };
 
 function parseExportChartPayload(element: HTMLElement): HtmlChartSpec | null {
@@ -287,7 +584,7 @@ function parseExportChartPayload(element: HTMLElement): HtmlChartSpec | null {
   try {
     const parsed = JSON.parse(raw) as ExportChartPayload;
     const kind = parsed.kind;
-    if (kind !== "bar" && kind !== "stacked" && kind !== "line" && kind !== "waterfall") {
+    if (kind !== "bar" && kind !== "stacked" && kind !== "line" && kind !== "waterfall" && kind !== "combo") {
       return null;
     }
     const categories = (parsed.categories ?? []).map((value) => normalizeText(value)).filter(Boolean);
@@ -305,9 +602,14 @@ function parseExportChartPayload(element: HTMLElement): HtmlChartSpec | null {
           id: `series-${index + 1}`,
           label: normalizeSeriesLabel(series.name ?? series.label, `Series ${index + 1}`),
           values,
-          color: normalizeText(series.color) || pickColor(index, kind === "line" ? "line" : "bar"),
-          role: kind === "line" ? ("line" as const) : ("bar" as const),
-          axis: "primary" as const,
+          color: normalizeText(series.color) || pickInvestorColor(index, kind === "line" ? "line" : "bar"),
+          role:
+            kind === "combo"
+              ? series.role ?? (index === 0 ? "bar" : "line")
+              : kind === "line"
+                ? ("line" as const)
+                : ("bar" as const),
+          axis: kind === "combo" && index > 0 ? series.axis ?? "secondary" : series.axis ?? "primary",
         } satisfies HtmlChartSeries;
       })
       .filter(Boolean) as HtmlChartSeries[];
@@ -315,7 +617,26 @@ function parseExportChartPayload(element: HTMLElement): HtmlChartSpec | null {
       return null;
     }
     const pointCount = categories.length || Math.max(...rawSeries.map((series) => series.values.length), 0);
-    return {
+    if (kind === "combo") {
+      return withNormalizedChartPresentation({
+        kind: "combo",
+        title: normalizeChartText(parsed.title),
+        subtitle: normalizeChartText(parsed.subtitle),
+        insight: normalizeChartText(parsed.insight),
+        unit: normalizeChartText(parsed.unit),
+        secondaryUnit: normalizeChartText(parsed.secondaryUnit),
+        categories:
+          categories.length > 0
+            ? categories
+            : Array.from({ length: pointCount }, (_, index) => `Category ${index + 1}`),
+        series: rawSeries.map((series, index) => normalizeChartSeries(series, index, pointCount, {
+          role: index === 0 ? "bar" : "line",
+          axis: index === 0 ? "primary" : "secondary",
+        })),
+      }, parsed.presentation);
+    }
+
+    return withNormalizedChartPresentation({
       kind,
       title: normalizeChartText(parsed.title),
       subtitle: normalizeChartText(parsed.subtitle),
@@ -329,7 +650,7 @@ function parseExportChartPayload(element: HTMLElement): HtmlChartSpec | null {
         role: kind === "line" ? "line" : "bar",
         axis: "primary",
       })),
-    };
+    }, parsed.presentation);
   } catch {
     return null;
   }
@@ -885,7 +1206,7 @@ function dataTableToChartSpec(args: {
     if (!points.length) {
       return null;
     }
-    return {
+    return withNormalizedChartPresentation({
       kind: "bubble",
       title: baseSpec?.title ?? "",
       subtitle: baseSpec?.subtitle ?? "",
@@ -895,7 +1216,7 @@ function dataTableToChartSpec(args: {
       yLabel: baseSpec?.kind === "bubble" ? baseSpec.yLabel : "Y axis",
       sizeLabel: baseSpec?.kind === "bubble" ? baseSpec.sizeLabel : "Bubble size",
       points,
-    };
+    }, baseSpec?.presentation);
   }
 
   if (dataTable.columns.length < 2 || !dataTable.rows.length) {
@@ -947,7 +1268,7 @@ function dataTableToChartSpec(args: {
     return null;
   }
   if (kind === "combo") {
-    return {
+    return withNormalizedChartPresentation({
       kind: "combo",
       title: baseSpec?.title ?? "",
       subtitle: baseSpec?.subtitle ?? "",
@@ -956,9 +1277,9 @@ function dataTableToChartSpec(args: {
       secondaryUnit: baseSpec?.kind === "combo" ? baseSpec.secondaryUnit ?? "" : "",
       categories,
       series,
-    };
+    }, baseSpec?.presentation);
   }
-  return {
+  return withNormalizedChartPresentation({
     kind,
     title: baseSpec?.title ?? "",
     subtitle: baseSpec?.subtitle ?? "",
@@ -966,7 +1287,7 @@ function dataTableToChartSpec(args: {
     unit: baseSpec?.unit ?? "",
     categories,
     series,
-  };
+  }, baseSpec?.presentation);
 }
 
 export function updateHtmlChartSpecFromRawData(args: {
@@ -1227,24 +1548,508 @@ function renderBubbleChart(spec: HtmlBubbleChartSpec) {
   </svg>`;
 }
 
+type CartesianChartSpec = Exclude<HtmlChartSpec, HtmlBubbleChartSpec>;
+type ChartAnchor = {
+  category: string;
+  pointIndex: number;
+  seriesId?: string;
+  x: number;
+  y: number;
+  value: number;
+};
+
+function getChartPresentation(spec: HtmlChartSpec) {
+  return spec.presentation ?? normalizeChartPresentationSpec(undefined, spec);
+}
+
+function getChartDensitySettings(spec: HtmlChartSpec) {
+  const density = getChartPresentation(spec).density ?? "hero";
+  if (density === "sidecar") {
+    return {
+      padding: "18px 18px 14px",
+      headerGap: "14px",
+      titleSize: 19,
+      subtitleSize: 11,
+      unitSize: 14,
+      dataSummarySize: 10,
+      chartMarginTop: 8,
+      footerSize: 10,
+    };
+  }
+  if (density === "peer") {
+    return {
+      padding: "20px 20px 15px",
+      headerGap: "18px",
+      titleSize: 22,
+      subtitleSize: 12,
+      unitSize: 16,
+      dataSummarySize: 10,
+      chartMarginTop: 10,
+      footerSize: 10,
+    };
+  }
+  return {
+    padding: "24px 26px 18px",
+    headerGap: "26px",
+    titleSize: 25,
+    subtitleSize: 13,
+    unitSize: 18,
+    dataSummarySize: 11,
+    chartMarginTop: 12,
+    footerSize: 11,
+  };
+}
+
+function getSeriesColor(series: HtmlChartSeries | undefined, index: number, role: HtmlChartSeriesRole = "bar") {
+  return normalizeText(series?.color) || pickInvestorColor(index, role);
+}
+
+function getChartRoleColor(role: HtmlChartPresentationEmphasis["role"] | null, fallback: string) {
+  switch (role) {
+    case "primary":
+      return "#173d57";
+    case "positive":
+      return CHART_POSITIVE;
+    case "negative":
+      return CHART_NEGATIVE;
+    case "muted":
+      return CHART_MUTED;
+    default:
+      return fallback;
+  }
+}
+
+function targetMatchesAnchor(
+  target: HtmlChartPresentationEmphasis["target"],
+  anchor: ChartAnchor,
+) {
+  if (target.pointIndex !== undefined && target.pointIndex !== anchor.pointIndex) {
+    return false;
+  }
+  if (target.category && target.category !== anchor.category) {
+    return false;
+  }
+  if (target.seriesId && target.seriesId !== anchor.seriesId) {
+    return false;
+  }
+  return true;
+}
+
+function getAnchorEmphasisRole(
+  presentation: HtmlChartPresentationSpec,
+  anchor: ChartAnchor,
+) {
+  return presentation.emphasis?.find((entry) => targetMatchesAnchor(entry.target, anchor))?.role ?? null;
+}
+
+function buildChartGrid(args: {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+  minValue: number;
+  maxValue: number;
+  format: HtmlChartValueFormat | undefined;
+}) {
+  return Array.from({ length: 4 }, (_, index) => {
+    const ratio = index / 3;
+    const y = args.bottom - ratio * (args.bottom - args.top);
+    const value = args.minValue + ratio * (args.maxValue - args.minValue);
+    return `<line x1="${args.left}" y1="${y}" x2="${args.right}" y2="${y}" stroke="#dbe5eb" stroke-width="1" stroke-dasharray="${index === 0 ? "0" : "4 8"}" />
+      <text x="${args.left - 14}" y="${y + 4}" text-anchor="end" font-size="11" fill="#708391">${escapeHtml(formatChartValue(value, args.format))}</text>`;
+  }).join("");
+}
+
+function buildProjectY(args: {
+  top: number;
+  bottom: number;
+  minValue: number;
+  maxValue: number;
+}) {
+  const range = Math.max(1, args.maxValue - args.minValue);
+  return (value: number) => args.bottom - ((value - args.minValue) / range) * (args.bottom - args.top);
+}
+
+function wrapSvgText(text: string, maxChars: number) {
+  const words = normalizeText(text).split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let current = "";
+  for (const word of words) {
+    const next = current ? `${current} ${word}` : word;
+    if (next.length > maxChars && current) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = next;
+    }
+  }
+  if (current) {
+    lines.push(current);
+  }
+  return lines.slice(0, 3);
+}
+
+function renderInvestorChartAnnotations(args: {
+  presentation: HtmlChartPresentationSpec;
+  anchors: ChartAnchor[];
+  width: number;
+  height: number;
+}) {
+  return (args.presentation.annotations ?? []).flatMap((annotation, index) => {
+    const anchor = args.anchors.find((candidate) => targetMatchesAnchor(annotation.target, candidate));
+    if (!anchor) {
+      return [];
+    }
+    const lines = wrapSvgText(annotation.text, 24);
+    if (!lines.length) {
+      return [];
+    }
+    const boxWidth = 190;
+    const boxHeight = 28 + lines.length * 15;
+    const placement = annotation.placement ?? "auto";
+    const x =
+      placement === "right"
+        ? Math.min(args.width - boxWidth - 18, anchor.x + 28)
+        : Math.max(18, Math.min(args.width - boxWidth - 18, anchor.x - boxWidth / 2));
+    const y =
+      placement === "below"
+        ? Math.min(args.height - boxHeight - 18, anchor.y + 30)
+        : Math.max(18, anchor.y - boxHeight - 30);
+    const leaderEndX = x + (anchor.x < x ? 12 : anchor.x > x + boxWidth ? boxWidth - 12 : boxWidth / 2);
+    const leaderEndY = y + boxHeight;
+    return [`<g data-chart-annotation="${escapeHtml(annotation.id || `annotation-${index + 1}`)}">
+      <path d="M ${anchor.x} ${anchor.y - 8} L ${leaderEndX} ${leaderEndY}" fill="none" stroke="#9aaebd" stroke-width="1.2" stroke-dasharray="4 5" />
+      <rect x="${x}" y="${y}" width="${boxWidth}" height="${boxHeight}" rx="14" fill="#ffffff" stroke="#d7e1e8" />
+      ${lines.map((line, lineIndex) => `<text x="${x + 14}" y="${y + 22 + lineIndex * 15}" font-size="12" font-weight="${lineIndex === 0 ? 700 : 500}" fill="#213949">${escapeHtml(line)}</text>`).join("")}
+    </g>`];
+  }).join("");
+}
+
+function renderInvestorChartHeader(spec: HtmlChartSpec) {
+  const subtitle = spec.subtitle || spec.insight;
+  const density = getChartDensitySettings(spec);
+  const dataSummary =
+    spec.kind === "bubble"
+      ? `${spec.points.length} points`
+      : `${spec.categories.length} categories / ${spec.series.length} series`;
+  return `<div style="display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:${density.headerGap};border-bottom:1px solid #d8e0e6;padding-bottom:14px;">
+    <div style="max-width:780px;">
+      <div style="font-size:11px;font-weight:800;letter-spacing:0.16em;text-transform:uppercase;color:#8a6b2f;margin-bottom:8px;">Exhibit</div>
+      <div style="font-family:Georgia,'Times New Roman',serif;font-size:${density.titleSize}px;font-weight:700;letter-spacing:-0.02em;line-height:1.12;color:#122d3f;">${escapeHtml(spec.title || "Chart")}</div>
+      ${subtitle ? `<div style="margin-top:8px;font-size:${density.subtitleSize}px;line-height:1.42;color:#5c7080;max-width:760px;">${escapeHtml(subtitle)}</div>` : ""}
+    </div>
+    <div style="text-align:right;min-width:${getChartPresentation(spec).density === "sidecar" ? "94" : "138"}px;">
+      <div style="font-size:11px;font-weight:800;letter-spacing:0.14em;text-transform:uppercase;color:#728696;">Unit</div>
+      <div style="margin-top:4px;font-size:${density.unitSize}px;font-weight:800;letter-spacing:-0.02em;color:#173d57;">${escapeHtml(spec.kind === "bubble" ? spec.sizeLabel : spec.unit || "value")}</div>
+      <div style="margin-top:8px;font-size:${density.dataSummarySize}px;color:#7f919f;">${escapeHtml(dataSummary)}</div>
+    </div>
+  </div>`;
+}
+
+function renderInvestorBarLikeChart(spec: Exclude<CartesianChartSpec, { kind: "combo" }>) {
+  const width = 1160;
+  const height = 470;
+  const left = 86;
+  const right = width - 44;
+  const top = 58;
+  const bottom = height - 72;
+  const presentation = getChartPresentation(spec);
+  const format = presentation.valueFormat;
+  const anchors: ChartAnchor[] = [];
+
+  if (spec.kind === "waterfall") {
+    const rawValues = spec.series[0]?.values ?? [];
+    let running = 0;
+    const steps = spec.categories.map((category, index) => {
+      const rawValue = rawValues[index] ?? 0;
+      const isEndpoint = index === 0 || index === spec.categories.length - 1;
+      const start = isEndpoint ? 0 : running;
+      const end = isEndpoint ? rawValue : running + rawValue;
+      if (!isEndpoint) {
+        running = end;
+      }
+      return { category, index, rawValue, start, end, isEndpoint };
+    });
+    const minValue = Math.min(0, ...steps.flatMap((step) => [step.start, step.end]));
+    const maxValue = Math.max(1, ...steps.flatMap((step) => [step.start, step.end]));
+    const projectY = buildProjectY({ top, bottom, minValue, maxValue });
+    const slotWidth = (right - left) / Math.max(1, steps.length);
+    const barWidth = Math.min(86, slotWidth * 0.58);
+    const zeroY = projectY(0);
+    const bars = steps.map((step) => {
+      const x = left + step.index * slotWidth + (slotWidth - barWidth) / 2;
+      const y1 = projectY(step.start);
+      const y2 = projectY(step.end);
+      const y = Math.min(y1, y2);
+      const h = Math.max(12, Math.abs(y2 - y1));
+      const anchor = {
+        category: step.category,
+        pointIndex: step.index,
+        seriesId: spec.series[0]?.id,
+        x: x + barWidth / 2,
+        y,
+        value: step.rawValue,
+      };
+      anchors.push(anchor);
+      const role = getAnchorEmphasisRole(presentation, anchor) ?? (step.rawValue < 0 ? "negative" : step.isEndpoint ? "primary" : "positive");
+      const color = getChartRoleColor(role, step.rawValue < 0 ? CHART_NEGATIVE : CHART_POSITIVE);
+      const connector = step.index > 0
+        ? `<line x1="${x - slotWidth + barWidth}" y1="${projectY(steps[step.index - 1]?.end ?? 0)}" x2="${x}" y2="${projectY(step.start)}" stroke="#b7c5cf" stroke-width="1.2" stroke-dasharray="5 6" />`
+        : "";
+      return `${connector}<g>
+        <rect x="${x}" y="${y}" width="${barWidth}" height="${h}" rx="12" fill="${escapeHtml(color)}" opacity="${role === "muted" ? 0.42 : 0.96}" />
+        <text x="${x + barWidth / 2}" y="${y - 12}" text-anchor="middle" font-size="13" font-weight="800" fill="#173d57">${escapeHtml(formatChartValue(step.rawValue, format))}</text>
+        <text x="${x + barWidth / 2}" y="${bottom + 28}" text-anchor="middle" font-size="12" font-weight="700" fill="#4e6373">${escapeHtml(step.category)}</text>
+      </g>`;
+    }).join("");
+    return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="display:block;width:100%;height:auto;" xmlns="http://www.w3.org/2000/svg">
+      <defs><filter id="chart-soft-shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="10" stdDeviation="9" flood-color="#173d57" flood-opacity="0.10"/></filter></defs>
+      ${buildChartGrid({ left, right, top, bottom, minValue, maxValue, format })}
+      <line x1="${left}" y1="${zeroY}" x2="${right}" y2="${zeroY}" stroke="#91a5b3" stroke-width="1.4" />
+      <g filter="url(#chart-soft-shadow)">${bars}</g>
+      ${renderInvestorChartAnnotations({ presentation, anchors, width, height })}
+    </svg>`;
+  }
+
+  const allValues = spec.series.flatMap((series) => series.values);
+  const stackTotals = spec.kind === "stacked"
+    ? spec.categories.map((_, index) => spec.series.reduce((sum, series) => sum + Math.max(0, series.values[index] ?? 0), 0))
+    : [];
+  const scaleValues = spec.kind === "stacked" ? stackTotals : allValues;
+  const minValue = spec.kind === "line" ? Math.min(0, ...scaleValues) : Math.min(0, ...scaleValues);
+  const maxValue = Math.max(1, ...scaleValues.map((value) => Math.abs(value)), ...scaleValues);
+  const projectY = buildProjectY({ top, bottom, minValue, maxValue });
+  const slotWidth = (right - left) / Math.max(1, spec.categories.length);
+  const zeroY = projectY(0);
+
+  if (spec.kind === "line") {
+    const lines = spec.series.map((series, seriesIndex) => {
+      const color = getSeriesColor(series, seriesIndex, "line");
+      const points = spec.categories.map((category, pointIndex) => {
+        const value = series.values[pointIndex] ?? 0;
+        const x = left + pointIndex * slotWidth + slotWidth / 2;
+        const y = projectY(value);
+        const anchor = { category, pointIndex, seriesId: series.id, x, y, value };
+        anchors.push(anchor);
+        return anchor;
+      });
+      const path = points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
+      const area =
+        seriesIndex === 0 && points.length
+          ? `<path d="${path} L ${points.at(-1)!.x} ${zeroY} L ${points[0]!.x} ${zeroY} Z" fill="url(#chart-area-fill)" opacity="0.34" />`
+          : "";
+      return `${area}<path d="${path}" fill="none" stroke="${escapeHtml(color)}" stroke-width="${seriesIndex === 0 ? 4.5 : 3}" stroke-linecap="round" stroke-linejoin="round" />
+        ${points.map((point) => {
+          const role = getAnchorEmphasisRole(presentation, point);
+          const fill = getChartRoleColor(role, color);
+          return `<circle cx="${point.x}" cy="${point.y}" r="${role ? 7.5 : 5}" fill="${escapeHtml(fill)}" stroke="#fff" stroke-width="3" />
+            ${role ? `<text x="${point.x}" y="${point.y - 16}" text-anchor="middle" font-size="13" font-weight="800" fill="#173d57">${escapeHtml(formatChartValue(point.value, format))}</text>` : ""}`;
+        }).join("")}`;
+    }).join("");
+    const labels = spec.categories.map((category, index) => `<text x="${left + index * slotWidth + slotWidth / 2}" y="${bottom + 30}" text-anchor="middle" font-size="12" font-weight="700" fill="#4e6373">${escapeHtml(category)}</text>`).join("");
+    return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="display:block;width:100%;height:auto;" xmlns="http://www.w3.org/2000/svg">
+      <defs><linearGradient id="chart-area-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#8fb7c8"/><stop offset="100%" stop-color="#8fb7c8" stop-opacity="0"/></linearGradient></defs>
+      ${buildChartGrid({ left, right, top, bottom, minValue, maxValue, format })}
+      <line x1="${left}" y1="${zeroY}" x2="${right}" y2="${zeroY}" stroke="#91a5b3" stroke-width="1.3" />
+      ${lines}
+      ${labels}
+      ${renderInvestorChartAnnotations({ presentation, anchors, width, height })}
+    </svg>`;
+  }
+
+  const groupWidth = slotWidth * 0.62;
+  const barWidth = spec.kind === "stacked" ? groupWidth : Math.max(18, groupWidth / Math.max(1, spec.series.length));
+  const bars = spec.categories.map((category, categoryIndex) => {
+    if (spec.kind === "stacked") {
+      const x = left + categoryIndex * slotWidth + (slotWidth - groupWidth) / 2;
+      let cursorY = zeroY;
+      let cumulative = 0;
+      const segments = spec.series.map((series, seriesIndex) => {
+        const value = Math.max(0, series.values[categoryIndex] ?? 0);
+        cumulative += value;
+        const nextY = projectY(cumulative);
+        const h = Math.max(5, cursorY - nextY);
+        cursorY = nextY;
+        const anchor = {
+          category,
+          pointIndex: categoryIndex,
+          seriesId: series.id,
+          x: x + groupWidth / 2,
+          y: nextY,
+          value,
+        };
+        anchors.push(anchor);
+        const role = getAnchorEmphasisRole(presentation, anchor);
+        const color = getChartRoleColor(role, getSeriesColor(series, seriesIndex));
+        return `<rect x="${x}" y="${nextY}" width="${groupWidth}" height="${h}" rx="${seriesIndex === 0 ? 12 : 8}" fill="${escapeHtml(color)}" opacity="${role === "muted" ? 0.38 : role ? 0.98 : 0.82}" />`;
+      }).join("");
+      const total = stackTotals[categoryIndex] ?? 0;
+      return `<g>${segments}<text x="${x + groupWidth / 2}" y="${cursorY - 12}" text-anchor="middle" font-size="13" font-weight="800" fill="#173d57">${escapeHtml(formatChartValue(total, format))}</text><text x="${x + groupWidth / 2}" y="${bottom + 30}" text-anchor="middle" font-size="12" font-weight="700" fill="#4e6373">${escapeHtml(category)}</text></g>`;
+    }
+
+    return spec.series.map((series, seriesIndex) => {
+      const value = series.values[categoryIndex] ?? 0;
+      const x = left + categoryIndex * slotWidth + (slotWidth - groupWidth) / 2 + seriesIndex * barWidth;
+      const y = value >= 0 ? projectY(value) : zeroY;
+      const h = Math.max(4, Math.abs(projectY(value) - zeroY));
+      const anchor = {
+        category,
+        pointIndex: categoryIndex,
+        seriesId: series.id,
+        x: x + barWidth / 2,
+        y,
+        value,
+      };
+      anchors.push(anchor);
+      const role = getAnchorEmphasisRole(presentation, anchor);
+      const color = getChartRoleColor(role, value < 0 ? CHART_NEGATIVE : getSeriesColor(series, seriesIndex));
+      return `<g>
+        <rect x="${x}" y="${y}" width="${Math.max(12, barWidth - 8)}" height="${h}" rx="12" fill="${escapeHtml(color)}" opacity="${role === "muted" ? 0.38 : role ? 0.98 : 0.78}" />
+        <text x="${x + Math.max(12, barWidth - 8) / 2}" y="${value >= 0 ? y - 12 : y + h + 18}" text-anchor="middle" font-size="12" font-weight="800" fill="#173d57">${escapeHtml(formatChartValue(value, format))}</text>
+        ${seriesIndex === 0 ? `<text x="${left + categoryIndex * slotWidth + slotWidth / 2}" y="${bottom + 30}" text-anchor="middle" font-size="12" font-weight="700" fill="#4e6373">${escapeHtml(category)}</text>` : ""}
+      </g>`;
+    }).join("");
+  }).join("");
+
+  return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="display:block;width:100%;height:auto;" xmlns="http://www.w3.org/2000/svg">
+    <defs><filter id="chart-soft-shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="10" stdDeviation="9" flood-color="#173d57" flood-opacity="0.09"/></filter></defs>
+    ${buildChartGrid({ left, right, top, bottom, minValue, maxValue, format })}
+    <line x1="${left}" y1="${zeroY}" x2="${right}" y2="${zeroY}" stroke="#91a5b3" stroke-width="1.3" />
+    <g filter="url(#chart-soft-shadow)">${bars}</g>
+    ${renderInvestorChartAnnotations({ presentation, anchors, width, height })}
+  </svg>`;
+}
+
+function renderInvestorComboChart(spec: Extract<CartesianChartSpec, { kind: "combo" }>) {
+  const width = 1160;
+  const height = 470;
+  const left = 86;
+  const right = width - 76;
+  const top = 58;
+  const bottom = height - 72;
+  const presentation = getChartPresentation(spec);
+  const format = presentation.valueFormat;
+  const anchors: ChartAnchor[] = [];
+  const barSeries = spec.series.filter((series) => (series.role ?? "bar") === "bar");
+  const lineSeries = spec.series.filter((series) => (series.role ?? "bar") === "line");
+  const primaryValues = barSeries.flatMap((series) => series.values);
+  const secondaryValues = lineSeries.flatMap((series) => series.values);
+  const primaryMin = Math.min(0, ...primaryValues);
+  const primaryMax = Math.max(1, ...primaryValues);
+  const secondaryMin = Math.min(0, ...secondaryValues);
+  const secondaryMax = Math.max(1, ...secondaryValues);
+  const primaryY = buildProjectY({ top, bottom, minValue: primaryMin, maxValue: primaryMax });
+  const secondaryY = buildProjectY({ top, bottom, minValue: secondaryMin, maxValue: secondaryMax });
+  const slotWidth = (right - left) / Math.max(1, spec.categories.length);
+  const groupWidth = slotWidth * 0.54;
+  const barWidth = Math.max(18, groupWidth / Math.max(1, barSeries.length));
+
+  const bars = spec.categories.map((category, categoryIndex) => {
+    const xBase = left + categoryIndex * slotWidth + (slotWidth - groupWidth) / 2;
+    return barSeries.map((series, seriesIndex) => {
+      const value = series.values[categoryIndex] ?? 0;
+      const y = primaryY(value);
+      const h = Math.max(5, primaryY(0) - y);
+      const anchor = {
+        category,
+        pointIndex: categoryIndex,
+        seriesId: series.id,
+        x: xBase + seriesIndex * barWidth + barWidth / 2,
+        y,
+        value,
+      };
+      anchors.push(anchor);
+      const role = getAnchorEmphasisRole(presentation, anchor);
+      const color = getChartRoleColor(role, getSeriesColor(series, seriesIndex));
+      return `<rect x="${xBase + seriesIndex * barWidth}" y="${y}" width="${Math.max(12, barWidth - 8)}" height="${h}" rx="11" fill="${escapeHtml(color)}" opacity="${role ? 0.96 : 0.74}" />`;
+    }).join("");
+  }).join("");
+
+  const lines = lineSeries.map((series, seriesIndex) => {
+    const color = getSeriesColor(series, seriesIndex, "line");
+    const points = spec.categories.map((category, pointIndex) => {
+      const value = series.values[pointIndex] ?? 0;
+      const point = {
+        category,
+        pointIndex,
+        seriesId: series.id,
+        x: left + pointIndex * slotWidth + slotWidth / 2,
+        y: secondaryY(value),
+        value,
+      };
+      anchors.push(point);
+      return point;
+    });
+    const path = points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
+    return `<path d="${path}" fill="none" stroke="${escapeHtml(color)}" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round" />
+      ${points.map((point) => {
+        const role = getAnchorEmphasisRole(presentation, point);
+        return `<circle cx="${point.x}" cy="${point.y}" r="${role ? 7.5 : 5.5}" fill="${escapeHtml(getChartRoleColor(role, color))}" stroke="#fff" stroke-width="3" />
+          ${role ? `<text x="${point.x}" y="${point.y - 16}" text-anchor="middle" font-size="13" font-weight="800" fill="#173d57">${escapeHtml(formatChartValue(point.value, format))}</text>` : ""}`;
+      }).join("")}`;
+  }).join("");
+  const labels = spec.categories.map((category, index) => `<text x="${left + index * slotWidth + slotWidth / 2}" y="${bottom + 30}" text-anchor="middle" font-size="12" font-weight="700" fill="#4e6373">${escapeHtml(category)}</text>`).join("");
+
+  return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="display:block;width:100%;height:auto;" xmlns="http://www.w3.org/2000/svg">
+    <defs><filter id="chart-soft-shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="10" stdDeviation="9" flood-color="#173d57" flood-opacity="0.09"/></filter></defs>
+    ${buildChartGrid({ left, right, top, bottom, minValue: primaryMin, maxValue: primaryMax, format })}
+    <line x1="${left}" y1="${primaryY(0)}" x2="${right}" y2="${primaryY(0)}" stroke="#91a5b3" stroke-width="1.3" />
+    <line x1="${right}" y1="${top}" x2="${right}" y2="${bottom}" stroke="#c9d6df" stroke-width="1" />
+    <text x="${right + 12}" y="${top + 6}" font-size="11" fill="#708391">${escapeHtml(formatChartValue(secondaryMax, { ...(format ?? {}), suffix: spec.secondaryUnit || format?.suffix }))}</text>
+    <text x="${right + 12}" y="${bottom + 4}" font-size="11" fill="#708391">${escapeHtml(formatChartValue(secondaryMin, { ...(format ?? {}), suffix: spec.secondaryUnit || format?.suffix }))}</text>
+    <g filter="url(#chart-soft-shadow)">${bars}</g>
+    ${lines}
+    ${labels}
+    ${renderInvestorChartAnnotations({ presentation, anchors, width, height })}
+  </svg>`;
+}
+
+function buildHtmlChartExportPayload(spec: HtmlChartSpec) {
+  if (spec.kind === "bubble") {
+    return null;
+  }
+  return {
+    kind: spec.kind,
+    categories: spec.categories,
+    series: spec.series.map((series) => ({
+      name: series.label,
+      label: series.label,
+      values: series.values,
+      color: series.color,
+      role: series.role,
+      axis: series.axis,
+    })),
+    title: spec.title,
+    subtitle: spec.subtitle,
+    insight: spec.insight,
+    unit: spec.unit,
+    secondaryUnit: spec.kind === "combo" ? spec.secondaryUnit : undefined,
+  };
+}
+
 export function renderHtmlChartModule(args: {
   spec: HtmlChartSpec;
   background?: string | null;
   border?: string | null;
   accent?: string | null;
 }) {
-  const background = normalizeText(args.background) || "linear-gradient(180deg,#ffffff 0%,#f6fafc 100%)";
-  const border = normalizeText(args.border) || "#d9e5ef";
-  const accent = normalizeText(args.accent) || "#2a6f97";
+  const spec = withNormalizedChartPresentation(args.spec, args.spec.presentation);
+  const presentation = getChartPresentation(spec);
+  const density = getChartDensitySettings(spec);
+  const background = normalizeText(args.background) || "#ffffff";
+  const border = normalizeText(args.border) || "#d8e0e6";
+  const accent = normalizeText(args.accent) || "#173d57";
   const svg =
-    args.spec.kind === "bubble"
-      ? renderBubbleChart(args.spec)
-      : args.spec.kind === "combo"
-        ? renderComboChart(args.spec)
-        : renderBarLikeChart(args.spec);
-  return `<div class="html-chart-module" data-html-module-kind="${CHART_MODULE_KIND}" data-html-module-label="Chart" data-html-visual-kind="chart-frame" data-html-fit-role="content" ${HTML_CHART_SPEC_ATTRIBUTE}="${serializeJson(args.spec)}" style="position:relative;background:${escapeHtml(background)};border:1px solid ${escapeHtml(border)};border-radius:24px;padding:24px 24px 20px;box-shadow:0 18px 42px rgba(93,119,142,0.08);--ppt-accent:${escapeHtml(accent)};">
-    ${renderChartHeader(args.spec)}
-    <div style="margin-top:18px;">${svg}</div>
+    spec.kind === "bubble"
+      ? renderBubbleChart(spec)
+      : spec.kind === "combo"
+        ? renderInvestorComboChart(spec)
+        : renderInvestorBarLikeChart(spec);
+  const exportPayload = buildHtmlChartExportPayload(spec);
+  return `<div class="html-chart-module" data-html-module-kind="${CHART_MODULE_KIND}" data-html-module-label="Chart" data-html-visual-kind="chart-frame" data-html-fit-role="content" data-chart-presentation-version="2" data-chart-exhibit-preset="${escapeHtml(presentation.exhibitPreset ?? "auto")}" data-chart-density="${escapeHtml(presentation.density ?? "hero")}" ${HTML_CHART_SPEC_ATTRIBUTE}="${serializeJson(spec)}" ${exportPayload ? `data-export-chart="${serializeJson(exportPayload)}"` : ""} style="position:relative;background:${escapeHtml(background)};border:1px solid ${escapeHtml(border)};border-radius:8px;padding:${density.padding};box-shadow:none;--ppt-accent:${escapeHtml(accent)};">
+    ${renderInvestorChartHeader(spec)}
+    <div style="margin-top:${density.chartMarginTop}px;padding:0 2px;">${svg}</div>
+    <div style="border-top:1px solid ${escapeHtml(border)};margin-top:6px;padding-top:9px;font-size:${density.footerSize}px;letter-spacing:0.12em;text-transform:uppercase;color:#7f919f;text-align:right;">Structured chart data</div>
   </div>`;
 }
 

@@ -534,6 +534,7 @@ function buildHtmlReportPageDocument(
         preferredSelectionType: "page",
         selectedBlockId: null,
         selectedVisualNodeId: null,
+        selectedVisualTransformMode: null,
       };
       function syncSelectionContextAttribute() {
         document.documentElement.setAttribute(
@@ -1741,13 +1742,23 @@ function buildHtmlReportPageDocument(
         );
       }
 
+      function buildSelectionRectPayload(element) {
+        const rect = element.getBoundingClientRect();
+        return {
+          top: rect.top,
+          left: rect.left,
+          width: rect.width,
+          height: rect.height,
+        };
+      }
+
       function buildBlockPayload(blockCandidate) {
         const blockElement = blockCandidate.element;
         const computed = window.getComputedStyle(blockElement);
         const fontSize = Number.parseFloat(computed.fontSize || "");
         const lineHeight = Number.parseFloat(computed.lineHeight || "");
         const items = blockCandidate.blockKind === "list"
-          ? Array.from(blockElement.querySelectorAll(":scope > li"))
+          ? Array.from(blockElement.querySelectorAll(":scope li"))
               .map((item) => normalize(item.textContent))
               .filter(Boolean)
           : [];
@@ -1766,8 +1777,10 @@ function buildHtmlReportPageDocument(
         return {
           type: "ppt-html-preview-interaction",
           pageNumber: ${pageNumber},
+          target: "block",
           blockId: blockCandidate.blockId,
           blockKind: blockCandidate.blockKind,
+          rect: buildSelectionRectPayload(blockElement),
           fontSize: Number.isFinite(fontSize) ? fontSize : undefined,
           fontFamily: computed.fontFamily || undefined,
           fontWeight: computed.fontWeight || undefined,
@@ -1793,9 +1806,78 @@ function buildHtmlReportPageDocument(
         return {
           type: "ppt-html-preview-interaction",
           pageNumber: ${pageNumber},
+          target: "visual",
           visualNodeId: visualCandidate.visualNodeId,
           visualKind: visualCandidate.visualKind,
+          rect: buildSelectionRectPayload(visualCandidate.element),
         };
+      }
+
+      function postSelectionMeasurement() {
+        document.querySelectorAll("[data-html-block-selected='true']").forEach((element) => {
+          element.removeAttribute("data-html-block-selected");
+        });
+        document.querySelectorAll("[data-html-visual-selected='true']").forEach((element) => {
+          element.removeAttribute("data-html-visual-selected");
+        });
+
+        if (selectionContext.selectedBlockId) {
+          const blockElement = findSemanticElement("block", selectionContext.selectedBlockId);
+          if (blockElement instanceof HTMLElement) {
+            blockElement.setAttribute("data-html-block-selected", "true");
+            window.parent.postMessage(
+              {
+                ...buildBlockPayload({
+                  type: "block",
+                  element: blockElement,
+                  blockId: selectionContext.selectedBlockId,
+                  blockKind: blockElement.getAttribute("data-html-block-kind") || "paragraph",
+                }),
+                type: "ppt-html-preview-selection-measure",
+              },
+              "*",
+            );
+            return;
+          }
+        }
+
+        if (selectionContext.selectedVisualNodeId) {
+          const visualElement = findSemanticElement("visual", selectionContext.selectedVisualNodeId);
+          const awaitingFreeformHydration =
+            selectionContext.selectedVisualTransformMode === "freeform" &&
+            (!(visualElement instanceof HTMLElement) ||
+              visualElement.getAttribute("data-html-freeform") !== "true" ||
+              visualElement.getAttribute("data-html-canvas-source-id") !==
+                selectionContext.selectedVisualNodeId);
+          if (awaitingFreeformHydration) {
+            return;
+          }
+          if (visualElement instanceof HTMLElement) {
+            visualElement.setAttribute("data-html-visual-selected", "true");
+            window.parent.postMessage(
+              {
+                ...buildVisualPayload({
+                  type: "visual",
+                  element: visualElement,
+                  visualNodeId: selectionContext.selectedVisualNodeId,
+                  visualKind: visualElement.getAttribute("data-html-visual-kind") || "surface",
+                }),
+                type: "ppt-html-preview-selection-measure",
+              },
+              "*",
+            );
+            return;
+          }
+        }
+
+        window.parent.postMessage(
+          {
+            type: "ppt-html-preview-selection-measure",
+            pageNumber: ${pageNumber},
+            target: null,
+          },
+          "*",
+        );
       }
 
       document.addEventListener("click", (event) => {
@@ -1860,8 +1942,16 @@ function buildHtmlReportPageDocument(
               typeof event.data.selectedVisualNodeId === "string" && event.data.selectedVisualNodeId
                 ? event.data.selectedVisualNodeId
                 : null,
+            selectedVisualTransformMode:
+              event.data.selectedVisualTransformMode === "freeform" ? "freeform" : null,
           };
           syncSelectionContextAttribute();
+          window.requestAnimationFrame(() => postSelectionMeasurement());
+          return;
+        }
+
+        if (event.data.action === "measure-selection") {
+          window.requestAnimationFrame(() => postSelectionMeasurement());
           return;
         }
 
@@ -1910,6 +2000,7 @@ function buildHtmlReportPageDocument(
         if (activeTransformPreview && event.data.action === "transform-preview-commit") {
           activeTransformPreview.committed = true;
           activeTransformPreview.previewElement.removeAttribute("data-html-transform-preview");
+          window.requestAnimationFrame(() => postSelectionMeasurement());
         }
       });
 
@@ -2075,11 +2166,160 @@ function buildHtmlReportPageDocument(
           );
         }
 
+        function resolveTextLayoutRole(element) {
+          const blockKind = element.getAttribute("data-html-block-kind");
+          if (blockKind === "headline") return "headline";
+          if (blockKind === "heading" || /^H[2-6]$/.test(element.tagName)) return "heading";
+          if (blockKind === "eyebrow" || blockKind === "paragraph" || element.tagName === "P") {
+            return "paragraph";
+          }
+          if (blockKind === "list" || element.matches("ul,ol")) return "list";
+          if (element.tagName === "H1") return "title";
+
+          const visualKind = element.getAttribute("data-html-visual-kind");
+          if (visualKind === "annotation") return "annotation";
+          if (visualKind === "rail") return "rail";
+          if (visualKind === "badge") return "badge";
+          if (element.matches("button")) return "button";
+          if (element.matches("label")) return "label";
+          return "unknown";
+        }
+
+        function resolveTextMeasurementSelector(element) {
+          const blockId = element.getAttribute("data-html-block-id");
+          if (blockId) return '[data-html-block-id="' + blockId + '"]';
+          const visualId = element.getAttribute("data-html-visual-id");
+          if (visualId) return '[data-html-visual-id="' + visualId + '"]';
+          const layoutId = element.getAttribute("data-html-layout-id");
+          if (layoutId) return '[data-html-layout-id="' + layoutId + '"]';
+          if (element.id) return "#" + element.id;
+          return element.tagName.toLowerCase();
+        }
+
+        function measureTextElement(element) {
+          if (!(element instanceof HTMLElement)) {
+            return null;
+          }
+          const rect = element.getBoundingClientRect();
+          const width = Math.max(1, Math.round(rect.width));
+          const actualHeight = Math.max(
+            Math.round(rect.height),
+            Math.round(element.scrollHeight || 0),
+            Math.round(element.offsetHeight || 0),
+          );
+          if (!width || !actualHeight) {
+            return null;
+          }
+
+          const computed = window.getComputedStyle(element);
+          const fontSize = Number.parseFloat(computed.fontSize || "") || 16;
+          const lineHeight = Number.parseFloat(computed.lineHeight || "") || fontSize * 1.2;
+          const role = resolveTextLayoutRole(element);
+          const items = role === "list"
+            ? Array.from(element.querySelectorAll(":scope li"))
+                .map((item) => normalize(item.textContent))
+                .filter(Boolean)
+            : [];
+          const text = role === "list"
+            ? items.join("\n")
+            : normalize(element.innerText || element.textContent || "");
+          if (!text) {
+            return null;
+          }
+
+          const predictedLineCount = Math.max(1, Math.round(actualHeight / Math.max(1, lineHeight)));
+          const predictedHeight = Math.max(1, Math.round(predictedLineCount * lineHeight));
+          const heightDelta = predictedHeight - Math.round(rect.height);
+          const overflowRisk =
+            element.scrollHeight > rect.height + 8 || heightDelta > 8
+              ? "overflow"
+              : element.scrollHeight > rect.height || heightDelta > -2
+                ? "tight"
+                : "none";
+
+          return {
+            blockId: element.getAttribute("data-html-block-id"),
+            layoutId: element.getAttribute("data-html-layout-id"),
+            selector: resolveTextMeasurementSelector(element),
+            role,
+            width,
+            fontSize,
+            lineHeight,
+            predictedHeight,
+            predictedLineCount,
+            actualHeight,
+            tightWidth: width,
+            overflowRisk,
+            textPreview: normalize(text).slice(0, 140) || null,
+          };
+        }
+
+        function formatTextOverflowRoot(measurement) {
+          const anchors = [
+            measurement.blockId ? "block=" + measurement.blockId : null,
+            measurement.layoutId ? "layout=" + measurement.layoutId : null,
+            measurement.selector ? "selector=" + measurement.selector : null,
+          ].filter(Boolean).join(", ");
+          const preview = measurement.textPreview ? ' text="' + measurement.textPreview + '"' : "";
+          return measurement.role + (anchors ? " {" + anchors + "}" : "") + preview;
+        }
+
+        function measurePageTextLayoutPrediction() {
+          const measurements = [];
+          const seen = new Set();
+          const topLevelBlocks = Array.from(
+            pageRoot.querySelectorAll("[data-html-block-id]"),
+          ).filter((element) => !element.parentElement?.closest("[data-html-block-id]"));
+
+          topLevelBlocks.forEach((element) => {
+            const measurement = measureTextElement(element);
+            if (measurement) {
+              measurements.push(measurement);
+              seen.add(element);
+            }
+          });
+
+          const extraElements = Array.from(
+            pageRoot.querySelectorAll(
+              '[data-html-visual-kind="annotation"],[data-html-visual-kind="rail"],[data-html-visual-kind="badge"],h1,h2,h3,h4,h5,h6,p,button,label',
+            ),
+          );
+          extraElements.forEach((element) => {
+            if (seen.has(element) || element.closest("[data-html-block-id]")) {
+              return;
+            }
+            const measurement = measureTextElement(element);
+            if (!measurement) {
+              return;
+            }
+            seen.add(element);
+            measurements.push(measurement);
+          });
+
+          const rankedMeasurements = [...measurements].sort((left, right) => {
+            const leftRisk = left.overflowRisk === "overflow" ? 2 : left.overflowRisk === "tight" ? 1 : 0;
+            const rightRisk = right.overflowRisk === "overflow" ? 2 : right.overflowRisk === "tight" ? 1 : 0;
+            if (leftRisk !== rightRisk) return rightRisk - leftRisk;
+            return right.predictedLineCount - left.predictedLineCount;
+          });
+          const predictedOverflowRoots = rankedMeasurements
+            .filter((measurement) => measurement.overflowRisk !== "none")
+            .slice(0, 6)
+            .map((measurement) => formatTextOverflowRoot(measurement));
+
+          return {
+            textMeasurements: measurements,
+            predictedTextOverflow: predictedOverflowRoots.length > 0,
+            predictedOverflowRoots,
+          };
+        }
+
         const semanticNodeElements = collectFitContentElements();
         const semanticSummaries = semanticNodeElements.map((element) => summarizeElement(element));
         const topLevelRegions = collectContentRegions(semanticSummaries);
         const suspectElements = collectSuspectElements(semanticSummaries);
         const contentBounds = measureContentBounds(semanticSummaries);
+        const textLayoutPrediction = measurePageTextLayoutPrediction();
         const chartRegionCount = semanticNodeElements.filter(
           (element) => element.getAttribute("data-html-visual-kind") === "chart-frame",
         ).length;
@@ -2217,6 +2457,9 @@ function buildHtmlReportPageDocument(
           footerHeight,
           rightRailHeight,
           longestBlockHeight,
+          textMeasurements: textLayoutPrediction.textMeasurements,
+          predictedTextOverflow: textLayoutPrediction.predictedTextOverflow,
+          predictedOverflowRoots: textLayoutPrediction.predictedOverflowRoots,
           topLevelRegions,
           suspectElements,
           compositionFingerprint: inferCompositionFingerprint(),

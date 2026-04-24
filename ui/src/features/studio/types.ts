@@ -1100,6 +1100,46 @@ export type ScientificDiagramSpec = NeuralNetworkDiagramSpec;
 export type HtmlChartKind = ModuleChartKind | "combo" | "bubble";
 export type HtmlChartSeriesRole = "bar" | "line";
 export type HtmlChartAxisRole = "primary" | "secondary";
+export type HtmlChartValueScale = "raw" | "thousand" | "million" | "billion";
+export type HtmlChartExhibitPreset =
+  | "auto"
+  | "headline-bars"
+  | "growth-line"
+  | "margin-bridge"
+  | "segment-mix"
+  | "combo-trend-bars";
+export type HtmlChartDensity = "hero" | "peer" | "sidecar";
+export type HtmlChartValueFormat = {
+  prefix?: string;
+  suffix?: string;
+  decimals?: number;
+  scale?: HtmlChartValueScale;
+};
+export type HtmlChartPresentationTarget = {
+  category?: string;
+  seriesId?: string;
+  pointIndex?: number;
+};
+export type HtmlChartPresentationEmphasis = {
+  id: string;
+  target: HtmlChartPresentationTarget;
+  role: "primary" | "positive" | "negative" | "muted";
+};
+export type HtmlChartPresentationAnnotation = {
+  id: string;
+  target: HtmlChartPresentationTarget;
+  text: string;
+  placement?: "auto" | "above" | "right" | "below";
+};
+export type HtmlChartPresentationSpec = {
+  version: 2;
+  preset: "investor-editorial";
+  exhibitPreset?: HtmlChartExhibitPreset;
+  density?: HtmlChartDensity;
+  valueFormat?: HtmlChartValueFormat;
+  emphasis?: HtmlChartPresentationEmphasis[];
+  annotations?: HtmlChartPresentationAnnotation[];
+};
 export type HtmlChartSeries = {
   id: string;
   label: string;
@@ -1125,6 +1165,7 @@ export type HtmlBasicChartSpec = {
   unit: string;
   categories: string[];
   series: HtmlChartSeries[];
+  presentation?: HtmlChartPresentationSpec;
 };
 export type HtmlComboChartSpec = {
   kind: "combo";
@@ -1135,6 +1176,7 @@ export type HtmlComboChartSpec = {
   secondaryUnit?: string;
   categories: string[];
   series: HtmlChartSeries[];
+  presentation?: HtmlChartPresentationSpec;
 };
 export type HtmlBubbleChartSpec = {
   kind: "bubble";
@@ -1146,6 +1188,7 @@ export type HtmlBubbleChartSpec = {
   yLabel: string;
   sizeLabel: string;
   points: HtmlBubblePoint[];
+  presentation?: HtmlChartPresentationSpec;
 };
 export type HtmlChartSpec =
   | HtmlBasicChartSpec

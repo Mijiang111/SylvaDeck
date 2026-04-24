@@ -1,5 +1,16 @@
 import { extractHtmlPageVisualStyle } from "@/features/studio/html-report-visuals";
 import {
+  HTML_CHART_SPEC_ATTRIBUTE,
+  HTML_TABLE_SPEC_ATTRIBUTE,
+  parseHtmlChartSpec,
+  parseHtmlTableSpec,
+} from "@/features/studio/html-report-data-modules";
+import {
+  buildHtmlReportPagePreviews,
+  HTML_REPORT_PAGE_HEIGHT,
+  HTML_REPORT_PAGE_WIDTH,
+} from "@/features/studio/runtime/runtime-export-annotations";
+import {
   measureListBlock,
   measureTextBlock,
   resolveFontDescriptorToCss,
@@ -9,6 +20,7 @@ import { waitForRenderableSurface } from "@/features/studio/runtime/studio/expor
 import type {
   GeneratedHtmlReport,
   GeneratedHtmlReportStyleProfile,
+  HtmlChartSpec,
   HtmlPageVisualStyle,
   ModuleChartKind,
   SlideScene,
@@ -32,6 +44,8 @@ const DEFAULT_DIVIDER = "D8D0C2";
 const DEFAULT_TEXT = "102838";
 const DEFAULT_BODY = "5B6B77";
 const DEFAULT_ACCENT = "C6994A";
+
+type PptExportSupportedChartKind = "bar" | "stacked" | "line" | "waterfall" | "combo";
 
 export type PptExportWarning = {
   code:
@@ -58,6 +72,7 @@ type PptExportTextNode = {
   h: number;
   text: string;
   items?: string[];
+  runs?: PptExportTextRun[];
   fontSize: number;
   fontFamily?: string;
   color: string;
@@ -65,6 +80,16 @@ type PptExportTextNode = {
   italic?: boolean;
   align?: "left" | "center" | "right";
   fillColor?: string | null;
+  rotation?: number;
+};
+
+type PptExportTextRun = {
+  text: string;
+  fontFamily?: string;
+  fontSize?: number;
+  color?: string;
+  bold?: boolean;
+  italic?: boolean;
 };
 
 export type PptExportVisualNode = {
@@ -108,6 +133,8 @@ type PptExportChartSeries = {
   name: string;
   values: number[];
   color?: string;
+  role?: "bar" | "line";
+  axis?: "primary" | "secondary";
 };
 
 export type PptExportChartModel = {
@@ -122,7 +149,7 @@ export type PptExportChartModel = {
   insight?: string;
   layoutRole: PptExportChartLayoutRole;
   fallbackMode?: "native-chart" | "hybrid-waterfall" | "chart-image";
-  chartKind?: Extract<ModuleChartKind, "bar" | "stacked" | "line" | "waterfall">;
+  chartKind?: PptExportSupportedChartKind;
   labels: string[];
   series: PptExportChartSeries[];
   xAxisTitle?: string;
@@ -130,6 +157,17 @@ export type PptExportChartModel = {
   colors: string[];
   themeTokens: PptExportChartThemeTokens;
   fallbackAsset?: PptExportFallbackAsset;
+};
+
+export type PptExportTableModel = {
+  kind: "table";
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  columns: string[];
+  rows: string[][];
+  themeTokens: PptExportChartThemeTokens;
 };
 
 export type PptExportThemeSnapshot = {
@@ -152,6 +190,7 @@ export type PptExportSlideModel = {
   textNodes: PptExportTextNode[];
   shapeNodes: PptExportVisualNode[];
   chartNodes: PptExportChartModel[];
+  tableNodes: PptExportTableModel[];
 };
 
 export type PptExportResult = {
@@ -185,8 +224,13 @@ type ChartCollectionResult = {
   supportTextNodes: PptExportTextNode[];
 };
 
+type TableCollectionResult = {
+  tableNodes: PptExportTableModel[];
+  skipVisualIds: Set<string>;
+};
+
 type ParsedExportChartData = {
-  kind?: ModuleChartKind;
+  kind?: PptExportSupportedChartKind;
   categories?: string[];
   series?: Array<{
     name?: string;
@@ -194,17 +238,20 @@ type ParsedExportChartData = {
     value?: number;
     color?: string;
     label?: string;
+    role?: "bar" | "line";
+    axis?: "primary" | "secondary";
   }>;
   title?: string;
   subtitle?: string;
   insight?: string;
   unit?: string;
+  secondaryUnit?: string;
   xAxisTitle?: string;
   yAxisTitle?: string;
 };
 
 type NormalizedChartContract = {
-  chartKind: Extract<ModuleChartKind, "bar" | "stacked" | "line" | "waterfall">;
+  chartKind: PptExportSupportedChartKind;
   labels: string[];
   series: PptExportChartSeries[];
   title?: string;
@@ -236,6 +283,7 @@ type CollectExportAnnotationsResult = {
   textNodes: PptExportTextNode[];
   shapeNodes: PptExportVisualNode[];
   chartNodes: PptExportChartModel[];
+  tableNodes: PptExportTableModel[];
 };
 
 function dedupeWarnings(warnings: PptExportWarning[]) {
@@ -290,6 +338,14 @@ function normalizeText(value: string) {
   return value.replace(/\s+/g, " ").trim();
 }
 
+function normalizeMultilineText(value: string) {
+  return value
+    .split(/\n+/)
+    .map((line) => normalizeText(line))
+    .filter(Boolean)
+    .join("\n");
+}
+
 function stripQuotes(value: string) {
   return value.replace(/^['"]+|['"]+$/g, "").trim();
 }
@@ -327,6 +383,50 @@ function normalizeAlign(value?: string | null) {
     return value;
   }
   return "left";
+}
+
+function normalizeRotation(value: number) {
+  const normalized = ((value % 360) + 360) % 360;
+  return normalized > 180 ? normalized - 360 : normalized;
+}
+
+function parseCssRotation(transform?: string | null) {
+  if (!transform || transform === "none") {
+    return undefined;
+  }
+
+  const rotateMatch = transform.match(/rotate\((-?[0-9.]+)deg\)/i);
+  if (rotateMatch) {
+    const parsed = Number.parseFloat(rotateMatch[1] ?? "");
+    return Number.isFinite(parsed) ? normalizeRotation(parsed) : undefined;
+  }
+
+  const matrixMatch = transform.match(/matrix\(([^)]+)\)/i);
+  if (!matrixMatch) {
+    return undefined;
+  }
+
+  const values = matrixMatch[1]
+    ?.split(",")
+    .map((value) => Number.parseFloat(value.trim())) ?? [];
+  const [a, b] = values;
+  if (!Number.isFinite(a) || !Number.isFinite(b)) {
+    return undefined;
+  }
+
+  return normalizeRotation((Math.atan2(b, a) * 180) / Math.PI);
+}
+
+function isElementHiddenForExport(element: HTMLElement, view: Window) {
+  if (element.getAttribute("data-html-canvas-placeholder") === "true") {
+    return true;
+  }
+  const computed = view.getComputedStyle(element);
+  return (
+    computed.display === "none" ||
+    computed.visibility === "hidden" ||
+    Number.parseFloat(computed.opacity || "1") <= 0.02
+  );
 }
 
 function parseNumericValue(value: string) {
@@ -373,6 +473,25 @@ function measurePptTextLayout(args: {
   });
 }
 
+function parseAlphaChannel(value?: string) {
+  if (value === undefined) {
+    return 1;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return 1;
+  }
+
+  if (trimmed.endsWith("%")) {
+    const percent = Number.parseFloat(trimmed.slice(0, -1));
+    return clamp(Number.isFinite(percent) ? percent / 100 : 1, 0, 1);
+  }
+
+  const parsed = Number.parseFloat(trimmed);
+  return clamp(Number.isFinite(parsed) ? parsed : 1, 0, 1);
+}
+
 function parseCssColor(value?: string | null) {
   if (!value) {
     return null;
@@ -383,30 +502,48 @@ function parseCssColor(value?: string | null) {
     return null;
   }
 
-  const hexMatch = next.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  const hexMatch = next.match(/^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i);
   if (hexMatch) {
     const raw = hexMatch[1];
-    const expanded = raw.length === 3 ? raw.split("").map((char) => char + char).join("") : raw;
+    const expanded =
+      raw.length === 3 || raw.length === 4
+        ? raw
+            .split("")
+            .map((char) => char + char)
+            .join("")
+        : raw;
+    const hex = expanded.slice(0, 6);
+    const alpha =
+      expanded.length === 8
+        ? clamp(Number.parseInt(expanded.slice(6, 8), 16) / 255, 0, 1)
+        : 1;
     return {
       type: "solid",
-      hex: expanded.toUpperCase(),
-      alpha: 1,
+      hex: hex.toUpperCase(),
+      alpha,
     } satisfies ParsedSolidPaint;
   }
 
   const rgbMatch = next.match(
-    /^rgba?\(\s*([0-9.]+)[,\s]+([0-9.]+)[,\s]+([0-9.]+)(?:[\/,\s]+([0-9.]+))?\s*\)$/i,
+    /^rgba?\(\s*([0-9.]+%?)[,\s]+([0-9.]+%?)[,\s]+([0-9.]+%?)(?:[\/,\s]+([0-9.]+%?))?\s*\)$/i,
   );
   if (!rgbMatch) {
     return null;
   }
 
-  const red = clamp(Number.parseFloat(rgbMatch[1] ?? "0"), 0, 255);
-  const green = clamp(Number.parseFloat(rgbMatch[2] ?? "0"), 0, 255);
-  const blue = clamp(Number.parseFloat(rgbMatch[3] ?? "0"), 0, 255);
-  const parsedAlpha =
-    rgbMatch[4] === undefined ? 1 : Number.parseFloat(rgbMatch[4] ?? "");
-  const alpha = clamp(Number.isFinite(parsedAlpha) ? parsedAlpha : 1, 0, 1);
+  const parseRgbChannel = (channel: string | undefined) => {
+    const raw = channel ?? "0";
+    if (raw.endsWith("%")) {
+      const percent = Number.parseFloat(raw.slice(0, -1));
+      return clamp(Number.isFinite(percent) ? (percent / 100) * 255 : 0, 0, 255);
+    }
+    return clamp(Number.parseFloat(raw), 0, 255);
+  };
+
+  const red = parseRgbChannel(rgbMatch[1]);
+  const green = parseRgbChannel(rgbMatch[2]);
+  const blue = parseRgbChannel(rgbMatch[3]);
+  const alpha = parseAlphaChannel(rgbMatch[4]);
 
   const hex = [red, green, blue]
     .map((channel) => Math.round(channel).toString(16).padStart(2, "0").toUpperCase())
@@ -549,12 +686,210 @@ function createElementSvgFallback(args: {
 function measureElementRect(pageElement: HTMLElement, element: Element) {
   const pageRect = pageElement.getBoundingClientRect();
   const targetRect = element.getBoundingClientRect();
+  const left = clamp(targetRect.left - pageRect.left, 0, pageRect.width);
+  const top = clamp(targetRect.top - pageRect.top, 0, pageRect.height);
+  const right = clamp(targetRect.right - pageRect.left, 0, pageRect.width);
+  const bottom = clamp(targetRect.bottom - pageRect.top, 0, pageRect.height);
+
   return {
-    x: clamp(targetRect.left - pageRect.left, 0, pageRect.width),
-    y: clamp(targetRect.top - pageRect.top, 0, pageRect.height),
-    w: clamp(targetRect.width, 0, pageRect.width),
-    h: clamp(targetRect.height, 0, pageRect.height),
+    x: left,
+    y: top,
+    w: Math.max(0, right - left),
+    h: Math.max(0, bottom - top),
   };
+}
+
+function parseComputedPx(value?: string | null) {
+  if (!value) {
+    return 0;
+  }
+
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function resolveElementInsets(computed: CSSStyleDeclaration) {
+  return {
+    top: parseComputedPx(computed.paddingTop),
+    right: parseComputedPx(computed.paddingRight),
+    bottom: parseComputedPx(computed.paddingBottom),
+    left: parseComputedPx(computed.paddingLeft),
+  };
+}
+
+function resolveVisibleTextBox(args: {
+  rect: { w: number; h: number };
+  insets: ReturnType<typeof resolveElementInsets>;
+  lineHeightPx: number;
+}) {
+  const widthPx = Math.max(24, args.rect.w - args.insets.left - args.insets.right);
+  const heightPx = Math.max(args.lineHeightPx, args.rect.h - args.insets.top - args.insets.bottom);
+  return { widthPx, heightPx };
+}
+
+function fitPptTextLayout(args: {
+  widthPx: number;
+  targetHeightPx: number;
+  fontSizePx: number;
+  fontFamily: string;
+  fontWeight: string;
+  fontStyle: string;
+  lineHeightPx: number;
+  text?: string;
+  items?: string[];
+  whiteSpace?: "normal" | "pre-wrap";
+}) {
+  const minFontSizePx = Math.max(8, args.fontSizePx * 0.62);
+  const lineHeightRatio = args.lineHeightPx / Math.max(args.fontSizePx, 1);
+  const measureAt = (fontSizePx: number) => {
+    const lineHeightPx = Math.max(fontSizePx * 1.05, fontSizePx * lineHeightRatio);
+    return {
+      fontSizePx,
+      lineHeightPx,
+      measurement: measurePptTextLayout({
+        widthPx: args.widthPx,
+        fontSizePx,
+        fontFamily: args.fontFamily,
+        fontWeight: args.fontWeight,
+        fontStyle: args.fontStyle,
+        lineHeightPx,
+        text: args.text,
+        items: args.items,
+        whiteSpace: args.whiteSpace,
+      }),
+    };
+  };
+
+  const base = measureAt(args.fontSizePx);
+  if (base.measurement.height <= args.targetHeightPx * 1.04) {
+    return base;
+  }
+
+  let low = minFontSizePx;
+  let high = args.fontSizePx;
+  let best = measureAt(low);
+  for (let index = 0; index < 8; index += 1) {
+    const mid = (low + high) / 2;
+    const candidate = measureAt(mid);
+    if (candidate.measurement.height <= args.targetHeightPx * 1.02) {
+      best = candidate;
+      low = mid;
+    } else {
+      high = mid;
+    }
+  }
+
+  return best;
+}
+
+function resolvePptTextNodeHeightPx(args: {
+  rect: { y: number; h: number };
+  insets: ReturnType<typeof resolveElementInsets>;
+  measuredHeightPx: number;
+}) {
+  const desiredHeight = Math.max(args.rect.h, args.measuredHeightPx + args.insets.top + args.insets.bottom + 6);
+  const remainingPageHeight = PPT_LAYOUT.pageHeightPx - args.rect.y;
+  return clamp(desiredHeight, 8, Math.max(8, remainingPageHeight));
+}
+
+function appendTextRun(runs: PptExportTextRun[], run: PptExportTextRun) {
+  if (!run.text) {
+    return;
+  }
+
+  const previous = runs.at(-1);
+  if (
+    previous &&
+    previous.fontFamily === run.fontFamily &&
+    previous.fontSize === run.fontSize &&
+    previous.color === run.color &&
+    previous.bold === run.bold &&
+    previous.italic === run.italic
+  ) {
+    previous.text += run.text;
+    return;
+  }
+
+  runs.push(run);
+}
+
+function collectInlineTextRuns(args: {
+  element: HTMLElement;
+  view: Window;
+  baseText: string;
+  baseFontSizePx: number;
+}) {
+  const runs: PptExportTextRun[] = [];
+  let pendingSpace = false;
+
+  const appendRawText = (raw: string, sourceElement: HTMLElement) => {
+    const collapsed = raw.replace(/\s+/g, " ");
+    if (!collapsed.trim()) {
+      pendingSpace = runs.length > 0 || pendingSpace;
+      return;
+    }
+
+    const computed = args.view.getComputedStyle(sourceElement);
+    const text = `${pendingSpace && runs.length ? " " : ""}${collapsed.trim()}`;
+    pendingSpace = /\s$/.test(collapsed);
+    appendTextRun(runs, {
+      text,
+      fontFamily: primaryFontFamily(computed.fontFamily),
+      fontSize:
+        Math.abs(parseComputedPx(computed.fontSize) - args.baseFontSizePx) > 0.5
+          ? pxFontToPoints(parseComputedPx(computed.fontSize))
+          : undefined,
+      color: parseCssColor(computed.color)?.hex,
+      bold: Number.parseInt(computed.fontWeight || "400", 10) >= 600,
+      italic: computed.fontStyle === "italic",
+    });
+  };
+
+  const walk = (node: Node, sourceElement: HTMLElement) => {
+    if (node.nodeType === 3) {
+      appendRawText(node.textContent ?? "", sourceElement);
+      return;
+    }
+
+    if (!isHtmlElementNode(node)) {
+      return;
+    }
+
+    const tagName = node.tagName.toLowerCase();
+    if (tagName === "script" || tagName === "style" || tagName === "svg") {
+      return;
+    }
+
+    const display = args.view.getComputedStyle(node).display;
+    const startsBlock = runs.length > 0 && /^(block|flex|grid|list-item|table)/.test(display);
+    if (startsBlock) {
+      pendingSpace = true;
+    }
+
+    for (const child of Array.from(node.childNodes)) {
+      walk(child, node);
+    }
+  };
+
+  for (const child of Array.from(args.element.childNodes)) {
+    walk(child, args.element);
+  }
+
+  const normalizedRunsText = normalizeText(runs.map((run) => run.text).join(""));
+  if (runs.length < 2 || normalizedRunsText !== args.baseText) {
+    return undefined;
+  }
+
+  const hasMeaningfulStyleChange = runs.some(
+    (run) =>
+      run.fontFamily ||
+      run.fontSize !== undefined ||
+      (run.color && run.color !== parseCssColor(args.view.getComputedStyle(args.element).color)?.hex) ||
+      run.bold !== (Number.parseInt(args.view.getComputedStyle(args.element).fontWeight || "400", 10) >= 600) ||
+      run.italic !== (args.view.getComputedStyle(args.element).fontStyle === "italic"),
+  );
+
+  return hasMeaningfulStyleChange ? runs : undefined;
 }
 
 function dedupeTextNodes(nodes: PptExportTextNode[]) {
@@ -562,7 +897,11 @@ function dedupeTextNodes(nodes: PptExportTextNode[]) {
   const deduped: PptExportTextNode[] = [];
 
   for (const node of nodes) {
-    const key = `${node.x}:${node.y}:${node.w}:${node.h}:${node.text}:${node.items?.join("|") ?? ""}`;
+    const runKey =
+      node.runs
+        ?.map((run) => `${run.text}:${run.color ?? ""}:${run.bold ?? ""}:${run.italic ?? ""}`)
+        .join("|") ?? "";
+    const key = `${node.x}:${node.y}:${node.w}:${node.h}:${node.text}:${node.items?.join("|") ?? ""}:${runKey}`;
     if (seen.has(key)) {
       continue;
     }
@@ -586,6 +925,12 @@ function buildChartThemeTokens(theme: PptExportThemeSnapshot): PptExportChartThe
 }
 
 function parseExportChartData(element: HTMLElement): ParsedExportChartData | null {
+  const chartSpec = parseHtmlChartSpec(element.getAttribute(HTML_CHART_SPEC_ATTRIBUTE));
+  const parsedSpec = chartSpec ? parsedExportChartDataFromHtmlSpec(chartSpec) : null;
+  if (parsedSpec) {
+    return parsedSpec;
+  }
+
   const raw = element.getAttribute("data-export-chart");
   if (!raw) {
     return null;
@@ -599,6 +944,29 @@ function parseExportChartData(element: HTMLElement): ParsedExportChartData | nul
   }
 }
 
+function parsedExportChartDataFromHtmlSpec(spec: HtmlChartSpec): ParsedExportChartData | null {
+  if (spec.kind === "bubble") {
+    return null;
+  }
+  return {
+    kind: spec.kind,
+    categories: spec.categories,
+    series: spec.series.map((series) => ({
+      name: series.label,
+      label: series.label,
+      values: series.values,
+      color: series.color ?? undefined,
+      role: series.role,
+      axis: series.axis,
+    })),
+    title: spec.title,
+    subtitle: spec.subtitle,
+    insight: spec.insight,
+    unit: spec.unit,
+    secondaryUnit: spec.kind === "combo" ? spec.secondaryUnit : undefined,
+  };
+}
+
 function normalizeChartContractFromParsed(args: {
   parsed: ParsedExportChartData;
   pageNumber: number;
@@ -608,7 +976,7 @@ function normalizeChartContractFromParsed(args: {
   fallbackInsight?: string;
 }): NormalizedChartContract | null {
   const kind = args.parsed.kind;
-  if (kind !== "bar" && kind !== "stacked" && kind !== "line" && kind !== "waterfall") {
+  if (kind !== "bar" && kind !== "stacked" && kind !== "line" && kind !== "waterfall" && kind !== "combo") {
     return null;
   }
 
@@ -624,6 +992,8 @@ function normalizeChartContractFromParsed(args: {
         name: normalizeText(item.name ?? item.label ?? `Series ${index + 1}`) || `Series ${index + 1}`,
         values,
         color: parseCssColor(item.color)?.hex,
+        role: item.role ?? (kind === "combo" && index > 0 ? "line" : kind === "line" ? "line" : "bar"),
+        axis: item.axis ?? (kind === "combo" && index > 0 ? "secondary" : "primary"),
       } satisfies PptExportChartSeries;
     })
     .filter((item) => item.values.length > 0);
@@ -661,8 +1031,8 @@ function normalizeChartContractFromParsed(args: {
     xAxisTitle: args.parsed.xAxisTitle,
     yAxisTitle: args.parsed.yAxisTitle,
     colors: clippedSeries.map((item) => item.color).filter((item): item is string => Boolean(item)),
-    renderMode: kind === "waterfall" ? "hybrid" : "native",
-    fallbackMode: kind === "waterfall" ? "hybrid-waterfall" : "native-chart",
+    renderMode: kind === "waterfall" || kind === "combo" ? "hybrid" : "native",
+    fallbackMode: kind === "waterfall" ? "hybrid-waterfall" : kind === "combo" ? undefined : "native-chart",
   } satisfies NormalizedChartContract;
 }
 
@@ -738,10 +1108,12 @@ function collectChartSupportRoots(frame: ChartFrameCandidate) {
   return roots.filter((root, index) => roots.indexOf(root) === index);
 }
 
-function buildTextNodeFromElement(args: {
+function buildMeasuredTextNode(args: {
   pageElement: HTMLElement;
   element: HTMLElement;
   view: Window;
+  text: string;
+  items?: string[];
 }) {
   const rect = measureElementRect(args.pageElement, args.element);
   if (!rect.w || !rect.h) {
@@ -749,24 +1121,42 @@ function buildTextNodeFromElement(args: {
   }
 
   const computed = args.view.getComputedStyle(args.element);
+  if (isElementHiddenForExport(args.element, args.view)) {
+    return null;
+  }
   const color = parseCssColor(computed.color)?.hex ?? DEFAULT_TEXT;
   const fillColor = parseCssColor(computed.backgroundColor);
   const computedFontSize = Number.parseFloat(computed.fontSize || "");
   const fontSizePx = Number.isFinite(computedFontSize) ? computedFontSize : 16;
   const lineHeightPx = Math.max(parseNumericValue(computed.lineHeight || ""), fontSizePx * 1.2);
-  const text = normalizeText(args.element.innerText ?? "");
-  if (!text) {
+  const insets = resolveElementInsets(computed);
+  const textBox = resolveVisibleTextBox({
+    rect,
+    insets,
+    lineHeightPx,
+  });
+  const text = normalizeText(args.text);
+  const items = args.items?.map((item) => normalizeText(item)).filter(Boolean);
+  if (!text && !items?.length) {
     return null;
   }
-  const measurement = measurePptTextLayout({
-    widthPx: Math.max(24, rect.w),
+
+  const fitted = fitPptTextLayout({
+    widthPx: textBox.widthPx,
+    targetHeightPx: textBox.heightPx,
     fontSizePx,
     fontFamily: primaryFontFamily(computed.fontFamily) || "Arial",
     fontWeight: computed.fontWeight || "400",
     fontStyle: computed.fontStyle || "normal",
     lineHeightPx,
     text,
+    items,
     whiteSpace: resolveElementTextLayoutWhiteSpace(args.element),
+  });
+  const heightPx = resolvePptTextNodeHeightPx({
+    rect,
+    insets,
+    measuredHeightPx: fitted.measurement.height,
   });
 
   return {
@@ -774,16 +1164,37 @@ function buildTextNodeFromElement(args: {
     x: pxToInches(rect.x),
     y: pxToInches(rect.y),
     w: pxToInches(rect.w),
-    h: pxToInches(Math.max(rect.h, measurement.height) + 8),
+    h: pxToInches(heightPx),
     text,
-    fontSize: pxFontToPoints(fontSizePx),
+    items,
+    runs: items?.length
+      ? undefined
+      : collectInlineTextRuns({
+          element: args.element,
+          view: args.view,
+          baseText: text,
+          baseFontSizePx: fontSizePx,
+        }),
+    fontSize: pxFontToPoints(fitted.fontSizePx),
     fontFamily: primaryFontFamily(computed.fontFamily),
     color,
     bold: Number.parseInt(computed.fontWeight || "400", 10) >= 600,
     italic: computed.fontStyle === "italic",
     align: normalizeAlign(computed.textAlign),
     fillColor: fillColor?.alpha && fillColor.alpha > 0 ? fillColor.hex : null,
+    rotation: parseCssRotation(computed.transform),
   } satisfies PptExportTextNode;
+}
+
+function buildTextNodeFromElement(args: {
+  pageElement: HTMLElement;
+  element: HTMLElement;
+  view: Window;
+}) {
+  return buildMeasuredTextNode({
+    ...args,
+    text: args.element.innerText ?? "",
+  });
 }
 
 function collectChartSupportTextNodes(args: {
@@ -816,37 +1227,16 @@ function collectChartSupportTextNodes(args: {
       if (!rect.w || !rect.h || items.length === 0) {
         continue;
       }
-      const computed = view.getComputedStyle(list);
-      const fillColor = parseCssColor(computed.backgroundColor);
-      const computedFontSize = Number.parseFloat(computed.fontSize || "");
-      const fontSizePx = Number.isFinite(computedFontSize) ? computedFontSize : 16;
-      const lineHeightPx = Math.max(parseNumericValue(computed.lineHeight || ""), fontSizePx * 1.2);
-      const measurement = measurePptTextLayout({
-        widthPx: Math.max(24, rect.w),
-        fontSizePx,
-        fontFamily: primaryFontFamily(computed.fontFamily) || "Arial",
-        fontWeight: computed.fontWeight || "400",
-        fontStyle: computed.fontStyle || "normal",
-        lineHeightPx,
-        items,
-        whiteSpace: resolveElementTextLayoutWhiteSpace(list),
-      });
-      collected.push({
-        kind: "text",
-        x: pxToInches(rect.x),
-        y: pxToInches(rect.y),
-        w: pxToInches(rect.w),
-        h: pxToInches(Math.max(rect.h, measurement.height) + 8),
+      const node = buildMeasuredTextNode({
+        pageElement: args.pageElement,
+        element: list,
+        view,
         text: items.join("\n"),
         items,
-        fontSize: pxFontToPoints(fontSizePx),
-        fontFamily: primaryFontFamily(computed.fontFamily),
-        color: parseCssColor(computed.color)?.hex ?? DEFAULT_TEXT,
-        bold: Number.parseInt(computed.fontWeight || "400", 10) >= 600,
-        italic: computed.fontStyle === "italic",
-        align: normalizeAlign(computed.textAlign),
-        fillColor: fillColor?.alpha && fillColor.alpha > 0 ? fillColor.hex : null,
       });
+      if (node) {
+        collected.push(node);
+      }
     }
 
     const candidates = Array.from(
@@ -896,17 +1286,46 @@ async function waitForFrameReady(iframe: HTMLIFrameElement) {
   }
 }
 
-async function collectExportPageFrames(reportRoot: HTMLElement) {
-  const frames = Array.from(
-    reportRoot.querySelectorAll<HTMLIFrameElement>("[data-ppt-export-page-frame]"),
-  ).sort((left, right) => {
-    const leftPage = Number.parseInt(left.getAttribute("data-ppt-export-page-frame") ?? "", 10);
-    const rightPage = Number.parseInt(right.getAttribute("data-ppt-export-page-frame") ?? "", 10);
-    return leftPage - rightPage;
+async function collectExportPageFrames(args: {
+  document: Document;
+  htmlReport: GeneratedHtmlReport;
+}) {
+  const pagePreviews = buildHtmlReportPagePreviews(args.htmlReport);
+  const container = args.document.createElement("div");
+  container.setAttribute("data-ppt-transient-export-frames", "true");
+  container.style.cssText = `
+    position: fixed;
+    visibility: hidden;
+    pointer-events: none;
+    opacity: 0;
+    top: -10000px;
+    left: 0;
+    width: ${HTML_REPORT_PAGE_WIDTH}px;
+    height: ${HTML_REPORT_PAGE_HEIGHT}px;
+    overflow: hidden;
+  `;
+  args.document.body.appendChild(container);
+
+  const frames = pagePreviews.map((pagePreview) => {
+    const iframe = args.document.createElement("iframe");
+    iframe.setAttribute("aria-hidden", "true");
+    iframe.setAttribute("sandbox", "allow-same-origin");
+    iframe.setAttribute("data-ppt-transient-export-page-frame", String(pagePreview.pageNumber));
+    iframe.tabIndex = -1;
+    iframe.style.cssText = `
+      display: block;
+      width: ${HTML_REPORT_PAGE_WIDTH}px;
+      height: ${HTML_REPORT_PAGE_HEIGHT}px;
+      border: 0;
+    `;
+    iframe.srcdoc = pagePreview.srcDoc;
+    container.appendChild(iframe);
+    return iframe;
   });
+
   await Promise.all(frames.map((frame) => waitForFrameReady(frame)));
 
-  return frames
+  const collected = frames
     .map((iframe) => {
       const document = iframe.contentDocument;
       const pageElement = document?.querySelector("section.page");
@@ -921,6 +1340,11 @@ async function collectExportPageFrames(reportRoot: HTMLElement) {
       } satisfies ExportPageFrame;
     })
     .filter((frame): frame is ExportPageFrame => Boolean(frame));
+
+  return {
+    frames: collected,
+    cleanup: () => container.remove(),
+  };
 }
 
 function collectBlockTextNodes(args: {
@@ -941,17 +1365,15 @@ function collectBlockTextNodes(args: {
   for (const element of blockElements) {
     const blockId = element.getAttribute("data-html-block-id") ?? "unknown";
     const blockKind = element.getAttribute("data-html-block-kind") ?? "text";
+    if (isElementHiddenForExport(element, view)) {
+      continue;
+    }
 
     const rect = measureElementRect(args.pageElement, element);
     if (!rect.w || !rect.h) {
       continue;
     }
 
-    const computed = view.getComputedStyle(element);
-    const color = parseCssColor(computed.color)?.hex ?? DEFAULT_TEXT;
-    const fillColor = parseCssColor(computed.backgroundColor);
-    const computedFontSize = Number.parseFloat(computed.fontSize || "");
-    const fontSizePx = Number.isFinite(computedFontSize) ? computedFontSize : 16;
     const items =
       blockKind === "list"
         ? Array.from(element.querySelectorAll(":scope li"))
@@ -972,61 +1394,125 @@ function collectBlockTextNodes(args: {
       continue;
     }
 
-    const computedLineHeight = parseNumericValue(computed.lineHeight || "");
-    const lineHeightPx =
-      Number.isFinite(computedLineHeight) && computedLineHeight > 0
-        ? computedLineHeight
-        : fontSizePx * 1.2;
-    const contentHeight = Math.max(rect.h, element.scrollHeight || 0, element.offsetHeight || 0);
-    const baseMeasurement = measurePptTextLayout({
-      widthPx: Math.max(24, rect.w),
-      fontSizePx,
-      fontFamily: primaryFontFamily(computed.fontFamily) || "Arial",
-      fontWeight: computed.fontWeight || "400",
-      fontStyle: computed.fontStyle || "normal",
-      lineHeightPx,
+    const node = buildMeasuredTextNode({
+      pageElement: args.pageElement,
+      element,
+      view,
       text,
       items,
-      whiteSpace: resolveElementTextLayoutWhiteSpace(element),
     });
-    const allowedLines = Math.max(1, Math.round(contentHeight / lineHeightPx));
-    const estimatedLineCount = Math.max(1, baseMeasurement.lineCount);
-    const overflowRatio =
-      estimatedLineCount > allowedLines ? allowedLines / estimatedLineCount : 1;
-    const adjustedFontSizePx =
-      overflowRatio < 1 ? fontSizePx * Math.max(0.72, overflowRatio) : fontSizePx;
-    const adjustedLineHeightPx = Math.max(1, lineHeightPx * (adjustedFontSizePx / Math.max(fontSizePx, 1)));
-    const adjustedMeasurement = measurePptTextLayout({
-      widthPx: Math.max(24, rect.w),
-      fontSizePx: adjustedFontSizePx,
-      fontFamily: primaryFontFamily(computed.fontFamily) || "Arial",
-      fontWeight: computed.fontWeight || "400",
-      fontStyle: computed.fontStyle || "normal",
-      lineHeightPx: adjustedLineHeightPx,
-      text,
-      items,
-      whiteSpace: resolveElementTextLayoutWhiteSpace(element),
-    });
-
-    textNodes.push({
-      kind: "text",
-      x: pxToInches(rect.x),
-      y: pxToInches(rect.y),
-      w: pxToInches(rect.w),
-      h: pxToInches(Math.max(contentHeight, adjustedMeasurement.height) + 8),
-      text,
-      items,
-      fontSize: pxFontToPoints(adjustedFontSizePx),
-      fontFamily: primaryFontFamily(computed.fontFamily),
-      color,
-      bold: Number.parseInt(computed.fontWeight || "400", 10) >= 600,
-      italic: computed.fontStyle === "italic",
-      align: normalizeAlign(computed.textAlign),
-      fillColor: fillColor?.alpha && fillColor.alpha > 0 ? fillColor.hex : null,
-    });
+    if (node) {
+      textNodes.push(node);
+    }
   }
 
   return textNodes;
+}
+
+function textNodeOverlapsExisting(
+  candidate: PptExportTextNode,
+  existingNodes: PptExportTextNode[],
+) {
+  const candidateText = normalizeText(candidate.text);
+  return existingNodes.some((node) => {
+    if (normalizeText(node.text) !== candidateText) {
+      return false;
+    }
+    const horizontalOverlap = Math.max(
+      0,
+      Math.min(candidate.x + candidate.w, node.x + node.w) - Math.max(candidate.x, node.x),
+    );
+    const verticalOverlap = Math.max(
+      0,
+      Math.min(candidate.y + candidate.h, node.y + node.h) - Math.max(candidate.y, node.y),
+    );
+    const overlapArea = horizontalOverlap * verticalOverlap;
+    const candidateArea = Math.max(candidate.w * candidate.h, 0.01);
+    return overlapArea / candidateArea > 0.58;
+  });
+}
+
+function hasTextCandidateDescendant(element: HTMLElement) {
+  return Boolean(
+    element.querySelector(
+      'h1,h2,h3,h4,h5,h6,p,button,label,figcaption,li,[data-html-block-id],[data-html-visual-kind="annotation"],[data-html-visual-kind="rail"],[data-html-visual-kind="badge"]',
+    ),
+  );
+}
+
+function shouldCollectLooseTextElement(element: HTMLElement) {
+  if (
+    element.getAttribute("data-html-canvas-placeholder") === "true" ||
+    element.closest("[data-html-block-id]") ||
+    element.closest('[data-html-visual-kind="chart-frame"]') ||
+    element.closest("[data-ppt-transient-export-frames]")
+  ) {
+    return false;
+  }
+
+  const text = normalizeText(element.innerText ?? element.textContent ?? "");
+  if (!text || text.length < 2) {
+    return false;
+  }
+
+  const tagName = element.tagName.toLowerCase();
+  if (tagName === "script" || tagName === "style" || tagName === "svg") {
+    return false;
+  }
+
+  if (["h1", "h2", "h3", "h4", "h5", "h6", "p", "button", "label", "figcaption", "li"].includes(tagName)) {
+    return true;
+  }
+
+  const visualKind = element.getAttribute("data-html-visual-kind");
+  if (visualKind === "annotation" || visualKind === "rail" || visualKind === "badge" || visualKind === "label-surface") {
+    return true;
+  }
+
+  if ((tagName === "div" || tagName === "span") && !hasTextCandidateDescendant(element)) {
+    return true;
+  }
+
+  return false;
+}
+
+function collectLooseTextNodes(args: {
+  pageElement: HTMLElement;
+  existingTextNodes: PptExportTextNode[];
+}) {
+  const view = args.pageElement.ownerDocument.defaultView;
+  if (!view) {
+    return [];
+  }
+
+  const collected: PptExportTextNode[] = [];
+  const candidates = Array.from(
+    args.pageElement.querySelectorAll<HTMLElement>(
+      'h1,h2,h3,h4,h5,h6,p,button,label,figcaption,li,span,div,[data-html-visual-kind="annotation"],[data-html-visual-kind="rail"],[data-html-visual-kind="badge"],[data-html-visual-kind="label-surface"]',
+    ),
+  ).sort((left, right) => left.childElementCount - right.childElementCount);
+
+  for (const element of candidates) {
+    if (!shouldCollectLooseTextElement(element)) {
+      continue;
+    }
+
+    if (isElementHiddenForExport(element, view)) {
+      continue;
+    }
+
+    const node = buildTextNodeFromElement({
+      pageElement: args.pageElement,
+      element,
+      view,
+    });
+    if (!node || textNodeOverlapsExisting(node, [...args.existingTextNodes, ...collected])) {
+      continue;
+    }
+    collected.push(node);
+  }
+
+  return dedupeTextNodes(collected);
 }
 
 function shouldRenderVisualAsLine(role: string, rect: { w: number; h: number }) {
@@ -1041,6 +1527,70 @@ function collectChartFrames(pageElement: HTMLElement) {
     element,
     rect: measureElementRect(pageElement, element),
   }));
+}
+
+function shouldExportNativeTableModel(
+  element: HTMLElement,
+  tableSpec: NonNullable<ReturnType<typeof parseHtmlTableSpec>>,
+) {
+  const absoluteDescendantCount = Array.from(element.querySelectorAll<HTMLElement>("[style]")).filter((child) =>
+    /position\s*:\s*absolute/i.test(child.getAttribute("style") ?? ""),
+  ).length;
+  if (absoluteDescendantCount > 4) {
+    return false;
+  }
+
+  const cellCount = tableSpec.columns.length * Math.max(tableSpec.rows.length, 1);
+  const emptyCellCount = tableSpec.rows.flat().filter((cell) => !normalizeText(cell)).length;
+  const emptyRatio = cellCount > 0 ? emptyCellCount / cellCount : 0;
+  if (tableSpec.rows.length > 8 && emptyRatio > 0.42) {
+    return false;
+  }
+
+  if (element.classList.contains("html-table-module")) {
+    return true;
+  }
+
+  return Array.from(element.children).some((child) =>
+    /display\s*:\s*grid/i.test((child as HTMLElement).getAttribute("style") ?? ""),
+  );
+}
+
+function collectTableModels(args: {
+  pageElement?: HTMLElement | null;
+  theme: PptExportThemeSnapshot;
+}): TableCollectionResult {
+  const tableNodes: PptExportTableModel[] = [];
+  const skipVisualIds = new Set<string>();
+  const tableElements = args.pageElement
+    ? Array.from(args.pageElement.querySelectorAll<HTMLElement>('[data-html-module-kind="table"]'))
+    : [];
+
+  for (const element of tableElements) {
+    const tableSpec = parseHtmlTableSpec(element.getAttribute(HTML_TABLE_SPEC_ATTRIBUTE));
+    const rect = args.pageElement ? measureElementRect(args.pageElement, element) : null;
+    if (!tableSpec || !rect?.w || !rect.h || !shouldExportNativeTableModel(element, tableSpec)) {
+      continue;
+    }
+
+    const visualId = element.getAttribute("data-html-visual-id");
+    if (visualId) {
+      skipVisualIds.add(visualId);
+    }
+
+    tableNodes.push({
+      kind: "table",
+      x: pxToInches(rect.x),
+      y: pxToInches(rect.y),
+      w: pxToInches(rect.w),
+      h: pxToInches(rect.h),
+      columns: tableSpec.columns.map((column, index) => normalizeText(column.label) || `Column ${index + 1}`),
+      rows: tableSpec.rows.map((row) => row.map((cell) => normalizeMultilineText(cell))),
+      themeTokens: buildChartThemeTokens(args.theme),
+    });
+  }
+
+  return { tableNodes, skipVisualIds };
 }
 
 function buildThemeSnapshot(args: {
@@ -1142,7 +1692,7 @@ function collectVisualShapeNodes(args: {
       continue;
     }
 
-    if (readAttribute(element, "data-export-omit") === "true") {
+    if (readAttribute(element, "data-export-omit") === "true" || isElementHiddenForExport(element, view)) {
       continue;
     }
 
@@ -1540,6 +2090,7 @@ function collectExportAnnotations(args: {
         warnings: args.warnings,
         pageNumber: args.pageNumber,
       }).chartNodes,
+      tableNodes: [],
     };
   }
 
@@ -1550,24 +2101,40 @@ function collectExportAnnotations(args: {
     warnings: args.warnings,
     pageNumber: args.pageNumber,
   });
+  const tableCollection = collectTableModels({
+    pageElement: args.frame.pageElement,
+    theme,
+  });
+  const skipVisualIds = new Set([
+    ...chartCollection.skipVisualIds,
+    ...tableCollection.skipVisualIds,
+  ]);
+  const structuredTextNodes = dedupeTextNodes([
+    ...collectBlockTextNodes({
+      pageElement: args.frame.pageElement,
+      warnings: args.warnings,
+      pageNumber: args.pageNumber,
+    }),
+    ...chartCollection.supportTextNodes,
+  ]);
 
   return {
     theme,
     textNodes: dedupeTextNodes([
-      ...collectBlockTextNodes({
+      ...structuredTextNodes,
+      ...collectLooseTextNodes({
         pageElement: args.frame.pageElement,
-        warnings: args.warnings,
-        pageNumber: args.pageNumber,
+        existingTextNodes: structuredTextNodes,
       }),
-      ...chartCollection.supportTextNodes,
     ]),
     shapeNodes: collectVisualShapeNodes({
       pageElement: args.frame.pageElement,
-      skipVisualIds: chartCollection.skipVisualIds,
+      skipVisualIds,
       warnings: args.warnings,
       pageNumber: args.pageNumber,
     }),
     chartNodes: chartCollection.chartNodes,
+    tableNodes: tableCollection.tableNodes,
   };
 }
 
@@ -1615,6 +2182,7 @@ function normalizeSlideModel(args: {
     textNodes: annotations.textNodes,
     shapeNodes: annotations.shapeNodes,
     chartNodes: annotations.chartNodes,
+    tableNodes: annotations.tableNodes,
   };
 
   return { slide, warnings };
@@ -1674,6 +2242,88 @@ function formatChartValue(value: number) {
     return `${value}`;
   }
   return value.toFixed(1);
+}
+
+function buildChartDomain(values: number[], options?: { includeZero?: boolean; paddingRatio?: number }) {
+  const finiteValues = values.filter(Number.isFinite);
+  const includeZero = options?.includeZero ?? true;
+  let minValue = finiteValues.length ? Math.min(...finiteValues) : 0;
+  let maxValue = finiteValues.length ? Math.max(...finiteValues) : 1;
+
+  if (includeZero) {
+    minValue = Math.min(minValue, 0);
+    maxValue = Math.max(maxValue, 0);
+  }
+
+  if (minValue === maxValue) {
+    const spread = Math.max(1, Math.abs(maxValue) * 0.2);
+    minValue -= spread;
+    maxValue += spread;
+  }
+
+  const range = Math.max(maxValue - minValue, 1);
+  const padding = range * (options?.paddingRatio ?? 0.08);
+  return {
+    min: minValue - padding,
+    max: maxValue + padding,
+  };
+}
+
+function scaleChartY(value: number, domain: { min: number; max: number }, plotY: number, plotH: number) {
+  const range = Math.max(domain.max - domain.min, 1);
+  return plotY + ((domain.max - value) / range) * plotH;
+}
+
+function shouldRenderCategoryLabel(index: number, total: number, plotW: number) {
+  const maxLabels = Math.max(2, Math.floor(plotW / 0.62));
+  const step = Math.max(1, Math.ceil(total / maxLabels));
+  return index === 0 || index === total - 1 || index % step === 0;
+}
+
+function resolveSeriesColor(chartNode: PptExportChartModel, series: PptExportChartSeries | undefined, index = 0) {
+  return (
+    series?.color ??
+    chartNode.themeTokens.chartPalette[index % Math.max(chartNode.themeTokens.chartPalette.length, 1)] ??
+    chartNode.themeTokens.accent
+  );
+}
+
+function renderChartGridLines(args: {
+  pptx: any;
+  slide: any;
+  chartNode: PptExportChartModel;
+  plotX: number;
+  plotY: number;
+  plotW: number;
+  plotH: number;
+  domain: { min: number; max: number };
+  baseline?: boolean;
+}) {
+  [0.25, 0.5, 0.75].forEach((ratio) => {
+    const y = args.plotY + ratio * args.plotH;
+    args.slide.addShape(args.pptx.ShapeType.line, {
+      x: args.plotX,
+      y,
+      w: args.plotW,
+      h: 0,
+      line: {
+        color: args.chartNode.themeTokens.dividerColor,
+        width: 0.45,
+        transparency: 36,
+        dash: "dash",
+      },
+    });
+  });
+
+  if (args.baseline !== false && args.domain.min <= 0 && args.domain.max >= 0) {
+    args.slide.addShape(args.pptx.ShapeType.line, {
+      x: args.plotX,
+      y: scaleChartY(0, args.domain, args.plotY, args.plotH),
+      w: args.plotW,
+      h: 0,
+      line: { color: args.chartNode.themeTokens.dividerColor, width: 1.1 },
+    });
+  }
 }
 
 function renderHybridWaterfallChart(pptx: any, slide: any, chartNode: PptExportChartModel) {
@@ -1741,34 +2391,34 @@ function renderHybridWaterfallChart(pptx: any, slide: any, chartNode: PptExportC
     totals.push(running);
   });
 
-  const minValue = Math.min(...totals, 0);
-  const maxValue = Math.max(...totals, 0);
-  const valueRange = Math.max(maxValue - minValue, 1);
-  const baselineY = plotY + ((maxValue - 0) / valueRange) * plotH;
+  const domain = buildChartDomain(totals, { includeZero: true, paddingRatio: 0.06 });
   const stepWidth = plotW / Math.max(values.length, 1);
-  const barWidth = Math.max(0.18, stepWidth * 0.5);
+  const barWidth = Math.max(0.14, Math.min(0.42, stepWidth * 0.52));
 
-  slide.addShape(pptx.ShapeType.line, {
-    x: plotX,
-    y: baselineY,
-    w: plotW,
-    h: 0,
-    line: { color: chartNode.themeTokens.dividerColor, width: 1.2 },
+  renderChartGridLines({
+    pptx,
+    slide,
+    chartNode,
+    plotX,
+    plotY,
+    plotW,
+    plotH,
+    domain,
   });
 
   let cumulative = 0;
   values.forEach((value, index) => {
     const nextTotal = cumulative + value;
-    const segmentTop = plotY + ((maxValue - Math.max(cumulative, nextTotal)) / valueRange) * plotH;
-    const segmentBottom = plotY + ((maxValue - Math.min(cumulative, nextTotal)) / valueRange) * plotH;
+    const segmentTop = scaleChartY(Math.max(cumulative, nextTotal), domain, plotY, plotH);
+    const segmentBottom = scaleChartY(Math.min(cumulative, nextTotal), domain, plotY, plotH);
     const barHeight = Math.max(0.12, segmentBottom - segmentTop);
     const x = plotX + index * stepWidth + (stepWidth - barWidth) / 2;
     const fillColor =
       value >= 0
-        ? chartNode.series[0]?.color ?? chartNode.themeTokens.chartPalette[0] ?? chartNode.themeTokens.accent
+        ? resolveSeriesColor(chartNode, chartNode.series[0], 0)
         : chartNode.themeTokens.chartPalette[2] ?? chartNode.themeTokens.textMuted;
 
-      slide.addShape(pptx.ShapeType.rect, {
+    slide.addShape(pptx.ShapeType.rect, {
       x,
       y: segmentTop,
       w: barWidth,
@@ -1778,7 +2428,7 @@ function renderHybridWaterfallChart(pptx: any, slide: any, chartNode: PptExportC
     });
 
     if (index > 0) {
-      const connectorY = plotY + ((maxValue - cumulative) / valueRange) * plotH;
+      const connectorY = scaleChartY(cumulative, domain, plotY, plotH);
       const previousX = plotX + (index - 1) * stepWidth + stepWidth / 2;
       slide.addShape(pptx.ShapeType.line, {
         x: previousX,
@@ -1791,7 +2441,10 @@ function renderHybridWaterfallChart(pptx: any, slide: any, chartNode: PptExportC
 
     slide.addText(formatChartValue(value), {
       x: x - 0.08,
-      y: Math.max(plotY - 0.04, segmentTop - 0.22),
+      y:
+        value >= 0
+          ? clamp(segmentTop - 0.22, plotY - 0.02, plotY + plotH - 0.1)
+          : clamp(segmentBottom + 0.04, plotY, plotY + plotH + 0.08),
       w: barWidth + 0.16,
       h: 0.2,
       fontFace: "Avenir Next",
@@ -1801,20 +2454,286 @@ function renderHybridWaterfallChart(pptx: any, slide: any, chartNode: PptExportC
       margin: 0,
     });
 
-    slide.addText(chartNode.labels[index] ?? `Step ${index + 1}`, {
-      x: x - 0.1,
-      y: plotY + plotH + 0.12,
-      w: barWidth + 0.2,
-      h: 0.3,
-      fontFace: "Avenir Next",
-      fontSize: 8,
-      align: "center",
-      color: chartNode.themeTokens.textMuted,
-      margin: 0,
-    });
+    if (shouldRenderCategoryLabel(index, values.length, plotW)) {
+      slide.addText(chartNode.labels[index] ?? `Step ${index + 1}`, {
+        x: plotX + index * stepWidth,
+        y: plotY + plotH + 0.12,
+        w: stepWidth,
+        h: 0.3,
+        fontFace: "Avenir Next",
+        fontSize: values.length > 8 ? 7 : 8,
+        align: "center",
+        color: chartNode.themeTokens.textMuted,
+        margin: 0,
+        fit: "shrink",
+      });
+    }
 
     cumulative = nextTotal;
   });
+}
+
+function renderHybridComboChart(pptx: any, slide: any, chartNode: PptExportChartModel) {
+  const barSeries = chartNode.series.filter((series) => (series.role ?? "bar") !== "line");
+  const lineSeries = chartNode.series.filter((series) => (series.role ?? "bar") === "line");
+  if (!chartNode.labels.length || (!barSeries.length && !lineSeries.length)) {
+    if (chartNode.fallbackAsset) {
+      slide.addImage({
+        data: chartNode.fallbackAsset.data,
+        x: chartNode.x,
+        y: chartNode.y,
+        w: chartNode.w,
+        h: chartNode.h,
+      });
+    }
+    return;
+  }
+
+  let chartTop = chartNode.y;
+  let chartHeight = chartNode.h;
+  if (chartNode.title) {
+    slide.addText(chartNode.title, {
+      x: chartNode.x,
+      y: chartTop,
+      w: chartNode.w,
+      h: 0.34,
+      fontFace: "Iowan Old Style",
+      fontSize: 16,
+      bold: true,
+      margin: 0,
+      color: chartNode.themeTokens.textPrimary,
+    });
+    chartTop += 0.4;
+    chartHeight -= 0.4;
+  }
+  if (chartNode.subtitle) {
+    slide.addText(chartNode.subtitle, {
+      x: chartNode.x,
+      y: chartTop,
+      w: chartNode.w,
+      h: 0.3,
+      fontFace: "Avenir Next",
+      fontSize: 9,
+      color: chartNode.themeTokens.textMuted,
+      margin: 0,
+    });
+    chartTop += 0.36;
+    chartHeight -= 0.36;
+  }
+
+  const leftPad = 0.42;
+  const rightPad = 0.34;
+  const topPad = 0.2;
+  const bottomPad = 0.62;
+  const plotX = chartNode.x + leftPad;
+  const plotY = chartTop + topPad;
+  const plotW = Math.max(0.4, chartNode.w - leftPad - rightPad);
+  const plotH = Math.max(0.6, chartHeight - topPad - bottomPad);
+  const primaryValues = barSeries.flatMap((series) => series.values);
+  const secondaryValues = lineSeries.flatMap((series) => series.values);
+  const primaryDomain = buildChartDomain(primaryValues, { includeZero: true, paddingRatio: 0.08 });
+  const secondaryDomain = buildChartDomain(secondaryValues, {
+    includeZero: false,
+    paddingRatio: 0.12,
+  });
+  const primaryY = (value: number) => scaleChartY(value, primaryDomain, plotY, plotH);
+  const secondaryY = (value: number) => scaleChartY(value, secondaryDomain, plotY, plotH);
+  const baselineY = primaryY(0);
+  const stepWidth = plotW / Math.max(chartNode.labels.length, 1);
+  const groupWidth = Math.min(stepWidth * 0.62, stepWidth - 0.06);
+  const barWidth = Math.max(0.08, groupWidth / Math.max(barSeries.length, 1));
+
+  renderChartGridLines({
+    pptx,
+    slide,
+    chartNode,
+    plotX,
+    plotY,
+    plotW,
+    plotH,
+    domain: primaryDomain,
+  });
+
+  chartNode.labels.forEach((label, categoryIndex) => {
+    const xBase = plotX + categoryIndex * stepWidth + (stepWidth - groupWidth) / 2;
+    barSeries.forEach((series, seriesIndex) => {
+      const value = series.values[categoryIndex] ?? 0;
+      const y = primaryY(value);
+      const barTop = Math.min(y, baselineY);
+      const h = Math.max(0.06, Math.abs(baselineY - y));
+      const fillColor = resolveSeriesColor(chartNode, series, seriesIndex);
+      slide.addShape(pptx.ShapeType.rect, {
+        x: xBase + seriesIndex * barWidth,
+        y: barTop,
+        w: Math.max(0.06, barWidth - 0.035),
+        h,
+        fill: { color: fillColor, transparency: 8 },
+        line: { color: fillColor, transparency: 18, width: 0.4 },
+      });
+    });
+
+    if (shouldRenderCategoryLabel(categoryIndex, chartNode.labels.length, plotW)) {
+      slide.addText(label, {
+        x: plotX + categoryIndex * stepWidth,
+        y: plotY + plotH + 0.12,
+        w: stepWidth,
+        h: 0.28,
+        fontFace: "Avenir Next",
+        fontSize: chartNode.labels.length > 8 ? 7 : 8,
+        align: "center",
+        color: chartNode.themeTokens.textMuted,
+        margin: 0,
+        fit: "shrink",
+      });
+    }
+  });
+
+  lineSeries.forEach((series, seriesIndex) => {
+    const color = resolveSeriesColor(chartNode, series, barSeries.length + seriesIndex);
+    const points = chartNode.labels.map((_, categoryIndex) => ({
+      x: plotX + categoryIndex * stepWidth + stepWidth / 2,
+      y: secondaryY(series.values[categoryIndex] ?? 0),
+      value: series.values[categoryIndex] ?? 0,
+    }));
+
+    points.slice(1).forEach((point, pointIndex) => {
+      const previous = points[pointIndex]!;
+      slide.addShape(pptx.ShapeType.line, {
+        x: previous.x,
+        y: previous.y,
+        w: point.x - previous.x,
+        h: point.y - previous.y,
+        line: { color, width: 2.2 },
+      });
+    });
+
+    points.forEach((point, pointIndex) => {
+      slide.addShape(pptx.ShapeType.ellipse, {
+        x: point.x - 0.035,
+        y: point.y - 0.035,
+        w: 0.07,
+        h: 0.07,
+        fill: { color, transparency: 0 },
+        line: { color: "FFFFFF", width: 0.8 },
+      });
+      if (pointIndex === points.length - 1) {
+        slide.addText(formatChartValue(point.value), {
+          x: point.x - 0.28,
+          y: Math.max(plotY, point.y - 0.28),
+          w: 0.56,
+          h: 0.2,
+          fontFace: "Avenir Next",
+          fontSize: 8,
+          bold: true,
+          align: "center",
+          color: chartNode.themeTokens.textPrimary,
+          margin: 0,
+        });
+      }
+    });
+  });
+}
+
+function resolveTableColumnWidths(tableNode: PptExportTableModel) {
+  const weights = tableNode.columns.map((column, columnIndex) => {
+    const columnValues = tableNode.rows.map((row) => row[columnIndex] ?? "");
+    const maxLength = Math.max(column.length, ...columnValues.map((value) => value.length), 4);
+    const preferred = Math.sqrt(maxLength);
+    return clamp(preferred, columnIndex === 0 ? 1.35 : 0.9, columnIndex === 0 ? 2.4 : 1.8);
+  });
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0) || 1;
+  return weights.map((weight) => Number(((tableNode.w * weight) / totalWeight).toFixed(3)));
+}
+
+function resolveTableRowHeights(tableNode: PptExportTableModel) {
+  const rowCount = tableNode.rows.length + 1;
+  if (rowCount <= 1) {
+    return [tableNode.h];
+  }
+
+  const headerHeight = clamp(tableNode.h * 0.16, 0.18, Math.min(0.34, tableNode.h * 0.34));
+  const bodyHeight = Math.max(0.05, (tableNode.h - headerHeight) / Math.max(tableNode.rows.length, 1));
+  return [
+    Number(headerHeight.toFixed(3)),
+    ...tableNode.rows.map(() => Number(bodyHeight.toFixed(3))),
+  ];
+}
+
+function renderTableNodes(slide: any, slideModel: PptExportSlideModel) {
+  for (const tableNode of slideModel.tableNodes) {
+    if (!tableNode.columns.length) {
+      continue;
+    }
+
+    const rowCount = tableNode.rows.length + 1;
+    const fontSize = rowCount > 10 ? 6.5 : rowCount > 8 ? 7 : rowCount > 5 ? 8 : 9;
+    const border = {
+      type: "solid" as const,
+      color: tableNode.themeTokens.dividerColor,
+      pt: 0.5,
+    };
+    const headerFill = {
+      color: tableNode.themeTokens.surfaceSecondary,
+      transparency: 0,
+    };
+    const bodyFill = {
+      color: tableNode.themeTokens.surfaceFill,
+      transparency: 4,
+    };
+    const zebraFill = {
+      color: tableNode.themeTokens.surfaceSecondary,
+      transparency: 18,
+    };
+    const rows = [
+      tableNode.columns.map((column) => ({
+        text: column,
+        options: {
+          bold: true,
+          color: tableNode.themeTokens.textPrimary,
+          fill: headerFill,
+          border,
+          fontSize: Math.max(7, fontSize - 1),
+          margin: [0.05, 0.07, 0.05, 0.07],
+          valign: "middle" as const,
+          fit: "shrink" as const,
+        },
+      })),
+      ...tableNode.rows.map((row, rowIndex) =>
+        tableNode.columns.map((_, columnIndex) => ({
+          text: row[columnIndex] ?? "",
+          options: {
+            bold: columnIndex === 0,
+            color:
+              columnIndex === 0
+                ? tableNode.themeTokens.textPrimary
+                : tableNode.themeTokens.textMuted,
+            fill: rowIndex % 2 === 0 ? bodyFill : zebraFill,
+            border,
+            fontSize,
+            margin: [0.05, 0.07, 0.05, 0.07],
+            valign: "top" as const,
+            fit: "shrink" as const,
+          },
+        })),
+      ),
+    ];
+
+    slide.addTable(rows, {
+      x: tableNode.x,
+      y: tableNode.y,
+      w: tableNode.w,
+      h: tableNode.h,
+      colW: resolveTableColumnWidths(tableNode),
+      rowH: resolveTableRowHeights(tableNode),
+      fontFace: "Avenir Next",
+      fontSize,
+      color: tableNode.themeTokens.textMuted,
+      margin: 0,
+      border,
+      fit: "shrink",
+      autoPage: false,
+    });
+  }
 }
 
 function renderChartNodes(pptx: any, slide: any, slideModel: PptExportSlideModel) {
@@ -1832,6 +2751,11 @@ function renderChartNodes(pptx: any, slide: any, slideModel: PptExportSlideModel
 
     if (chartNode.renderMode === "hybrid" && chartNode.chartKind === "waterfall") {
       renderHybridWaterfallChart(pptx, slide, chartNode);
+      continue;
+    }
+
+    if (chartNode.renderMode === "hybrid" && chartNode.chartKind === "combo") {
+      renderHybridComboChart(pptx, slide, chartNode);
       continue;
     }
 
@@ -1890,16 +2814,20 @@ function renderChartNodes(pptx: any, slide: any, slideModel: PptExportSlideModel
     const chartColors = chartNode.series
       .map((series) => series.color)
       .filter((item): item is string => Boolean(item));
+    const nativeChartHeight = Math.max(0.8, chartHeight);
+    const axisLabelFontSize =
+      chartNode.labels.length > 10 ? 7 : chartNode.labels.length > 6 ? 8 : 9;
+    const showLegend = chartNode.series.length > 1 && chartNode.w >= 3.2 && nativeChartHeight >= 1.45;
 
     slide.addChart(chartType, chartData, {
       x: chartNode.x,
       y: chartTop,
       w: chartNode.w,
-      h: Math.max(0.8, chartHeight),
-      showLegend: chartNode.series.length > 1,
+      h: nativeChartHeight,
+      showLegend,
       showTitle: false,
-      catAxisLabelFontSize: 9,
-      valAxisLabelFontSize: 8,
+      catAxisLabelFontSize: axisLabelFontSize,
+      valAxisLabelFontSize: Math.max(7, axisLabelFontSize - 1),
       showValue: false,
       chartColors: chartColors.length
         ? chartColors
@@ -1947,6 +2875,8 @@ function renderTextNodes(slide: any, slideModel: PptExportSlideModel) {
       valign: "top" as const,
       margin: 0,
       breakLine: false,
+      fit: "shrink" as const,
+      rotate: textNode.rotation,
       fill: textNode.fillColor
         ? { color: textNode.fillColor, transparency: 0, type: "solid" }
         : { color: "FFFFFF", transparency: 100, type: "none" },
@@ -1962,6 +2892,23 @@ function renderTextNodes(slide: any, slideModel: PptExportSlideModel) {
       continue;
     }
 
+    if (textNode.runs?.length) {
+      slide.addText(
+        textNode.runs.map((run) => ({
+          text: run.text,
+          options: {
+            fontFace: run.fontFamily,
+            fontSize: run.fontSize,
+            bold: run.bold,
+            italic: run.italic,
+            color: run.color,
+          },
+        })),
+        baseOptions,
+      );
+      continue;
+    }
+
     slide.addText(textNode.text, baseOptions);
   }
 }
@@ -1973,6 +2920,7 @@ function renderSlideToPptx(args: {
   const slide = args.pptx.addSlide();
   renderSlideBackground(args.pptx, slide, args.slideModel);
   renderVisualNodes(args.pptx, slide, args.slideModel);
+  renderTableNodes(slide, args.slideModel);
   renderChartNodes(args.pptx, slide, args.slideModel);
   renderTextNodes(slide, args.slideModel);
 }
@@ -1991,19 +2939,27 @@ export async function exportProjectToPptx(args: {
   }
 
   await waitForRenderableSurface(args.reportRoot);
-  const frames = await collectExportPageFrames(args.reportRoot);
-  const warnings: PptExportWarning[] = [];
-  const slides: PptExportSlideModel[] = args.project.pages.map((_, pageIndex) => {
-    const built = normalizeSlideModel({
-      project: args.project,
-      draft: args.draft,
-      htmlReport,
-      pageIndex,
-      frame: frames[pageIndex] ?? null,
-    });
-    warnings.push(...built.warnings);
-    return built.slide;
+  const exportFrames = await collectExportPageFrames({
+    document: args.document,
+    htmlReport,
   });
+  const warnings: PptExportWarning[] = [];
+  let slides: PptExportSlideModel[];
+  try {
+    slides = args.project.pages.map((_, pageIndex) => {
+      const built = normalizeSlideModel({
+        project: args.project,
+        draft: args.draft,
+        htmlReport,
+        pageIndex,
+        frame: exportFrames.frames[pageIndex] ?? null,
+      });
+      warnings.push(...built.warnings);
+      return built.slide;
+    });
+  } finally {
+    exportFrames.cleanup();
+  }
   const dedupedWarnings = dedupeWarnings(warnings);
 
   const PptxGenJS = await loadPptxGen();

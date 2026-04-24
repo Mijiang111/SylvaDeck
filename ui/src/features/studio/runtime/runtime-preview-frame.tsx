@@ -10,9 +10,6 @@ import {
   resolveFontDescriptorToCss,
 } from "@/features/studio/text-layout/pretext-engine";
 import {
-  measurePageTextLayoutPrediction,
-} from "@/features/studio/text-layout/text-layout-dom";
-import {
   hasPageFitFailure,
   type PageFitMeasurement,
 } from "@/features/studio/generation";
@@ -27,7 +24,6 @@ import type {
 } from "@/features/studio/types";
 import type { TextLayoutWhiteSpace } from "@/features/studio/text-layout/text-layout-types";
 import {
-  buildHtmlReportPagePreviews,
   HTML_REPORT_PAGE_HEIGHT,
   HTML_REPORT_PAGE_WIDTH,
   type HtmlReportPagePreview,
@@ -72,6 +68,60 @@ type PreviewTransformSession = {
   anchorY: number;
 };
 
+type PreviewRectPayload = {
+  top: number;
+  left: number;
+  width: number;
+  height: number;
+};
+
+type SelectedBlockRect = PreviewRectPayload & {
+  fontSize?: number;
+  blockKind: HtmlEditableBlockKind;
+  text: string;
+  items: string[];
+  fontFamily: string;
+  fontWeight: string;
+  fontStyle: string;
+  lineHeightPx: number;
+  whiteSpace: TextLayoutWhiteSpace;
+  linkedVisualNodeId?: string | null;
+  linkedVisualKind?: HtmlVisualNodeKind | null;
+  linkedVisualFitParticipation?: HtmlFitParticipation | null;
+  linkedVisualAtomizationRole?: HtmlVisualAtomizationRole | null;
+  linkedVisualSelectionPriority?: HtmlVisualSelectionPriority | null;
+  sharesSource: boolean;
+  sizingBehavior: PreviewBlockSizingBehavior;
+};
+
+type SelectedVisualRect = PreviewRectPayload;
+
+type PreviewSelectionMeasurementPayload = {
+  type: "ppt-html-preview-selection-measure";
+  pageNumber: number;
+  target?: "block" | "visual" | null;
+  blockId?: string;
+  blockKind?: HtmlEditableBlockKind;
+  visualNodeId?: string;
+  visualKind?: HtmlVisualNodeKind;
+  rect?: PreviewRectPayload;
+  fontSize?: number;
+  fontFamily?: string;
+  fontWeight?: string;
+  fontStyle?: string;
+  lineHeight?: number;
+  linkedVisualNodeId?: string;
+  linkedVisualKind?: HtmlVisualNodeKind;
+  linkedVisualFitParticipation?: HtmlFitParticipation;
+  linkedVisualAtomizationRole?: HtmlVisualAtomizationRole;
+  linkedVisualSelectionPriority?: HtmlVisualSelectionPriority;
+  sharesSource?: boolean;
+  sizingBehavior?: PreviewBlockSizingBehavior;
+  whiteSpace?: TextLayoutWhiteSpace;
+  text?: string;
+  items?: string[];
+};
+
 function isDomHTMLElement(value: unknown): value is HTMLElement {
   return Boolean(
     value &&
@@ -79,30 +129,6 @@ function isDomHTMLElement(value: unknown): value is HTMLElement {
       "nodeType" in value &&
       (value as Node).nodeType === Node.ELEMENT_NODE,
   );
-}
-
-function enrichMeasurementWithTextLayout(
-  iframe: HTMLIFrameElement | null,
-  measurement: PageFitMeasurement,
-): PageFitMeasurement {
-  const pageRoot = iframe?.contentDocument?.querySelector("section.page");
-  if (!isDomHTMLElement(pageRoot)) {
-    return measurement;
-  }
-
-  const textPrediction = measurePageTextLayoutPrediction({ pageRoot });
-  return {
-    ...measurement,
-    textMeasurements: textPrediction.textMeasurements,
-    predictedTextOverflow: textPrediction.predictedTextOverflow,
-    predictedOverflowRoots: textPrediction.predictedOverflowRoots,
-  };
-}
-
-function normalizeFitParticipation(
-  value: string | null | undefined,
-): HtmlFitParticipation | null {
-  return value === "content" || value === "decorative" ? value : null;
 }
 
 function resolveAutoSizedBlockFrame(args: {
@@ -153,44 +179,6 @@ function resolveAutoSizedBlockFrame(args: {
   return clampCanvasFrameToPage(nextFrame);
 }
 
-function findPreviewSemanticElement(args: {
-  document: Document;
-  target: "block" | "visual";
-  id: string;
-}) {
-  const selector =
-    args.target === "block"
-      ? `[data-html-block-id="${args.id}"]`
-      : `[data-html-visual-id="${args.id}"]`;
-
-  const matches = Array.from(args.document.querySelectorAll(selector)).filter(
-    (element): element is HTMLElement =>
-      isDomHTMLElement(element) &&
-      !element.closest("[data-html-canvas-placeholder='true']") &&
-      !element.closest("[data-html-transform-preview-placeholder='true']"),
-  );
-  if (matches.length === 0) {
-    return null;
-  }
-
-  const scoredMatches = matches.map((element) => {
-    const rect = element.getBoundingClientRect();
-    return {
-      element,
-      freeformRank: element.getAttribute("data-html-freeform") === "true" ? 0 : 1,
-      area: Math.max(1, rect.width * rect.height),
-    };
-  });
-
-  return scoredMatches.sort((left, right) => {
-    if (left.freeformRank !== right.freeformRank) {
-      return left.freeformRank - right.freeformRank;
-    }
-
-    return left.area - right.area;
-  })[0]?.element ?? null;
-}
-
 function scaleFrameToPreviewRect(frame: HtmlCanvasFrame, previewScale: number) {
   return {
     top: frame.y * previewScale,
@@ -198,6 +186,19 @@ function scaleFrameToPreviewRect(frame: HtmlCanvasFrame, previewScale: number) {
     width: frame.w * previewScale,
     height: frame.h * previewScale,
   };
+}
+
+function isFinitePreviewRect(value: unknown): value is PreviewRectPayload {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const rect = value as PreviewRectPayload;
+  return (
+    Number.isFinite(rect.top) &&
+    Number.isFinite(rect.left) &&
+    Number.isFinite(rect.width) &&
+    Number.isFinite(rect.height)
+  );
 }
 
 function HtmlReportPreviewFrame({
@@ -271,34 +272,8 @@ function HtmlReportPreviewFrame({
   const frameContainerRef = useRef<HTMLDivElement | null>(null);
   const [frameEpoch, setFrameEpoch] = useState(0);
   const [isFrameVisible, setIsFrameVisible] = useState(false);
-  const [selectedBlockRect, setSelectedBlockRect] = useState<null | {
-    top: number;
-    left: number;
-    width: number;
-    height: number;
-    fontSize?: number;
-    blockKind: HtmlEditableBlockKind;
-    text: string;
-    items: string[];
-    fontFamily: string;
-    fontWeight: string;
-    fontStyle: string;
-    lineHeightPx: number;
-    whiteSpace: TextLayoutWhiteSpace;
-    linkedVisualNodeId?: string | null;
-    linkedVisualKind?: HtmlVisualNodeKind | null;
-    linkedVisualFitParticipation?: HtmlFitParticipation | null;
-    linkedVisualAtomizationRole?: HtmlVisualAtomizationRole | null;
-    linkedVisualSelectionPriority?: HtmlVisualSelectionPriority | null;
-    sharesSource: boolean;
-    sizingBehavior: PreviewBlockSizingBehavior;
-  }>(null);
-  const [selectedVisualRect, setSelectedVisualRect] = useState<null | {
-    top: number;
-    left: number;
-    width: number;
-    height: number;
-  }>(null);
+  const [selectedBlockRect, setSelectedBlockRect] = useState<SelectedBlockRect | null>(null);
+  const [selectedVisualRect, setSelectedVisualRect] = useState<SelectedVisualRect | null>(null);
   const [transformPreview, setTransformPreview] = useState<null | {
     target: "block" | "visual";
     id: string;
@@ -307,7 +282,6 @@ function HtmlReportPreviewFrame({
   }>(null);
   const [interactionMode, setInteractionMode] = useState<PreviewInteractionMode>("idle");
   const [transformSession, setTransformSession] = useState<PreviewTransformSession | null>(null);
-  const [selectionMeasureVersion, setSelectionMeasureVersion] = useState(0);
   const previewBridgeTargetRef = useRef<string | null>(null);
   const transformPreviewRafRef = useRef<number | null>(null);
   const transformLatestPointerRef = useRef<null | { clientX: number; clientY: number }>(null);
@@ -360,14 +334,15 @@ function HtmlReportPreviewFrame({
 
   const scheduleSelectionRemeasure = useCallback(() => {
     if (typeof window === "undefined") {
-      setSelectionMeasureVersion((current) => current + 1);
       return;
     }
 
     window.requestAnimationFrame(() => {
-      setSelectionMeasureVersion((current) => current + 1);
+      postPreviewCommand({
+        action: "measure-selection",
+      });
     });
-  }, []);
+  }, [pagePreview.pageNumber]);
 
   function queueTransformCancel(nextMode: PreviewInteractionMode = "selected") {
     releaseTransformPointerCapture(transformSession?.pointerId ?? null);
@@ -440,6 +415,7 @@ function HtmlReportPreviewFrame({
       preferredSelectionType,
       selectedBlockId,
       selectedVisualNodeId,
+      selectedVisualTransformMode: selectedVisualTransform?.mode ?? null,
     });
   }, [
     frameEpoch,
@@ -447,6 +423,7 @@ function HtmlReportPreviewFrame({
     preferredSelectionType,
     selectedBlockId,
     selectedVisualNodeId,
+    selectedVisualTransform,
   ]);
 
   useEffect(() => {
@@ -503,11 +480,103 @@ function HtmlReportPreviewFrame({
   useEffect(() => {
     if (!selectedBlockId && !selectedVisualNodeId) {
       setInteractionMode("idle");
+      setSelectedBlockRect(null);
+      setSelectedVisualRect(null);
       return;
     }
 
     setInteractionMode("selected");
   }, [selectedBlockId, selectedVisualNodeId]);
+
+  const applySelectionMeasurement = useCallback(
+    (payload: PreviewSelectionMeasurementPayload) => {
+      if (payload.pageNumber !== pagePreview.pageNumber) {
+        return;
+      }
+
+      if (!payload.target) {
+        if (!selectedBlockIdRef.current && !selectedVisualNodeIdRef.current) {
+          setSelectedBlockRect(null);
+          setSelectedVisualRect(null);
+        }
+        return;
+      }
+
+      if (!isFinitePreviewRect(payload.rect)) {
+        return;
+      }
+
+      const scaledRect = {
+        top: payload.rect.top * previewScale,
+        left: payload.rect.left * previewScale,
+        width: payload.rect.width * previewScale,
+        height: payload.rect.height * previewScale,
+      };
+
+      if (payload.target === "block") {
+        if (!payload.blockId || payload.blockId !== selectedBlockIdRef.current) {
+          return;
+        }
+        const blockKind = payload.blockKind ?? "paragraph";
+        const linkedVisualNodeId = payload.linkedVisualNodeId ?? null;
+        const linkedVisualKind = payload.linkedVisualKind ?? null;
+        const linkedVisualFitParticipation = payload.linkedVisualFitParticipation ?? null;
+        const linkedVisualAtomizationRole = payload.linkedVisualAtomizationRole ?? null;
+        const sharesSource = payload.sharesSource ?? Boolean(linkedVisualNodeId);
+        setSelectedVisualRect(null);
+        setSelectedBlockRect({
+          ...scaledRect,
+          fontSize:
+            Number.isFinite(payload.fontSize) && (payload.fontSize ?? 0) > 0
+              ? payload.fontSize
+              : undefined,
+          blockKind,
+          text: payload.text ?? "",
+          items: payload.items ?? [],
+          fontFamily: payload.fontFamily || "Arial",
+          fontWeight: payload.fontWeight || "400",
+          fontStyle: payload.fontStyle || "normal",
+          lineHeightPx:
+            Number.isFinite(payload.lineHeight) && (payload.lineHeight ?? 0) > 0
+              ? payload.lineHeight!
+              : Number.isFinite(payload.fontSize) && (payload.fontSize ?? 0) > 0
+                ? payload.fontSize! * 1.2
+                : 19.2,
+          whiteSpace:
+            payload.whiteSpace === "pre-wrap" || payload.whiteSpace === "normal"
+              ? payload.whiteSpace
+              : "normal",
+          linkedVisualNodeId,
+          linkedVisualKind,
+          linkedVisualFitParticipation,
+          linkedVisualAtomizationRole,
+          linkedVisualSelectionPriority: payload.linkedVisualSelectionPriority ?? null,
+          sharesSource,
+          sizingBehavior:
+            payload.sizingBehavior ??
+            resolvePreviewBlockSizingBehavior({
+              blockKind,
+              linkedVisualNodeId,
+              linkedVisualKind,
+              linkedVisualFitParticipation,
+              linkedVisualAtomizationRole,
+              sharesSource,
+            }),
+        });
+        return;
+      }
+
+      if (
+        payload.target === "visual" &&
+        payload.visualNodeId &&
+        payload.visualNodeId === selectedVisualNodeIdRef.current
+      ) {
+        setSelectedBlockRect(null);
+        setSelectedVisualRect(scaledRect);
+      }
+    },
+    [pagePreview.pageNumber, previewScale],
+  );
 
   useEffect(() => {
     const iframe = iframeRef.current;
@@ -525,15 +594,16 @@ function HtmlReportPreviewFrame({
         if (!payload.measurement) {
           return;
         }
-        const enrichedMeasurement = enrichMeasurementWithTextLayout(
-          iframeRef.current,
-          payload.measurement,
-        );
-        onPageMeasurement?.(enrichedMeasurement);
+        onPageMeasurement?.(payload.measurement);
         onPageOverflow?.(
-          enrichedMeasurement.pageNumber,
-          hasPageFitFailure(enrichedMeasurement, pageCount),
+          payload.measurement.pageNumber,
+          hasPageFitFailure(payload.measurement, pageCount),
         );
+        return;
+      }
+
+      if (event.data.type === "ppt-html-preview-selection-measure") {
+        applySelectionMeasurement(event.data as PreviewSelectionMeasurementPayload);
         return;
       }
 
@@ -541,26 +611,8 @@ function HtmlReportPreviewFrame({
         return;
       }
 
-      const payload = event.data as {
+      const payload = event.data as PreviewSelectionMeasurementPayload & {
         action?: "select" | "inspect" | "background";
-        pageNumber: number;
-        blockId: string;
-        blockKind: HtmlEditableBlockKind;
-        fontSize?: number;
-        fontFamily?: string;
-        fontWeight?: string;
-        fontStyle?: string;
-        lineHeight?: number;
-        linkedVisualNodeId?: string;
-        linkedVisualKind?: HtmlVisualNodeKind;
-        linkedVisualFitParticipation?: HtmlFitParticipation;
-        linkedVisualAtomizationRole?: HtmlVisualAtomizationRole;
-        linkedVisualSelectionPriority?: HtmlVisualSelectionPriority;
-        sharesSource?: boolean;
-        sizingBehavior?: PreviewBlockSizingBehavior;
-        whiteSpace?: TextLayoutWhiteSpace;
-        visualNodeId?: string;
-        visualKind?: HtmlVisualNodeKind;
       };
 
       if (payload.action === "background") {
@@ -574,9 +626,7 @@ function HtmlReportPreviewFrame({
         onSelectVisualNode?.(payload.pageNumber, payload.visualNodeId, payload.visualKind);
         queueTransformCancel("selected");
         setInteractionMode("selected");
-        setSelectedVisualRect(null);
-        setSelectedBlockRect(null);
-        scheduleSelectionRemeasure();
+        applySelectionMeasurement({ ...payload, target: "visual" });
         return;
       }
 
@@ -590,9 +640,7 @@ function HtmlReportPreviewFrame({
         onSelectBlock?.(payload.pageNumber, payload.blockId);
         queueTransformCancel("selected");
         setInteractionMode("selected");
-        setSelectedBlockRect(null);
-        setSelectedVisualRect(null);
-        scheduleSelectionRemeasure();
+        applySelectionMeasurement({ ...payload, target: "block" });
       }
     };
 
@@ -605,155 +653,8 @@ function HtmlReportPreviewFrame({
     onPageOverflow,
     onSelectBlock,
     onSelectVisualNode,
+    applySelectionMeasurement,
     scheduleSelectionRemeasure,
-  ]);
-
-  useEffect(() => {
-    const document = iframeRef.current?.contentDocument;
-    if (!document) {
-      return;
-    }
-
-    document.querySelectorAll("[data-html-block-selected='true']").forEach((element) => {
-      element.removeAttribute("data-html-block-selected");
-    });
-
-    if (!selectedBlockId) {
-      setSelectedBlockRect(null);
-      return;
-    }
-
-    const selectedElement = findPreviewSemanticElement({
-      document,
-      target: "block",
-      id: selectedBlockId,
-    });
-    if (selectedElement) {
-      selectedElement.setAttribute("data-html-block-selected", "true");
-      const rect = selectedElement.getBoundingClientRect();
-      const measureWindow = selectedElement.ownerDocument.defaultView ?? window;
-      const computed = measureWindow.getComputedStyle(selectedElement);
-      const fontSize = Number.parseFloat(computed.fontSize ?? "");
-      const lineHeight = Number.parseFloat(computed.lineHeight ?? "");
-      const blockKind =
-        (selectedElement.getAttribute("data-html-block-kind") as HtmlEditableBlockKind | null) ??
-        "paragraph";
-      const linkedVisualNodeId = selectedElement.getAttribute("data-html-visual-id") ?? null;
-      const linkedVisualKind =
-        (selectedElement.getAttribute("data-html-visual-kind") as HtmlVisualNodeKind | null) ??
-        null;
-      const linkedVisualFitParticipation = normalizeFitParticipation(
-        selectedElement.getAttribute("data-html-fit-role"),
-      );
-      const linkedVisualAtomizationRole =
-        (selectedElement.getAttribute("data-html-visual-atomization-role") as HtmlVisualAtomizationRole | null) ??
-        null;
-      const linkedVisualSelectionPriority =
-        (selectedElement.getAttribute("data-html-visual-selection-priority") as HtmlVisualSelectionPriority | null) ??
-        null;
-      const sharesSource = Boolean(linkedVisualNodeId);
-      const items =
-        blockKind === "list"
-          ? Array.from(selectedElement.querySelectorAll(":scope li"))
-              .map((item) => item.textContent?.replace(/\s+/g, " ").trim() ?? "")
-              .filter(Boolean)
-          : [];
-      setSelectedBlockRect({
-        top: rect.top * previewScale,
-        left: rect.left * previewScale,
-        width: rect.width * previewScale,
-        height: rect.height * previewScale,
-        fontSize: Number.isFinite(fontSize) ? fontSize : undefined,
-        blockKind,
-        text: selectedElement.textContent?.replace(/\s+/g, " ").trim() ?? "",
-        items,
-        fontFamily: computed.fontFamily || "Arial",
-        fontWeight: computed.fontWeight || "400",
-        fontStyle: computed.fontStyle || "normal",
-        linkedVisualNodeId,
-        linkedVisualKind,
-        linkedVisualFitParticipation,
-        linkedVisualAtomizationRole,
-        linkedVisualSelectionPriority,
-        sharesSource,
-        sizingBehavior: resolvePreviewBlockSizingBehavior({
-          blockKind,
-          linkedVisualNodeId,
-          linkedVisualKind,
-          linkedVisualFitParticipation,
-          linkedVisualAtomizationRole,
-          sharesSource,
-        }),
-        lineHeightPx:
-          Number.isFinite(lineHeight) && lineHeight > 0
-            ? lineHeight
-            : Number.isFinite(fontSize) && fontSize > 0
-              ? fontSize * 1.2
-              : 19.2,
-        whiteSpace:
-          computed.whiteSpace === "pre-wrap" || computed.whiteSpace === "pre-line"
-            ? "pre-wrap"
-            : "normal",
-      });
-    } else {
-      setSelectedBlockRect(null);
-    }
-  }, [
-    frameEpoch,
-    previewScale,
-    selectedBlockId,
-    selectedBlockTransform,
-    pagePreview.srcDoc,
-    selectionMeasureVersion,
-  ]);
-
-  useEffect(() => {
-    const document = iframeRef.current?.contentDocument;
-    if (!document) {
-      return;
-    }
-
-    document.querySelectorAll("[data-html-visual-selected='true']").forEach((element) => {
-      element.removeAttribute("data-html-visual-selected");
-    });
-
-    if (!selectedVisualNodeId) {
-      setSelectedVisualRect(null);
-      return;
-    }
-
-    const selectedElement = findPreviewSemanticElement({
-      document,
-      target: "visual",
-      id: selectedVisualNodeId,
-    });
-    const isAwaitingFreeformHydration =
-      selectedVisualTransform?.mode === "freeform" &&
-      (!selectedElement ||
-        selectedElement.getAttribute("data-html-freeform") !== "true" ||
-        selectedElement.getAttribute("data-html-canvas-source-id") !== selectedVisualNodeId);
-    if (isAwaitingFreeformHydration) {
-      return;
-    }
-    if (selectedElement) {
-      selectedElement.setAttribute("data-html-visual-selected", "true");
-      const rect = selectedElement.getBoundingClientRect();
-      setSelectedVisualRect({
-        top: rect.top * previewScale,
-        left: rect.left * previewScale,
-        width: rect.width * previewScale,
-        height: rect.height * previewScale,
-      });
-    } else {
-      setSelectedVisualRect(null);
-    }
-  }, [
-    frameEpoch,
-    previewScale,
-    selectedVisualNodeId,
-    selectedVisualTransform,
-    pagePreview.srcDoc,
-    selectionMeasureVersion,
   ]);
 
   useEffect(() => {
@@ -1413,7 +1314,7 @@ function HtmlReportPreviewFrame({
         ref={iframeRef}
         title={`${htmlReportTitle} - page ${pagePreview.pageNumber}`}
         srcDoc={pagePreview.srcDoc}
-        data-ppt-export-page-frame={pagePreview.pageNumber}
+        sandbox="allow-scripts"
         data-testid={`report-page-frame-${pagePreview.pageNumber}`}
         onLoad={() => {
           previewBridgeTargetRef.current = null;

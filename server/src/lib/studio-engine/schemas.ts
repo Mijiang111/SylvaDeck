@@ -20,6 +20,20 @@ export const blockKindSchema = z.enum([
 ]);
 
 export const moduleChartKindSchema = z.enum(["bar", "stacked", "line", "waterfall"]);
+export const chartExhibitPresetSchema = z.enum([
+  "auto",
+  "headline-bars",
+  "growth-line",
+  "margin-bridge",
+  "segment-mix",
+  "combo-trend-bars",
+]);
+export const chartDensitySchema = z.enum(["hero", "peer", "sidecar"]);
+export const pageCompositionPresetSchema = z.enum([
+  "single-exhibit",
+  "hero-sidecar",
+  "two-panel-exhibit",
+]);
 export const repairModeSchema = z.enum(["standard", "aggressive"]);
 export const generationModeSchema = z.enum(["standard", "long-form"]);
 export const moduleUsageModeSchema = z.enum(["disabled", "fallback", "chart-only"]);
@@ -477,10 +491,23 @@ export const pageRecipePlanSchema = z.object({
           .enum(["none", "bar", "stacked", "line", "waterfall"])
           .optional()
           .default("none"),
+        chartPreset: chartExhibitPresetSchema.optional(),
+        compositionPreset: pageCompositionPresetSchema.optional(),
         composite: z
           .enum(["none", "annotation-rail", "metric-strip", "decision-footer"])
           .optional()
           .default("none"),
+        secondaryChart: z
+          .object({
+            desiredChartKind: moduleChartKindSchema,
+            chartPreset: chartExhibitPresetSchema.optional(),
+            evidenceIds: z.array(z.string().max(80)).max(8).optional(),
+            role: z.enum(["sidecar", "peer"]).optional(),
+            title: z.string().min(1).max(220).optional(),
+            insight: z.string().min(1).max(500).optional(),
+          })
+          .nullable()
+          .optional(),
         evidenceIds: z.array(z.string().max(80)).max(8).optional().default([]),
         moduleHints: z.array(z.string().max(160)).max(4).optional().default([]),
       }),
@@ -499,6 +526,9 @@ export type PublishedModuleManifest = z.infer<typeof publishedModuleManifestSche
 export type PageRecipePlan = z.infer<typeof pageRecipePlanSchema>;
 export type PageFitMeasurement = z.infer<typeof pageFitMeasurementSchema>;
 export type ModuleChartKind = z.infer<typeof moduleChartKindSchema>;
+export type ChartExhibitPreset = z.infer<typeof chartExhibitPresetSchema>;
+export type ChartDensity = z.infer<typeof chartDensitySchema>;
+export type PageCompositionPreset = z.infer<typeof pageCompositionPresetSchema>;
 export type RepairMode = z.infer<typeof repairModeSchema>;
 export type GenerationMode = z.infer<typeof generationModeSchema>;
 export type ModuleUsageMode = z.infer<typeof moduleUsageModeSchema>;

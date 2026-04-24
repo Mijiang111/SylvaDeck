@@ -2906,6 +2906,22 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                       : `${activeChartDataTable.rows.length} categories · ${activeChartSpec.series.length} series`,
                 },
                 {
+                  id: `chart-export-mode-${activeHtmlVisualNode.id}`,
+                  kind: "readonly" as const,
+                  label: "Presentation / export",
+                  value: `${
+                    activeChartSpec.presentation?.version === 2
+                      ? `v2 ${activeChartSpec.presentation.exhibitPreset ?? "auto"} / ${activeChartSpec.presentation.density ?? "hero"}`
+                      : "legacy editable"
+                  } · ${
+                    activeChartSpec.kind === "bubble"
+                      ? "PPTX image fallback"
+                      : activeChartSpec.kind === "waterfall" || activeChartSpec.kind === "combo"
+                        ? "PPTX hybrid"
+                        : "PPTX native chart"
+                  }`,
+                },
+                {
                   id: `chart-accent-${activeHtmlVisualNode.id}`,
                   kind: "color" as const,
                   label: "Accent color",

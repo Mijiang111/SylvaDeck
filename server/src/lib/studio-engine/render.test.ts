@@ -2,10 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildSanitizedFinalReport,
+  composeDeterministicPageSection,
   extractHtmlDocument,
   extractPageTitles,
   validateGeneratedPageHtml,
 } from "./render.js";
+import { getDeckStyleProfile } from "../industry-style.js";
+import type { PageRecipe } from "./contracts.js";
 
 function buildSinglePageHtml(sectionBody: string) {
   return [
@@ -87,6 +90,86 @@ function buildRecorderAnimationSection(manifest: Record<string, unknown>) {
     "</template>",
   ].join("");
 }
+
+function buildRecipeWithTwoCharts(): PageRecipe {
+  const densityBudget = {
+    maxMajorRegions: 2,
+    maxSupportBullets: 2,
+    maxEvidenceBullets: 2,
+    maxParagraphCharacters: 150,
+    maxListItemCharacters: 84,
+    maxListItemsPerList: 2,
+    allowRightRail: true,
+    allowFooterRail: false,
+  };
+
+  return {
+    pageNumber: 1,
+    pageTitle: "Margin and mix",
+    pageIntent: "Explain margin recovery and segment mix.",
+    objective: "Show the two drivers behind operating performance.",
+    insight: "Margin recovery is broadening while mix remains uneven.",
+    pageClass: "proof-analysis",
+    densityBudget,
+    compositionHint: "Use a consulting two-chart exhibit.",
+    compositionPreset: "hero-sidecar",
+    layout: "chart-insight",
+    chartPriority: "required",
+    evidenceIds: ["bridge"],
+    evidenceBundle: [],
+    heroClaim: "Margin recovery has two visible drivers.",
+    supportBullets: [],
+    evidenceBullets: [],
+    takeaway: "Use the bridge as the main proof and mix as the context.",
+    moduleBinding: null,
+    chartSpec: {
+      kind: "waterfall",
+      categories: ["Start", "Volume", "Cost", "End"],
+      series: [{ name: "Bridge", values: [0.4, 0.8, -0.3, 0.9] }],
+      unit: "$bn",
+      title: "Operating income bridge",
+      insight: "Volume more than offsets cost pressure.",
+      confidence: 0.82,
+      fallbackMode: "annotation",
+      sourceEvidenceIds: ["bridge"],
+      composite: "annotation-rail",
+      chartPreset: "margin-bridge",
+      density: "hero",
+    },
+    secondaryChartSpec: {
+      kind: "stacked",
+      categories: ["Q1", "Q2"],
+      series: [
+        { name: "Automotive", values: [16.2, 16.7] },
+        { name: "Services", values: [3.7, 3.9] },
+      ],
+      unit: "$bn",
+      title: "Revenue mix",
+      insight: "Services expands its contribution.",
+      confidence: 0.8,
+      fallbackMode: "metric-strip",
+      sourceEvidenceIds: ["mix"],
+      composite: "annotation-rail",
+      chartPreset: "segment-mix",
+      density: "sidecar",
+    },
+    diagramSpec: null,
+    fallbackReason: null,
+  };
+}
+
+test("composeDeterministicPageSection renders two editable consulting chart modules", () => {
+  const html = composeDeterministicPageSection(
+    buildRecipeWithTwoCharts(),
+    getDeckStyleProfile("general-consulting"),
+  );
+
+  assert.equal((html.match(/data-html-chart-spec="/g) ?? []).length, 2);
+  assert.match(html, /data-html-composition-preset="hero-sidecar"/);
+  assert.match(html, /data-chart-exhibit-preset="margin-bridge"/);
+  assert.match(html, /data-chart-exhibit-preset="segment-mix"/);
+  assert.match(html, /data-chart-density="sidecar"/);
+});
 
 test("extractHtmlDocument keeps the full HTML document when surrounded by extra text", () => {
   const html = buildSinglePageHtml("<h1>Revenue moat</h1>");

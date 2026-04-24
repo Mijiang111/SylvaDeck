@@ -120,6 +120,7 @@ domParserTest("explicit export charts are preserved as editable chart modules", 
   assert.equal(chartNode?.atomizationRole, "leaf");
   assert.equal(chartNode?.selectionPriority, "primary");
   assert.equal(chartNode?.chartSpec?.kind, "bar");
+  assert.equal(chartNode?.chartSpec?.presentation?.version, 2);
   assert.equal(chartNode?.chartSpec?.series.length, 1);
   assert.equal(page.nodes.some((node) => node.sourceTag === "svg"), false);
 });

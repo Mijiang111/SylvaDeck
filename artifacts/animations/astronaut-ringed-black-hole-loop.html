@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Astronaut Loop</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background:
+          radial-gradient(circle at 50% 45%, rgba(57, 76, 118, 0.16), transparent 36%),
+          radial-gradient(circle at 78% 20%, rgba(177, 130, 248, 0.1), transparent 26%),
+          linear-gradient(180deg, #03050d 0%, #070a15 52%, #04050a 100%);
+        font-family: "SF Pro Display", "Inter", sans-serif;
+      }
+
+      body::after {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        background:
+          radial-gradient(circle at center, transparent 56%, rgba(0, 0, 0, 0.36) 100%),
+          repeating-linear-gradient(
+            90deg,
+            rgba(255, 255, 255, 0.018) 0 1px,
+            transparent 1px 4px
+          ),
+          repeating-linear-gradient(
+            180deg,
+            rgba(255, 255, 255, 0.012) 0 1px,
+            transparent 1px 4px
+          );
+        mix-blend-mode: screen;
+        opacity: 0.18;
+      }
+
+      canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="scene" aria-label="Looping astronaut animation"></canvas>
+    <script>
+      const canvas = document.getElementById("scene");
+      const ctx = canvas.getContext("2d");
+
+      const DPR = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+      const LOOP_SECONDS = 12;
+      const LOOP_MS = LOOP_SECONDS * 1000;
+      const STAR_COUNT = 220;
+      const DUST_COUNT = 28;
+
+      const state = {
+        width: 0,
+        height: 0,
+        stars: [],
+        dust: [],
+        craterSeeds: [],
+      };
+
+      function rand(min, max) {
+        return min + Math.random() * (max - min);
+      }
+
+      function resize() {
+        state.width = window.innerWidth;
+        state.height = window.innerHeight;
+        canvas.width = Math.round(state.width * DPR);
+        canvas.height = Math.round(state.height * DPR);
+        ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+        seedScene();
+      }
+
+      function seedScene() {
+        state.stars = Array.from({ length: STAR_COUNT }, () => ({
+          x: Math.random(),
+          y: Math.random() * 0.75,
+          radius: rand(0.35, 1.85),
+          alpha: rand(0.18, 0.92),
+          twinkle: rand(0.4, 1.5),
+          hue: rand(205, 285),
+        }));
+
+        state.dust = Array.from({ length: DUST_COUNT }, (_, index) => ({
+          phase: rand(0, Math.PI * 2),
+          lift: rand(4, 18),
+          size: rand(0.8, 2.8),
+          speed: rand(0.8, 1.35),
+          offset: index / DUST_COUNT,
+        }));
+
+        state.craterSeeds = Array.from({ length: 15 }, (_, index) => ({
+          x: index / 14,
+          width: rand(24, 120),
+          depth: rand(8, 22),
+        }));
+      }
+
+      function pathTerrain(yBase, amplitude, frequency, offset, roughness) {
+        const points = [];
+        for (let x = -120; x <= state.width + 120; x += 18) {
+          const nx = (x + offset) / state.width;
+          const y =
+            yBase +
+            Math.sin(nx * frequency * Math.PI * 2) * amplitude +
+            Math.sin(nx * (frequency * 0.47) * Math.PI * 2 + 1.7) * amplitude * 0.55 +
+            Math.sin(nx * (frequency * 1.91) * Math.PI * 2 + 0.65) * roughness;
+          points.push({ x, y });
+        }
+        return points;
+      }
+
+      function drawTerrainLayer(points, fillTop, fillBottom, ridgeColor, shadowAlpha) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y);
+        for (let index = 1; index < points.length; index += 1) {
+          ctx.lineTo(points[index].x, points[index].y);
+        }
+        ctx.lineTo(points[points.length - 1].x, state.height + 80);
+        ctx.lineTo(points[0].x, state.height + 80);
+        ctx.closePath();
+
+        const gradient = ctx.createLinearGradient(0, points[0].y - 40, 0, state.height);
+        gradient.addColorStop(0, fillTop);
+        gradient.addColorStop(1, fillBottom);
+        ctx.fillStyle = gradient;
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y);
+        for (let index = 1; index < points.length; index += 1) {
+          ctx.lineTo(points[index].x, points[index].y);
+        }
+        ctx.strokeStyle = ridgeColor;
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+
+        ctx.globalAlpha = shadowAlpha;
+        for (const crater of state.craterSeeds) {
+          const craterX = crater.x * state.width;
+          const craterY = sampleTerrain(points, craterX) + crater.depth * 0.45;
+          ctx.beginPath();
+          ctx.ellipse(craterX, craterY, crater.width * 0.5, crater.depth, 0, 0, Math.PI * 2);
+          ctx.fillStyle = "rgba(18, 20, 27, 0.18)";
+          ctx.fill();
+          ctx.beginPath();
+          ctx.ellipse(
+            craterX - crater.width * 0.06,
+            craterY - crater.depth * 0.18,
+            crater.width * 0.44,
+            crater.depth * 0.72,
+            0,
+            0,
+            Math.PI * 2,
+          );
+          ctx.strokeStyle = "rgba(211, 218, 230, 0.08)";
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      function sampleTerrain(points, targetX) {
+        for (let index = 1; index < points.length; index += 1) {
+          const left = points[index - 1];
+          const right = points[index];
+          if (targetX >= left.x && targetX <= right.x) {
+            const t = (targetX - left.x) / (right.x - left.x);
+            return left.y + (right.y - left.y) * t;
+          }
+        }
+        return points[points.length - 1]?.y ?? state.height * 0.8;
+      }
+
+      function drawStars(loopT) {
+        for (const star of state.stars) {
+          const x = star.x * state.width;
+          const y = star.y * state.height;
+          const alpha = star.alpha * (0.7 + Math.sin(loopT * Math.PI * 2 * star.twinkle + star.x * 12) * 0.22);
+          ctx.beginPath();
+          ctx.arc(x, y, star.radius, 0, Math.PI * 2);
+          ctx.fillStyle = `hsla(${star.hue}, 65%, 84%, ${Math.max(0.08, alpha)})`;
+          ctx.fill();
+        }
+      }
+
+      function drawNebula() {
+        const clusters = [
+          [state.width * 0.22, state.height * 0.2, state.width * 0.18, "rgba(104, 92, 173, 0.08)"],
+          [state.width * 0.58, state.height * 0.28, state.width * 0.23, "rgba(71, 131, 201, 0.07)"],
+          [state.width * 0.84, state.height * 0.16, state.width * 0.16, "rgba(188, 118, 238, 0.06)"],
+        ];
+
+        for (const [x, y, radius, color] of clusters) {
+          const gradient = ctx.createRadialGradient(x, y, 0, x, y, radius);
+          gradient.addColorStop(0, color);
+          gradient.addColorStop(0.45, color.replace(/0\.\d+\)/, "0.025)"));
+          gradient.addColorStop(1, "rgba(0,0,0,0)");
+          ctx.fillStyle = gradient;
+          ctx.beginPath();
+          ctx.arc(x, y, radius, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      function drawBlackHole(loopT) {
+        const x = state.width * 0.76;
+        const y = state.height * 0.24;
+        const coreR = Math.min(state.width, state.height) * 0.085;
+        const ringR = coreR * 1.85;
+
+        const lensGlow = ctx.createRadialGradient(x, y, coreR * 0.65, x, y, ringR * 1.8);
+        lensGlow.addColorStop(0, "rgba(72, 64, 110, 0.0)");
+        lensGlow.addColorStop(0.32, "rgba(102, 84, 190, 0.12)");
+        lensGlow.addColorStop(0.5, "rgba(103, 150, 255, 0.08)");
+        lensGlow.addColorStop(1, "rgba(0, 0, 0, 0)");
+        ctx.fillStyle = lensGlow;
+        ctx.beginPath();
+        ctx.arc(x, y, ringR * 1.8, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(loopT * Math.PI * 2 * 0.08);
+        for (let i = 0; i < 6; i += 1) {
+          ctx.rotate(Math.PI / 3);
+          const streakGradient = ctx.createLinearGradient(-ringR, 0, ringR, 0);
+          streakGradient.addColorStop(0, "rgba(0,0,0,0)");
+          streakGradient.addColorStop(0.42, "rgba(157, 122, 255, 0.08)");
+          streakGradient.addColorStop(0.58, "rgba(255, 202, 154, 0.14)");
+          streakGradient.addColorStop(1, "rgba(0,0,0,0)");
+          ctx.fillStyle = streakGradient;
+          ctx.fillRect(-ringR * 1.6, -1.2, ringR * 3.2, 2.4);
+        }
+        ctx.restore();
+
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(-0.42 + loopT * Math.PI * 2 * 0.045);
+        ctx.scale(1.3, 0.34);
+        const ringGradient = ctx.createLinearGradient(-ringR, 0, ringR, 0);
+        ringGradient.addColorStop(0, "rgba(120, 78, 240, 0)");
+        ringGradient.addColorStop(0.14, "rgba(123, 84, 255, 0.52)");
+        ringGradient.addColorStop(0.34, "rgba(109, 157, 255, 0.62)");
+        ringGradient.addColorStop(0.52, "rgba(255, 214, 166, 0.95)");
+        ringGradient.addColorStop(0.72, "rgba(120, 157, 255, 0.58)");
+        ringGradient.addColorStop(0.9, "rgba(98, 82, 232, 0.38)");
+        ringGradient.addColorStop(1, "rgba(120, 78, 240, 0)");
+        ctx.strokeStyle = ringGradient;
+        ctx.lineWidth = coreR * 0.26;
+        ctx.beginPath();
+        ctx.arc(0, 0, ringR, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+
+        const coreGradient = ctx.createRadialGradient(x, y, 0, x, y, coreR);
+        coreGradient.addColorStop(0, "rgba(0, 0, 0, 1)");
+        coreGradient.addColorStop(0.72, "rgba(2, 2, 8, 0.98)");
+        coreGradient.addColorStop(1, "rgba(10, 10, 18, 0.4)");
+        ctx.fillStyle = coreGradient;
+        ctx.beginPath();
+        ctx.arc(x, y, coreR, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      function drawAstronaut(loopT, groundY) {
+        const walk = Math.sin(loopT * Math.PI * 2);
+        const sway = Math.sin(loopT * Math.PI * 4) * 1.8;
+        const x = state.width * 0.48;
+        const y = groundY - 6;
+        const scale = Math.min(state.width, state.height) / 980;
+
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.scale(scale, scale);
+
+        ctx.translate(0, Math.sin(loopT * Math.PI * 2) * -2.5);
+        ctx.rotate(Math.sin(loopT * Math.PI * 2) * 0.018);
+
+        ctx.strokeStyle = "rgba(194, 205, 218, 0.92)";
+        ctx.fillStyle = "rgba(151, 162, 180, 0.95)";
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+
+        ctx.save();
+        ctx.translate(0, -64);
+        const helmetGlow = ctx.createRadialGradient(-8, -6, 2, 0, 0, 22);
+        helmetGlow.addColorStop(0, "rgba(188, 220, 255, 0.82)");
+        helmetGlow.addColorStop(0.44, "rgba(88, 124, 180, 0.34)");
+        helmetGlow.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = helmetGlow;
+        ctx.beginPath();
+        ctx.arc(0, 0, 22, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "rgba(146, 158, 177, 0.96)";
+        ctx.beginPath();
+        ctx.arc(0, 0, 16, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "rgba(24, 33, 52, 0.9)";
+        ctx.beginPath();
+        ctx.arc(3, -1, 10, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+
+        ctx.fillStyle = "rgba(153, 164, 183, 0.96)";
+        ctx.fillRect(-10, -58, 20, 38);
+        ctx.fillRect(9, -54, 12, 24);
+        ctx.strokeStyle = "rgba(225, 233, 244, 0.56)";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(-10, -58, 20, 38);
+
+        ctx.strokeStyle = "rgba(176, 188, 205, 0.96)";
+        ctx.lineWidth = 6;
+
+        ctx.beginPath();
+        ctx.moveTo(-6, -48);
+        ctx.lineTo(-18, -31 + walk * 3);
+        ctx.lineTo(-16, -10 + walk * 2);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(6, -48);
+        ctx.lineTo(18, -29 - walk * 3);
+        ctx.lineTo(16, -11 - walk * 2);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(-5, -20);
+        ctx.lineTo(-10, 10 + walk * 10);
+        ctx.lineTo(-3, 36);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(5, -20);
+        ctx.lineTo(10, 10 - walk * 10);
+        ctx.lineTo(3, 36);
+        ctx.stroke();
+
+        ctx.strokeStyle = "rgba(214, 222, 233, 0.98)";
+        ctx.lineWidth = 8;
+        ctx.beginPath();
+        ctx.moveTo(-5, 35);
+        ctx.lineTo(-12, 35 + sway * 0.2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(5, 35);
+        ctx.lineTo(12, 35 - sway * 0.2);
+        ctx.stroke();
+
+        ctx.restore();
+      }
+
+      function drawDust(loopT, x, y) {
+        ctx.save();
+        for (const mote of state.dust) {
+          const cycle = (loopT + mote.offset) % 1;
+          const dx = x - 30 + cycle * 42;
+          const dy = y - Math.sin(cycle * Math.PI) * mote.lift - 4;
+          const alpha = Math.sin(cycle * Math.PI) * 0.22;
+          ctx.beginPath();
+          ctx.arc(dx, dy, mote.size, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(214, 218, 223, ${Math.max(0, alpha)})`;
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+
+      function render(time) {
+        const loopT = ((time % LOOP_MS) / LOOP_MS + 1) % 1;
+        ctx.clearRect(0, 0, state.width, state.height);
+
+        drawNebula();
+        drawStars(loopT);
+        drawBlackHole(loopT);
+
+        const farTerrain = pathTerrain(
+          state.height * 0.69,
+          state.height * 0.028,
+          1.2,
+          -loopT * 160,
+          state.height * 0.008,
+        );
+        const midTerrain = pathTerrain(
+          state.height * 0.76,
+          state.height * 0.033,
+          1.75,
+          -loopT * 260,
+          state.height * 0.012,
+        );
+        const frontTerrain = pathTerrain(
+          state.height * 0.83,
+          state.height * 0.038,
+          2.15,
+          -loopT * 360,
+          state.height * 0.018,
+        );
+
+        drawTerrainLayer(
+          farTerrain,
+          "rgba(84, 88, 101, 0.68)",
+          "rgba(42, 45, 53, 0.92)",
+          "rgba(186, 196, 214, 0.12)",
+          0.32,
+        );
+        drawTerrainLayer(
+          midTerrain,
+          "rgba(113, 118, 129, 0.76)",
+          "rgba(53, 56, 66, 0.98)",
+          "rgba(198, 207, 219, 0.18)",
+          0.4,
+        );
+        drawTerrainLayer(
+          frontTerrain,
+          "rgba(133, 138, 146, 0.96)",
+          "rgba(65, 68, 77, 1)",
+          "rgba(226, 232, 240, 0.22)",
+          0.46,
+        );
+
+        const astronautGroundY = sampleTerrain(frontTerrain, state.width * 0.48) + 2;
+        drawDust(loopT, state.width * 0.48, astronautGroundY);
+        drawAstronaut(loopT, astronautGroundY);
+
+        const horizonGlow = ctx.createLinearGradient(0, state.height * 0.55, 0, state.height);
+        horizonGlow.addColorStop(0, "rgba(104, 111, 146, 0)");
+        horizonGlow.addColorStop(0.65, "rgba(38, 40, 50, 0)");
+        horizonGlow.addColorStop(1, "rgba(0, 0, 0, 0.18)");
+        ctx.fillStyle = horizonGlow;
+        ctx.fillRect(0, state.height * 0.55, state.width, state.height * 0.45);
+
+        requestAnimationFrame(render);
+      }
+
+      window.addEventListener("resize", resize);
+      resize();
+      requestAnimationFrame(render);
+    </script>
+  </body>
+</html>

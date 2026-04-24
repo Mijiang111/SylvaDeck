@@ -316,6 +316,15 @@ export type EvidenceGraph = {
 };
 
 export type ChartFallbackMode = "metric-strip" | "comparison" | "annotation";
+export type ChartExhibitPreset =
+  | "auto"
+  | "headline-bars"
+  | "growth-line"
+  | "margin-bridge"
+  | "segment-mix"
+  | "combo-trend-bars";
+export type ChartDensity = "hero" | "peer" | "sidecar";
+export type PageCompositionPreset = "single-exhibit" | "hero-sidecar" | "two-panel-exhibit";
 
 export type ChartSpec = {
   kind: ModuleChartKind;
@@ -331,6 +340,8 @@ export type ChartSpec = {
   confidence: number;
   fallbackMode: ChartFallbackMode;
   sourceEvidenceIds: string[];
+  chartPreset?: ChartExhibitPreset;
+  density?: ChartDensity;
 };
 
 export type CompositeChartSpec = ChartSpec & {
@@ -463,6 +474,7 @@ export type PageRecipe = {
   pageClass: LongFormPageClass;
   densityBudget: PageDensityBudget;
   compositionHint: string | null;
+  compositionPreset: PageCompositionPreset;
   layout: "hero-proof" | "comparison" | "chart-insight" | "sequence" | "decision";
   chartPriority: "none" | "suggested" | "required";
   evidenceIds: string[];
@@ -473,6 +485,7 @@ export type PageRecipe = {
   takeaway: string;
   moduleBinding: PublishedModuleManifest | null;
   chartSpec: CompositeChartSpec | null;
+  secondaryChartSpec: CompositeChartSpec | null;
   diagramSpec: ScientificDiagramSpec | null;
   fallbackReason: string | null;
   freeformLayoutPlan?: FreeformLayoutPlan | null;

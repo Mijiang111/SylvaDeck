@@ -3,6 +3,7 @@ import {
   type DeckStyleProfile,
 } from "../industry-style.js";
 import type {
+  ChartDensity,
   ChartSpec,
   GeneratedReportStyleProfile,
   HtmlAnimationPage,
@@ -1241,67 +1242,188 @@ function renderMetricStrip(items: string[], theme: DeterministicRenderTheme) {
     .join("")}</div>`;
 }
 
+function formatConsultingChartValue(value: number, unit: string) {
+  const normalizedUnit = unit.trim();
+  const absolute = Math.abs(value);
+  const decimals = absolute < 10 && !Number.isInteger(value) ? 1 : 0;
+  const body = absolute.toLocaleString("en-US", {
+    maximumFractionDigits: decimals,
+    minimumFractionDigits: decimals,
+  });
+  const sign = value < 0 ? "-" : "";
+  if (normalizedUnit.startsWith("$")) {
+    const suffix = normalizedUnit.slice(1).trim();
+    return `${sign}$${body}${suffix}`;
+  }
+  if (normalizedUnit.includes("%")) {
+    return `${sign}${body}%`;
+  }
+  return normalizedUnit && normalizedUnit.length <= 5 ? `${sign}${body}${normalizedUnit}` : `${sign}${body}`;
+}
+
+function buildConsultingYProjector(args: {
+  top: number;
+  bottom: number;
+  minValue: number;
+  maxValue: number;
+}) {
+  const range = Math.max(1, args.maxValue - args.minValue);
+  return (value: number) => args.bottom - ((value - args.minValue) / range) * (args.bottom - args.top);
+}
+
+function buildConsultingChartGrid(args: {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+  minValue: number;
+  maxValue: number;
+  unit: string;
+  theme: DeterministicRenderTheme;
+}) {
+  return Array.from({ length: 4 }, (_, index) => {
+    const ratio = index / 3;
+    const y = args.bottom - ratio * (args.bottom - args.top);
+    const value = args.minValue + ratio * (args.maxValue - args.minValue);
+    return `<line x1="${args.left}" y1="${y}" x2="${args.right}" y2="${y}" stroke="${withHexAlpha(
+      args.theme.borderSubtle,
+      index === 0 ? 0.95 : 0.58,
+    )}" stroke-width="${index === 0 ? 1.2 : 0.8}" />
+      <text x="${args.left - 14}" y="${y + 4}" text-anchor="end" font-size="12" fill="${args.theme.textMuted}">${escapeHtml(
+        formatConsultingChartValue(value, args.unit),
+      )}</text>`;
+  }).join("");
+}
+
 function renderBarChartSvg(spec: ChartSpec, theme: DeterministicRenderTheme) {
-  const maxValue = Math.max(...spec.series[0]!.values.map((value) => Math.abs(value)), 1);
-  const barWidth = 96;
-  const gap = 40;
-  const baseline = 300;
-  return `<svg viewBox="0 0 820 360" style="width:100%;height:100%;display:block;" xmlns="http://www.w3.org/2000/svg">
-    <line x1="48" y1="${baseline}" x2="772" y2="${baseline}" stroke="${theme.borderSubtle}" stroke-width="1" />
-    ${spec.categories
-      .map((category, index) => {
-        const value = spec.series[0]!.values[index] ?? 0;
-        const height = Math.max(8, Math.abs(value) / maxValue * 210);
-        const x = 72 + index * (barWidth + gap);
-        const y = value >= 0 ? baseline - height : baseline;
-        const color =
-          spec.series[0]!.color ??
-          (value >= 0 ? theme.chartPalette[0] ?? theme.accentPrimary : theme.chartPalette[2] ?? theme.accentSecondary);
-        return `<g>
-          <rect x="${x}" y="${y}" width="${barWidth}" height="${height}" rx="14" fill="${color}" />
-          <text x="${x + barWidth / 2}" y="${baseline + 28}" text-anchor="middle" font-size="14" fill="${theme.textMuted}">${escapeHtml(
-            category,
+  const values = spec.series[0]?.values ?? [];
+  const width = 1040;
+  const height = 430;
+  const left = 92;
+  const right = width - 38;
+  const top = 46;
+  const bottom = height - 72;
+
+  if (spec.kind === "waterfall") {
+    let running = 0;
+    const steps = spec.categories.map((category, index) => {
+      const rawValue = values[index] ?? 0;
+      const isEndpoint = index === 0 || index === spec.categories.length - 1;
+      const start = isEndpoint ? 0 : running;
+      const end = isEndpoint ? rawValue : running + rawValue;
+      if (!isEndpoint) {
+        running = end;
+      }
+      return { category, rawValue, start, end, isEndpoint, index };
+    });
+    const minValue = Math.min(0, ...steps.flatMap((step) => [step.start, step.end]));
+    const maxValue = Math.max(1, ...steps.flatMap((step) => [step.start, step.end]));
+    const yFor = buildConsultingYProjector({ top, bottom, minValue, maxValue });
+    const slotWidth = (right - left) / Math.max(1, steps.length);
+    const barWidth = Math.min(92, slotWidth * 0.54);
+    const zeroY = yFor(0);
+    return `<svg viewBox="0 0 ${width} ${height}" style="width:100%;height:100%;display:block;" xmlns="http://www.w3.org/2000/svg">
+      ${buildConsultingChartGrid({ left, right, top, bottom, minValue, maxValue, unit: spec.unit, theme })}
+      <line x1="${left}" y1="${zeroY}" x2="${right}" y2="${zeroY}" stroke="${withHexAlpha(theme.textMuted, 0.72)}" stroke-width="1.2" />
+      ${steps.map((step) => {
+        const x = left + step.index * slotWidth + (slotWidth - barWidth) / 2;
+        const y1 = yFor(step.start);
+        const y2 = yFor(step.end);
+        const y = Math.min(y1, y2);
+        const h = Math.max(10, Math.abs(y2 - y1));
+        const color = step.isEndpoint
+          ? theme.textPrimary
+          : step.rawValue >= 0
+            ? theme.chartPalette[0] ?? theme.accentPrimary
+            : theme.chartPalette[2] ?? theme.accentSecondary;
+        const previous = steps[step.index - 1];
+        const connector = previous
+          ? `<line x1="${x - slotWidth + barWidth}" y1="${yFor(previous.end)}" x2="${x}" y2="${yFor(
+              step.start,
+            )}" stroke="${withHexAlpha(theme.textMuted, 0.45)}" stroke-width="1" stroke-dasharray="5 6" />`
+          : "";
+        return `${connector}<g>
+          <rect x="${x}" y="${y}" width="${barWidth}" height="${h}" rx="4" fill="${color}" />
+          <text x="${x + barWidth / 2}" y="${Math.max(top + 14, y - 10)}" text-anchor="middle" font-size="13" font-weight="700" fill="${theme.textPrimary}">${escapeHtml(
+            formatConsultingChartValue(step.rawValue, spec.unit),
           )}</text>
-          <text x="${x + barWidth / 2}" y="${y - 12}" text-anchor="middle" font-size="14" fill="${theme.textPrimary}">${escapeHtml(
-            String(value),
-          )}</text>
+          <text x="${x + barWidth / 2}" y="${bottom + 28}" text-anchor="middle" font-size="12" font-weight="600" fill="${theme.textMuted}">${escapeHtml(step.category)}</text>
         </g>`;
-      })
-      .join("")}
+      }).join("")}
+    </svg>`;
+  }
+
+  const minValue = Math.min(0, ...values);
+  const maxValue = Math.max(1, ...values);
+  const yFor = buildConsultingYProjector({ top, bottom, minValue, maxValue });
+  const slotWidth = (right - left) / Math.max(1, spec.categories.length);
+  const groupWidth = slotWidth * 0.56;
+  const barWidth = Math.max(18, groupWidth / Math.max(1, spec.series.length));
+  const zeroY = yFor(0);
+  const primarySeries = spec.series[0];
+  const highlightIndex = values.reduce(
+    (best, value, index) => (Math.abs(value) > Math.abs(values[best] ?? 0) ? index : best),
+    0,
+  );
+
+  return `<svg viewBox="0 0 ${width} ${height}" style="width:100%;height:100%;display:block;" xmlns="http://www.w3.org/2000/svg">
+    ${buildConsultingChartGrid({ left, right, top, bottom, minValue, maxValue, unit: spec.unit, theme })}
+    <line x1="${left}" y1="${zeroY}" x2="${right}" y2="${zeroY}" stroke="${withHexAlpha(theme.textMuted, 0.72)}" stroke-width="1.2" />
+    ${spec.categories.map((category, categoryIndex) =>
+      spec.series.map((series, seriesIndex) => {
+        const value = series.values[categoryIndex] ?? 0;
+        const x = left + categoryIndex * slotWidth + (slotWidth - groupWidth) / 2 + seriesIndex * barWidth;
+        const y = value >= 0 ? yFor(value) : zeroY;
+        const h = Math.max(4, Math.abs(yFor(value) - zeroY));
+        const isHighlight = series === primarySeries && categoryIndex === highlightIndex;
+        const color =
+          series.color ??
+          (isHighlight
+            ? theme.textPrimary
+            : theme.chartPalette[seriesIndex % Math.max(theme.chartPalette.length, 1)] ?? theme.accentPrimary);
+        return `<g>
+          <rect x="${x}" y="${y}" width="${Math.max(14, barWidth - 8)}" height="${h}" rx="4" fill="${color}" opacity="${isHighlight ? 1 : 0.78}" />
+          <text x="${x + Math.max(14, barWidth - 8) / 2}" y="${value >= 0 ? Math.max(top + 14, y - 10) : y + h + 18}" text-anchor="middle" font-size="12" font-weight="700" fill="${theme.textPrimary}">${escapeHtml(
+            formatConsultingChartValue(value, spec.unit),
+          )}</text>
+          ${seriesIndex === 0 ? `<text x="${left + categoryIndex * slotWidth + slotWidth / 2}" y="${bottom + 28}" text-anchor="middle" font-size="12" font-weight="600" fill="${theme.textMuted}">${escapeHtml(category)}</text>` : ""}
+        </g>`;
+      }).join("")
+    ).join("")}
   </svg>`;
 }
 
 function renderLineChartSvg(spec: ChartSpec, theme: DeterministicRenderTheme) {
-  const values = spec.series[0]!.values;
+  const values = spec.series[0]?.values ?? [];
+  const width = 1040;
+  const height = 430;
+  const left = 92;
+  const right = width - 42;
+  const top = 46;
+  const bottom = height - 72;
   const maxValue = Math.max(...values, 1);
   const minValue = Math.min(...values, 0);
-  const range = Math.max(1, maxValue - minValue);
-  const stepX = values.length > 1 ? 640 / (values.length - 1) : 0;
-  const points = values.map((value, index) => {
-    const x = 80 + index * stepX;
-    const y = 280 - ((value - minValue) / range) * 180;
-    return { x, y, value };
-  });
+  const yFor = buildConsultingYProjector({ top, bottom, minValue, maxValue });
+  const stepX = values.length > 1 ? (right - left) / (values.length - 1) : 0;
+  const points = values.map((value, index) => ({
+    x: values.length > 1 ? left + index * stepX : (left + right) / 2,
+    y: yFor(value),
+    value,
+    label: spec.categories[index] ?? "",
+  }));
+  const color = spec.series[0]?.color ?? theme.chartPalette[0] ?? theme.accentPrimary;
+  const path = points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
+  const last = points.at(-1);
 
-  return `<svg viewBox="0 0 820 360" style="width:100%;height:100%;display:block;" xmlns="http://www.w3.org/2000/svg">
-    <line x1="56" y1="292" x2="772" y2="292" stroke="${theme.borderSubtle}" stroke-width="1" />
-    <polyline fill="none" stroke="${spec.series[0]!.color ?? theme.chartPalette[0] ?? theme.accentPrimary}" stroke-width="4" points="${points
-      .map((point) => `${point.x},${point.y}`)
-      .join(" ")}" />
-    ${points
-      .map(
-        (point, index) =>
-          `<g>
-            <circle cx="${point.x}" cy="${point.y}" r="7" fill="${spec.series[0]!.color ?? theme.chartPalette[0] ?? theme.accentPrimary}" />
-            <text x="${point.x}" y="320" text-anchor="middle" font-size="14" fill="${theme.textMuted}">${escapeHtml(
-              spec.categories[index] ?? "",
-            )}</text>
-            <text x="${point.x}" y="${point.y - 14}" text-anchor="middle" font-size="14" fill="${theme.textPrimary}">${escapeHtml(
-              String(point.value),
-            )}</text>
-          </g>`,
-      )
-      .join("")}
+  return `<svg viewBox="0 0 ${width} ${height}" style="width:100%;height:100%;display:block;" xmlns="http://www.w3.org/2000/svg">
+    ${buildConsultingChartGrid({ left, right, top, bottom, minValue, maxValue, unit: spec.unit, theme })}
+    <path d="${path} L ${last?.x ?? left} ${bottom} L ${points[0]?.x ?? left} ${bottom} Z" fill="${withHexAlpha(color, 0.10)}" />
+    <path d="${path}" fill="none" stroke="${color}" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" />
+    ${points.map((point, index) => `<g>
+      <circle cx="${point.x}" cy="${point.y}" r="${index === points.length - 1 ? 6.5 : 4.5}" fill="${index === points.length - 1 ? theme.textPrimary : color}" stroke="#fff" stroke-width="2" />
+      <text x="${point.x}" y="${bottom + 28}" text-anchor="middle" font-size="12" font-weight="600" fill="${theme.textMuted}">${escapeHtml(point.label)}</text>
+      ${index === points.length - 1 ? `<text x="${point.x}" y="${Math.max(top + 14, point.y - 14)}" text-anchor="middle" font-size="13" font-weight="700" fill="${theme.textPrimary}">${escapeHtml(formatConsultingChartValue(point.value, spec.unit))}</text>` : ""}
+    </g>`).join("")}
   </svg>`;
 }
 
@@ -1313,29 +1435,34 @@ function renderStackedChartSvg(spec: ChartSpec, theme: DeterministicRenderTheme)
   const colors = theme.chartPalette.length
     ? theme.chartPalette
     : [theme.accentPrimary, theme.accentSecondary, theme.surfaceSecondary, theme.textMuted];
+  const width = 1040;
+  const height = 430;
+  const left = 92;
+  const right = width - 38;
+  const top = 46;
+  const bottom = height - 72;
+  const yFor = buildConsultingYProjector({ top, bottom, minValue: 0, maxValue: maxTotal });
+  const slotWidth = (right - left) / Math.max(1, spec.categories.length);
+  const barWidth = Math.min(96, slotWidth * 0.52);
 
-  return `<svg viewBox="0 0 820 360" style="width:100%;height:100%;display:block;" xmlns="http://www.w3.org/2000/svg">
-    <line x1="48" y1="300" x2="772" y2="300" stroke="${theme.borderSubtle}" stroke-width="1" />
-    ${spec.categories
-      .map((category, categoryIndex) => {
-        const x = 86 + categoryIndex * 180;
-        let cursorY = 300;
-        const segments = spec.series
-          .map((series, seriesIndex) => {
-            const value = series.values[categoryIndex] ?? 0;
-            const height = Math.max(10, (value / maxTotal) * 220);
-            cursorY -= height;
-            return `<rect x="${x}" y="${cursorY}" width="92" height="${height}" rx="12" fill="${series.color ?? colors[seriesIndex % colors.length]}" />`;
-          })
-          .join("");
-
-        return `<g>${segments}<text x="${x + 46}" y="328" text-anchor="middle" font-size="14" fill="${theme.textMuted}">${escapeHtml(
-          category,
-        )}</text><text x="${x + 46}" y="${cursorY - 12}" text-anchor="middle" font-size="14" fill="${theme.textPrimary}">${escapeHtml(
-          String(totals[categoryIndex]),
-        )}</text></g>`;
-      })
-      .join("")}
+  return `<svg viewBox="0 0 ${width} ${height}" style="width:100%;height:100%;display:block;" xmlns="http://www.w3.org/2000/svg">
+    ${buildConsultingChartGrid({ left, right, top, bottom, minValue: 0, maxValue: maxTotal, unit: spec.unit, theme })}
+    ${spec.categories.map((category, categoryIndex) => {
+      const x = left + categoryIndex * slotWidth + (slotWidth - barWidth) / 2;
+      let cursorY = bottom;
+      let cumulative = 0;
+      const segments = spec.series.map((series, seriesIndex) => {
+        const value = Math.max(0, series.values[categoryIndex] ?? 0);
+        cumulative += value;
+        const nextY = yFor(cumulative);
+        const segmentHeight = Math.max(4, cursorY - nextY);
+        cursorY = nextY;
+        return `<rect x="${x}" y="${nextY}" width="${barWidth}" height="${segmentHeight}" rx="4" fill="${series.color ?? colors[seriesIndex % colors.length]}" opacity="${seriesIndex === 0 ? 0.95 : 0.78}" />`;
+      }).join("");
+      return `<g>${segments}<text x="${x + barWidth / 2}" y="${Math.max(top + 14, cursorY - 10)}" text-anchor="middle" font-size="13" font-weight="700" fill="${theme.textPrimary}">${escapeHtml(
+        formatConsultingChartValue(totals[categoryIndex] ?? 0, spec.unit),
+      )}</text><text x="${x + barWidth / 2}" y="${bottom + 28}" text-anchor="middle" font-size="12" font-weight="600" fill="${theme.textMuted}">${escapeHtml(category)}</text></g>`;
+    }).join("")}
   </svg>`;
 }
 
@@ -1349,12 +1476,162 @@ function renderChartSvg(spec: ChartSpec, theme: DeterministicRenderTheme) {
   return renderBarChartSvg(spec, theme);
 }
 
-function renderChartPanel(recipe: PageRecipe, theme: DeterministicRenderTheme) {
-  if (!recipe.chartSpec) {
+function inferHtmlChartExhibitPreset(spec: ChartSpec) {
+  if (spec.chartPreset && spec.chartPreset !== "auto") {
+    return spec.chartPreset;
+  }
+  if (spec.kind === "waterfall") {
+    return "margin-bridge";
+  }
+  if (spec.kind === "stacked") {
+    return "segment-mix";
+  }
+  if (spec.kind === "line") {
+    return "growth-line";
+  }
+  return "headline-bars";
+}
+
+function inferHtmlChartValueFormat(unit: string) {
+  const normalized = unit.trim();
+  if (!normalized) {
+    return { decimals: 0, scale: "raw" };
+  }
+  if (normalized.includes("%")) {
+    return { suffix: "%", decimals: 0, scale: "raw" };
+  }
+  const currency = /^([$€£¥])\s*(.*)$/.exec(normalized);
+  if (currency) {
+    return {
+      prefix: currency[1],
+      suffix: currency[2]?.trim() || undefined,
+      decimals: currency[2]?.trim() ? 1 : 0,
+      scale: "raw",
+    };
+  }
+  return {
+    suffix: normalized.length <= 5 ? normalized : ` ${normalized}`,
+    decimals: normalized.length <= 5 ? 0 : 1,
+    scale: "raw",
+  };
+}
+
+function buildHtmlChartPayload(spec: ChartSpec, theme: DeterministicRenderTheme) {
+  const series = spec.series.map((series, index) => ({
+    id: `series-${index + 1}`,
+    label: series.name,
+    values: series.values,
+    color: series.color ?? theme.chartPalette[index % Math.max(theme.chartPalette.length, 1)] ?? theme.accentPrimary,
+    role: spec.kind === "line" ? "line" : "bar",
+    axis: "primary",
+  }));
+  const firstSeries = series[0];
+  const bestIndex = firstSeries?.values.length
+    ? firstSeries.values.reduce(
+        (best, value, index) => (Math.abs(value) > Math.abs(firstSeries.values[best] ?? 0) ? index : best),
+        0,
+      )
+    : 0;
+
+  return {
+    kind: spec.kind,
+    title: spec.title,
+    subtitle: "",
+    insight: spec.insight,
+    unit: spec.unit,
+    categories: spec.categories,
+    series,
+    presentation: {
+      version: 2,
+      preset: "investor-editorial",
+      exhibitPreset: inferHtmlChartExhibitPreset(spec),
+      density: spec.density ?? "hero",
+      valueFormat: inferHtmlChartValueFormat(spec.unit),
+      emphasis: firstSeries
+        ? [
+            {
+              id: spec.kind === "line" ? "emphasis-latest-point" : "emphasis-largest-value",
+              target: {
+                category: spec.kind === "line" ? spec.categories.at(-1) : spec.categories[bestIndex],
+                seriesId: firstSeries.id,
+                pointIndex: spec.kind === "line" ? Math.max(0, spec.categories.length - 1) : bestIndex,
+              },
+              role: "primary",
+            },
+          ]
+        : [],
+      annotations: spec.insight
+        ? [
+            {
+              id: "chart-insight",
+              target: {
+                category: spec.kind === "line" ? spec.categories.at(-1) : spec.categories[bestIndex],
+                seriesId: firstSeries?.id,
+                pointIndex: spec.kind === "line" ? Math.max(0, spec.categories.length - 1) : bestIndex,
+              },
+              text: spec.insight,
+              placement: "auto",
+            },
+          ]
+        : [],
+    },
+  };
+}
+
+function getChartPanelDensitySettings(density: ChartDensity = "hero") {
+  if (density === "sidecar") {
+    return {
+      padding: "18px 18px 14px",
+      minHeight: 340,
+      gap: 10,
+      headerGap: 14,
+      titleSize: 20,
+      insightSize: 12,
+      unitSize: 15,
+      chartMinHeight: 230,
+      footerSize: 10,
+    };
+  }
+  if (density === "peer") {
+    return {
+      padding: "20px 20px 15px",
+      minHeight: 392,
+      gap: 12,
+      headerGap: 18,
+      titleSize: 23,
+      insightSize: 13,
+      unitSize: 16,
+      chartMinHeight: 270,
+      footerSize: 10,
+    };
+  }
+  return {
+    padding: "24px 26px 18px",
+    minHeight: 456,
+    gap: 14,
+    headerGap: 22,
+    titleSize: 28,
+    insightSize: 14,
+    unitSize: 18,
+    chartMinHeight: 318,
+    footerSize: 11,
+  };
+}
+
+function renderChartPanelForSpec(args: {
+  chartSpec: ChartSpec;
+  theme: DeterministicRenderTheme;
+  density?: ChartDensity;
+}) {
+  const chartSpec = args.chartSpec;
+  const theme = args.theme;
+  const density = args.density ?? chartSpec.density ?? "hero";
+  const densitySettings = getChartPanelDensitySettings(density);
+  if (!chartSpec) {
     return "";
   }
 
-  const legend = recipe.chartSpec.series
+  const legend = chartSpec.series
     .map(
       (series, index) =>
         `<div style="display:flex;align-items:center;gap:10px;"><span style="width:12px;height:12px;border-radius:999px;background:${series.color ?? theme.chartPalette[index % Math.max(theme.chartPalette.length, 1)] ?? theme.accentPrimary};display:inline-block;"></span><span>${escapeHtml(
@@ -1362,31 +1639,61 @@ function renderChartPanel(recipe: PageRecipe, theme: DeterministicRenderTheme) {
         )}</span></div>`,
     )
     .join("");
+  const htmlChartPayload = buildHtmlChartPayload({
+    ...chartSpec,
+    density,
+  }, theme);
+  const exhibitPreset = htmlChartPayload.presentation.exhibitPreset ?? "auto";
 
-  return `<div data-html-visual-kind="chart-frame" data-export-chart="${escapeHtml(
+  return `<div class="html-chart-module" data-html-module-kind="chart" data-html-module-label="Chart" data-html-visual-kind="chart-frame" data-html-fit-role="content" data-chart-presentation-version="2" data-chart-exhibit-preset="${escapeHtml(exhibitPreset)}" data-chart-density="${escapeHtml(density)}" data-html-chart-spec="${escapeHtml(
+    JSON.stringify(htmlChartPayload),
+  )}" data-export-chart="${escapeHtml(
     JSON.stringify({
-      kind: recipe.chartSpec.kind,
-      categories: recipe.chartSpec.categories,
-      series: recipe.chartSpec.series,
-      title: recipe.chartSpec.title,
-      unit: recipe.chartSpec.unit,
+      kind: chartSpec.kind,
+      categories: chartSpec.categories,
+      series: htmlChartPayload.series.map((series) => ({
+        name: series.label,
+        label: series.label,
+        values: series.values,
+        color: series.color,
+        role: series.role,
+        axis: series.axis,
+      })),
+      title: chartSpec.title,
+      subtitle: "",
+      insight: chartSpec.insight,
+      unit: chartSpec.unit,
     }),
   )}" style="border:1px solid ${withHexAlpha(
     theme.borderSubtle,
-    0.9,
-  )};border-radius:30px;background:${theme.surfacePrimary};padding:26px 28px;min-height:430px;display:flex;flex-direction:column;gap:18px;">
-    <div>
-      <div style="font-size:13px;letter-spacing:0.18em;text-transform:uppercase;color:${theme.accentSecondary};margin-bottom:10px;">Primary chart</div>
-      <h3 style="margin:0;font-size:34px;line-height:1.12;color:${theme.textPrimary};">${escapeHtml(
-        recipe.chartSpec.title,
+    0.95,
+  )};border-radius:8px;background:${theme.surfacePrimary};padding:${densitySettings.padding};min-height:${densitySettings.minHeight}px;display:flex;flex-direction:column;gap:${densitySettings.gap}px;box-shadow:none;">
+    <div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:${densitySettings.headerGap}px;align-items:start;border-bottom:1px solid ${withHexAlpha(theme.borderSubtle, 0.82)};padding-bottom:14px;">
+      <div>
+        <div style="font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:${theme.accentSecondary};font-weight:800;margin-bottom:8px;">Exhibit</div>
+        <h3 style="margin:0;font-size:${densitySettings.titleSize}px;line-height:1.12;color:${theme.textPrimary};font-family:Georgia, 'Times New Roman', serif;">${escapeHtml(
+        chartSpec.title,
       )}</h3>
+        ${chartSpec.insight ? `<p style="margin:8px 0 0 0;font-size:${densitySettings.insightSize}px;line-height:1.42;color:${theme.textMuted};max-width:760px;">${escapeHtml(chartSpec.insight)}</p>` : ""}
+      </div>
+      <div style="font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:${theme.textMuted};font-weight:800;text-align:right;">Unit<br/><span style="font-size:${densitySettings.unitSize}px;letter-spacing:-0.02em;text-transform:none;color:${theme.textPrimary};">${escapeHtml(chartSpec.unit || "value")}</span></div>
     </div>
-    <div style="flex:1;min-height:280px;">${renderChartSvg(recipe.chartSpec, theme)}</div>
-    <div style="display:flex;justify-content:space-between;gap:20px;font-size:15px;color:${theme.textMuted};">
-      <div style="display:flex;gap:18px;flex-wrap:wrap;">${legend}</div>
-      <div>Unit: ${escapeHtml(recipe.chartSpec.unit)}</div>
+    <div style="flex:1;min-height:${densitySettings.chartMinHeight}px;padding:0 2px;">${renderChartSvg(chartSpec, theme)}</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:20px;border-top:1px solid ${withHexAlpha(theme.borderSubtle, 0.7)};padding-top:10px;font-size:${densitySettings.footerSize + 1}px;color:${theme.textMuted};">
+      <div style="display:flex;gap:16px;flex-wrap:wrap;">${legend}</div>
+      <div style="font-size:${densitySettings.footerSize}px;letter-spacing:0.12em;text-transform:uppercase;">Structured chart data</div>
     </div>
   </div>`;
+}
+
+function renderChartPanel(recipe: PageRecipe, theme: DeterministicRenderTheme) {
+  return recipe.chartSpec
+    ? renderChartPanelForSpec({
+        chartSpec: recipe.chartSpec,
+        theme,
+        density: recipe.chartSpec.density ?? "hero",
+      })
+    : "";
 }
 
 function renderHeroProofSection(recipe: PageRecipe, theme: DeterministicRenderTheme) {
@@ -1429,7 +1736,61 @@ function renderHeroProofSection(recipe: PageRecipe, theme: DeterministicRenderTh
   </div>`;
 }
 
+function renderDualChartInsightSection(recipe: PageRecipe, theme: DeterministicRenderTheme) {
+  if (!recipe.chartSpec || !recipe.secondaryChartSpec) {
+    return "";
+  }
+
+  const twoPanel = recipe.compositionPreset === "two-panel-exhibit";
+  if (twoPanel) {
+    return `<div data-page-body data-html-composition-preset="two-panel-exhibit" style="display:flex;flex-direction:column;gap:16px;">
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:22px;align-items:start;">
+        ${renderChartPanelForSpec({
+          chartSpec: recipe.chartSpec,
+          theme,
+          density: "peer",
+        })}
+        ${renderChartPanelForSpec({
+          chartSpec: recipe.secondaryChartSpec,
+          theme,
+          density: "peer",
+        })}
+      </div>
+      <div data-html-visual-kind="annotation" style="border-top:1px solid ${withHexAlpha(theme.borderSubtle, 0.82)};padding-top:12px;font-size:20px;line-height:1.38;color:${theme.textPrimary};">${escapeHtml(
+        recipe.takeaway,
+      )}</div>
+    </div>`;
+  }
+
+  return `<div data-page-body data-html-composition-preset="hero-sidecar" style="display:grid;grid-template-columns:minmax(0,1.55fr) minmax(330px,0.85fr);gap:22px;align-items:start;">
+    <div data-html-layout-key="chart-primary" style="display:flex;flex-direction:column;gap:14px;">
+      ${renderChartPanelForSpec({
+        chartSpec: recipe.chartSpec,
+        theme,
+        density: "hero",
+      })}
+    </div>
+    <aside data-html-layout-key="chart-sidecar" style="display:flex;flex-direction:column;gap:14px;">
+      ${renderChartPanelForSpec({
+        chartSpec: recipe.secondaryChartSpec,
+        theme,
+        density: "sidecar",
+      })}
+      <div data-html-visual-kind="annotation" style="border-top:1px solid ${withHexAlpha(
+        theme.borderSubtle,
+        0.82,
+      )};padding-top:12px;font-size:19px;line-height:1.36;color:${theme.textPrimary};">${escapeHtml(
+        recipe.takeaway,
+      )}</div>
+    </aside>
+  </div>`;
+}
+
 function renderChartInsightSection(recipe: PageRecipe, theme: DeterministicRenderTheme) {
+  if (recipe.chartSpec && recipe.secondaryChartSpec) {
+    return renderDualChartInsightSection(recipe, theme);
+  }
+
   return `<div data-page-body style="display:grid;grid-template-columns:minmax(0,1.35fr) minmax(300px,0.85fr);gap:26px;align-items:start;">
     <div data-html-layout-key="chart-left" style="display:flex;flex-direction:column;gap:18px;">
       ${renderChartPanel(recipe, theme)}

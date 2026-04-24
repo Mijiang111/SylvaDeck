@@ -11,6 +11,8 @@ import {
 } from "./contracts.js";
 import type {
   ChartPageIntent,
+  ChartDensity,
+  ChartExhibitPreset,
   ChartSpec,
   ComparisonSet,
   CompositeChartSpec,
@@ -40,6 +42,7 @@ import type {
   LoadedStudio3dHeroSkill,
   LoadedStudioThinkingModeSkill,
   PageCompositionFingerprint,
+  PageCompositionPreset,
   PageContextBundle,
   PageDensityBudget,
   PageRecipe,
@@ -2702,6 +2705,9 @@ function buildDeckRecipePlanPrompt(args: {
       "Do not combine summary, implications, and next steps into one page.",
       "Use only the supplied evidence ids. Do not invent series or categories.",
       "Only request a chart when the evidence supports it.",
+      "Use chartPreset to choose the exhibit grammar: headline-bars, growth-line, margin-bridge, segment-mix, or combo-trend-bars.",
+      "Use compositionPreset only for chart pages: single-exhibit, hero-sidecar, or two-panel-exhibit.",
+      "Add secondaryChart only when a second evidence set is strong enough; never create more than one secondaryChart.",
       "Prefer moduleHints only from the supplied published template capabilities.",
       "Keep page titles professional, editorial, and mode-appropriate.",
       "Prefer strong content logic first; use compositionHint for tone, and only add layout when it truly helps.",
@@ -2723,7 +2729,7 @@ function buildDeckRecipePlanPrompt(args: {
     outputRules: [
       "First, write 2-4 short plain-English sentences about the deck logic.",
       "Then output one ```json block with this exact shape:",
-      '{ "title": string, "pages": [{ "pageNumber": number, "pageTitle": string, "objective": string, "insight": string, "pageClass"?: "opening-core"|"proof-analysis"|"synthesis-support", "compositionHint"?: string, "layout"?: "hero-proof"|"comparison"|"chart-insight"|"sequence"|"decision", "desiredChartKind": "none"|"bar"|"stacked"|"line"|"waterfall", "composite": "none"|"annotation-rail"|"metric-strip"|"decision-footer", "evidenceIds": string[], "moduleHints": string[] }] }',
+      '{ "title": string, "pages": [{ "pageNumber": number, "pageTitle": string, "objective": string, "insight": string, "pageClass"?: "opening-core"|"proof-analysis"|"synthesis-support", "compositionHint"?: string, "layout"?: "hero-proof"|"comparison"|"chart-insight"|"sequence"|"decision", "desiredChartKind": "none"|"bar"|"stacked"|"line"|"waterfall", "chartPreset"?: "auto"|"headline-bars"|"growth-line"|"margin-bridge"|"segment-mix"|"combo-trend-bars", "compositionPreset"?: "single-exhibit"|"hero-sidecar"|"two-panel-exhibit", "secondaryChart"?: { "desiredChartKind": "bar"|"stacked"|"line"|"waterfall", "chartPreset"?: "auto"|"headline-bars"|"growth-line"|"margin-bridge"|"segment-mix"|"combo-trend-bars", "evidenceIds"?: string[], "role"?: "sidecar"|"peer", "title"?: string, "insight"?: string } | null, "composite": "none"|"annotation-rail"|"metric-strip"|"decision-footer", "evidenceIds": string[], "moduleHints": string[] }] }',
     ],
   });
   const renderedWorkspace = renderStudioAiWorkspace(workspace);
@@ -4267,6 +4273,41 @@ function pickBestModuleManifest(args: {
   return rankModuleManifestsForPage(args)[0]?.manifest ?? null;
 }
 
+function inferChartPreset(kind: ModuleChartKind): ChartExhibitPreset {
+  if (kind === "waterfall") {
+    return "margin-bridge";
+  }
+  if (kind === "stacked") {
+    return "segment-mix";
+  }
+  if (kind === "line") {
+    return "growth-line";
+  }
+  return "headline-bars";
+}
+
+function normalizeChartPreset(value: ChartExhibitPreset | undefined, kind: ModuleChartKind): ChartExhibitPreset {
+  return value && value !== "auto" ? value : inferChartPreset(kind);
+}
+
+function applyChartExhibitHints(
+  spec: ChartSpec,
+  hints: {
+    chartPreset?: ChartExhibitPreset;
+    density: ChartDensity;
+    title?: string | null;
+    insight?: string | null;
+  },
+): ChartSpec {
+  return {
+    ...spec,
+    title: hints.title?.trim() || spec.title,
+    insight: hints.insight?.trim() || spec.insight,
+    chartPreset: normalizeChartPreset(hints.chartPreset, spec.kind),
+    density: hints.density,
+  };
+}
+
 function createBarLikeChartSpec(
   set: ComparisonSet,
   kind: Extract<ModuleChartKind, "bar" | "waterfall">,
@@ -4389,6 +4430,41 @@ function resolveChartSpec(args: {
   }
 
   return null;
+}
+
+function resolveSecondaryChartSpec(args: {
+  page: V2RecipePlanPage;
+  evidenceGraph: EvidenceGraph;
+}) {
+  const secondary = args.page.secondaryChart;
+  if (!secondary) {
+    return null;
+  }
+
+  const secondaryPage = {
+    ...args.page,
+    pageTitle: secondary.title?.trim() || args.page.pageTitle,
+    insight: secondary.insight?.trim() || args.page.insight,
+    desiredChartKind: secondary.desiredChartKind,
+    layout: "chart-insight" as const,
+    evidenceIds: secondary.evidenceIds?.length ? secondary.evidenceIds : args.page.evidenceIds,
+  };
+  const chartSpec = resolveChartSpec({
+    page: secondaryPage,
+    evidenceGraph: args.evidenceGraph,
+    allowFlexibleChart: true,
+  });
+
+  if (!chartSpec) {
+    return null;
+  }
+
+  return applyChartExhibitHints(chartSpec, {
+    chartPreset: secondary.chartPreset,
+    density: secondary.role === "peer" ? "peer" : "sidecar",
+    title: secondary.title,
+    insight: secondary.insight,
+  });
 }
 
 function resolveEvidenceBullets(page: V2RecipePlanPage, evidenceGraph: EvidenceGraph) {
@@ -4530,7 +4606,7 @@ function resolvePageRecipe(args: {
     brief: args.brief,
     page: args.page,
   });
-  const chartSpec =
+  const resolvedPrimaryChartSpec =
     resolveChartSpec({
       page: args.page,
       evidenceGraph: args.evidenceGraph,
@@ -4574,11 +4650,40 @@ function resolvePageRecipe(args: {
             supportBullets: resolveSupportBullets(args.page, args.evidenceGraph),
             evidenceBullets: resolveEvidenceBullets(args.page, args.evidenceGraph),
           },
+      })
+      : null;
+  const resolvedSecondaryChartSpec =
+    !diagramSpec && resolvedPrimaryChartSpec
+      ? resolveSecondaryChartSpec({
+          page: args.page,
+          evidenceGraph: args.evidenceGraph,
         })
       : null;
+  const requestedCompositionPreset = args.page.compositionPreset ?? "single-exhibit";
+  const compositionPreset: PageCompositionPreset = resolvedSecondaryChartSpec
+    ? requestedCompositionPreset === "two-panel-exhibit" || args.page.secondaryChart?.role === "peer"
+      ? "two-panel-exhibit"
+      : "hero-sidecar"
+    : "single-exhibit";
+  const primaryDensity: ChartDensity =
+    resolvedSecondaryChartSpec && compositionPreset === "two-panel-exhibit" ? "peer" : "hero";
+  const chartSpec = resolvedPrimaryChartSpec
+    ? applyChartExhibitHints(resolvedPrimaryChartSpec, {
+        chartPreset: args.page.chartPreset,
+        density: primaryDensity,
+      })
+    : null;
+  const secondaryChartSpec = resolvedSecondaryChartSpec
+    ? ({
+        ...resolvedSecondaryChartSpec,
+        composite: "annotation-rail" as const,
+      } satisfies CompositeChartSpec)
+    : null;
   const effectiveLayout =
     diagramSpec
       ? "hero-proof"
+      : secondaryChartSpec
+        ? "chart-insight"
       : args.page.layout === "chart-insight" && !chartSpec
         ? "comparison"
         : args.page.layout;
@@ -4634,6 +4739,7 @@ function resolvePageRecipe(args: {
       diagramSpec
         ? "Stage one dominant scientific figure in the middle, keep method cues and caption compact, and never let the page fall back into equal-weight cards."
         : compositionHint,
+    compositionPreset,
     layout: effectiveLayout,
     chartPriority: diagramSpec ? "none" : chartPriority,
     evidenceIds: args.page.evidenceIds,
@@ -4662,6 +4768,7 @@ function resolvePageRecipe(args: {
               : "annotation-rail",
         }
       : null,
+    secondaryChartSpec: diagramSpec ? null : secondaryChartSpec,
     diagramSpec,
     fallbackReason:
       !diagramSpec && args.page.desiredChartKind !== "none" && !chartSpec
@@ -5872,6 +5979,7 @@ export async function runStudioGenerationV1(args: {
       pageClass,
       densityBudget: resolvePageDensityBudget(pageClass),
       compositionHint: null,
+      compositionPreset: "single-exhibit",
       layout: "hero-proof",
       chartPriority: "none",
       evidenceIds: [],
@@ -5882,6 +5990,7 @@ export async function runStudioGenerationV1(args: {
       takeaway: page.goal,
       moduleBinding: null,
       chartSpec: null,
+      secondaryChartSpec: null,
       diagramSpec: null,
       fallbackReason: null,
     };

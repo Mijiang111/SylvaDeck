@@ -5,6 +5,7 @@ import {
   buildAnimatedPreviewRepairRuleLines,
   resolveStandardHeuristicRecipePageCount,
 } from "./core.js";
+import { pageRecipePlanSchema } from "./schemas.js";
 
 test("resolveStandardHeuristicRecipePageCount preserves explicit six-page standard requests", () => {
   assert.equal(
@@ -56,4 +57,56 @@ test("buildAnimatedPreviewRepairRuleLines only adds repair-specific animation gu
   assert.ok(lines.some((line) => line.includes("data-anim-anchor")));
   assert.ok(lines.some((line) => line.includes("data-studio-animation-manifest")));
   assert.ok(lines.some((line) => line.includes("Repair toward this canonical manifest shape")));
+});
+
+test("pageRecipePlanSchema accepts one optional secondary chart and rejects chart arrays", () => {
+  const basePage = {
+    pageNumber: 1,
+    pageTitle: "Margin and mix",
+    objective: "Explain margin recovery and segment mix.",
+    insight: "Margin recovery is broadening while mix remains uneven.",
+    pageClass: "proof-analysis",
+    layout: "chart-insight",
+    desiredChartKind: "waterfall",
+    chartPreset: "margin-bridge",
+    compositionPreset: "hero-sidecar",
+    composite: "annotation-rail",
+    evidenceIds: ["bridge"],
+    moduleHints: ["core.gantt"],
+  };
+
+  assert.equal(
+    pageRecipePlanSchema.safeParse({
+      title: "Composable charts",
+      pages: [
+        {
+          ...basePage,
+          secondaryChart: {
+            desiredChartKind: "stacked",
+            chartPreset: "segment-mix",
+            evidenceIds: ["mix"],
+            role: "sidecar",
+            title: "Revenue mix",
+          },
+        },
+      ],
+    }).success,
+    true,
+  );
+
+  assert.equal(
+    pageRecipePlanSchema.safeParse({
+      title: "Too many charts",
+      pages: [
+        {
+          ...basePage,
+          secondaryChart: [
+            { desiredChartKind: "bar" },
+            { desiredChartKind: "line" },
+          ],
+        },
+      ],
+    }).success,
+    false,
+  );
 });
