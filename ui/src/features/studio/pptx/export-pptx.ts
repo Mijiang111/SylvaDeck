@@ -11,6 +11,10 @@ import {
   HTML_REPORT_PAGE_WIDTH,
 } from "@/features/studio/runtime/runtime-export-annotations";
 import {
+  SCIENTIFIC_DIAGRAM_MODULE_KIND,
+  SCIENTIFIC_DIAGRAM_SPEC_ATTRIBUTE,
+} from "@/features/studio/scientific-diagram";
+import {
   measureListBlock,
   measureTextBlock,
   resolveFontDescriptorToCss,
@@ -1271,6 +1275,66 @@ function collectChartSupportTextNodes(args: {
   return dedupeTextNodes(collected);
 }
 
+const SCIENTIFIC_DIAGRAM_TEXT_SELECTOR = [
+  ".scientific-diagram-kicker",
+  ".scientific-diagram-title",
+  ".scientific-diagram-top-label",
+  ".scientific-diagram-side-note",
+  ".scientific-diagram-layer-label",
+  ".scientific-diagram-bottom-label",
+  ".scientific-diagram-caption",
+].join(",");
+
+function isScientificDiagramFrame(frame: ChartFrameCandidate) {
+  return (
+    frame.element.getAttribute("data-html-module-kind") === SCIENTIFIC_DIAGRAM_MODULE_KIND ||
+    frame.element.hasAttribute(SCIENTIFIC_DIAGRAM_SPEC_ATTRIBUTE) ||
+    frame.element.classList.contains("scientific-diagram-shell")
+  );
+}
+
+function collectScientificDiagramTextNodes(args: {
+  pageElement: HTMLElement;
+  frame: ChartFrameCandidate;
+}) {
+  if (!isScientificDiagramFrame(args.frame)) {
+    return [];
+  }
+
+  const view = args.pageElement.ownerDocument.defaultView;
+  if (!view) {
+    return [];
+  }
+
+  const collected: PptExportTextNode[] = [];
+  const candidates = Array.from(
+    args.frame.element.querySelectorAll<HTMLElement>(SCIENTIFIC_DIAGRAM_TEXT_SELECTOR),
+  );
+
+  for (const element of candidates) {
+    const node = buildTextNodeFromElement({
+      pageElement: args.pageElement,
+      element,
+      view,
+    });
+    if (node) {
+      collected.push(node);
+    }
+  }
+
+  return dedupeTextNodes(collected);
+}
+
+function collectChartFrameSupportTextNodes(args: {
+  pageElement: HTMLElement;
+  frame: ChartFrameCandidate;
+}) {
+  return dedupeTextNodes([
+    ...collectChartSupportTextNodes(args),
+    ...collectScientificDiagramTextNodes(args),
+  ]);
+}
+
 async function waitForFrameReady(iframe: HTMLIFrameElement) {
   if (iframe.contentDocument?.readyState === "complete") {
     await waitForRenderableSurface(iframe.contentDocument);
@@ -1883,7 +1947,7 @@ function collectChartModels(args: {
 
     const frameSupportTextNodes =
       frame && args.pageElement
-        ? collectChartSupportTextNodes({
+        ? collectChartFrameSupportTextNodes({
             pageElement: args.pageElement,
             frame,
           })
@@ -1978,7 +2042,7 @@ function collectChartModels(args: {
         })
       : null;
     const frameSupportTextNodes = args.pageElement
-      ? collectChartSupportTextNodes({
+      ? collectChartFrameSupportTextNodes({
           pageElement: args.pageElement,
           frame,
         })
