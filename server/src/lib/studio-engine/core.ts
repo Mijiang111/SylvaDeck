@@ -2810,7 +2810,7 @@ function resolvePreferredStyleProfileIdForThinkingMode(mode: DeckThinkingMode) {
   return mode === "academic-research" ? "academic" : null;
 }
 
-function isScientificShortDeckLane(args: {
+function isScientificDiagramLane(args: {
   thinkingMode: DeckThinkingMode;
   brief: string;
   pageCount: number;
@@ -2867,7 +2867,7 @@ function buildStandardHeuristicRecipePlan(args: {
     preflightPageCount: args.preflightPageCount,
     defaultPageCount,
   });
-  const scientificDiagramLane = isScientificShortDeckLane({
+  const scientificDiagramLane = isScientificDiagramLane({
     thinkingMode,
     brief: args.payload.brief,
     pageCount,
@@ -4628,7 +4628,7 @@ function resolvePageRecipe(args: {
           allowFlexibleChart: true,
         })
       : null);
-  const scientificDiagramLane = isScientificShortDeckLane({
+  const scientificDiagramLane = isScientificDiagramLane({
     thinkingMode: args.briefSynthesis.thinkingMode ?? "neutral",
     brief: args.brief,
     pageCount: args.totalPages,
@@ -4638,6 +4638,7 @@ function resolvePageRecipe(args: {
     isScientificDiagramFigurePage({
       pageNumber: args.page.pageNumber,
       totalPages: args.totalPages,
+      brief: args.brief,
     })
       ? buildScientificDiagramSpec({
           brief: args.brief,

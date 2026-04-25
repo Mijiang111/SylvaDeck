@@ -463,7 +463,52 @@ export type NeuralNetworkDiagramSpec = {
   stylePreset: "paper-white";
 };
 
-export type ScientificDiagramSpec = NeuralNetworkDiagramSpec;
+export type ConceptualScientificDiagramFamily =
+  | "mlp-flow"
+  | "cnn-receptive-field"
+  | "residual-flow"
+  | "unet-skip"
+  | "unet-nested-skip"
+  | "feature-pyramid"
+  | "transformer-residual"
+  | "attention-routing"
+  | "induction-head"
+  | "rnn-unroll"
+  | "lstm-gates"
+  | "gru-gates"
+  | "gnn-message-passing"
+  | "graphsage-aggregate"
+  | "gat-attention"
+  | "layer-stack"
+  | "mechanism-pathway"
+  | "energy-profile"
+  | "band-physics"
+  | "toroidal-system"
+  | "feedback-cycle"
+  | "cross-section"
+  | "process-physics"
+  | "hardware-architecture";
+
+export type ConceptualScientificDiagramNode = {
+  id: string;
+  label: string;
+  detail?: string;
+  emphasis?: "primary" | "secondary" | "risk" | "flow";
+};
+
+export type ConceptualScientificDiagramSpec = {
+  family: ConceptualScientificDiagramFamily;
+  title: string;
+  caption: string;
+  topLabel: string;
+  bottomLabel: string;
+  nodes: ConceptualScientificDiagramNode[];
+  legendItems: string[];
+  sideNotes: ScientificDiagramSideNote[];
+  stylePreset: "paper-white";
+};
+
+export type ScientificDiagramSpec = NeuralNetworkDiagramSpec | ConceptualScientificDiagramSpec;
 
 export type PageRecipe = {
   pageNumber: number;
