@@ -199,11 +199,13 @@ export function formatPptxWarningSummary(
     case "color-fallback":
       return "Color fell back to the closest PowerPoint-safe value.";
     case "gradient-flattened":
-      return "Complex gradient was flattened to keep export stable.";
+      return "Complex gradient was flattened because it could not be represented as native PowerPoint fill.";
     case "chart-image-fallback":
       return "Chart was exported as an image to preserve visibility.";
     case "chart-native-unsupported":
       return "Chart type is not natively supported by the current PPTX renderer.";
+    case "table-native-unsupported":
+      return "Table could not be converted into a native PowerPoint table.";
     case "frame-missing":
       return "One page surface was not ready when export started.";
     case "page-missing":

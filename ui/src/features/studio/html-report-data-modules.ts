@@ -5,6 +5,7 @@ import {
 } from "@/features/studio/data-table";
 import type {
   DataTableModel,
+  HtmlBasicChartSpec,
   HtmlBubbleChartSpec,
   HtmlBubblePoint,
   HtmlChartAxisRole,
@@ -12,6 +13,9 @@ import type {
   HtmlChartSeries,
   HtmlChartSeriesRole,
   HtmlChartSpec,
+  HtmlComboChartSpec,
+  HtmlMatrixChartSpec,
+  HtmlMatrixItem,
   HtmlTableSpec,
 } from "@/features/studio/types";
 
@@ -61,11 +65,19 @@ function parsePercentOrNumberToken(value: string | null | undefined) {
   return parseNumberToken(value);
 }
 
+function parseFiniteNumber(value: unknown) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 function serializeJson(value: unknown) {
   return JSON.stringify(value).replace(/"/g, "&quot;");
 }
 
-function readNumericStyle(element: HTMLElement, property: "left" | "top" | "width" | "height") {
+function readNumericStyle(
+  element: HTMLElement,
+  property: "left" | "top" | "right" | "bottom" | "width" | "height",
+) {
   const raw = element.style[property];
   const parsed = Number.parseFloat(raw);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -76,10 +88,119 @@ function readSvgNumericAttribute(element: Element, attribute: string) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function normalizeColorKey(value: string | null | undefined) {
+  const normalized = normalizeText(value).toLowerCase();
+  const hex = normalized.match(/#([0-9a-f]{6})/i)?.[1];
+  if (hex) {
+    return hex.toLowerCase();
+  }
+
+  const rgb = normalized.match(/rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/i);
+  if (!rgb) {
+    return normalized;
+  }
+
+  return [rgb[1], rgb[2], rgb[3]]
+    .map((channel) => {
+      const value = clamp(Number(channel) || 0, 0, 255);
+      return Math.round(value).toString(16).padStart(2, "0");
+    })
+    .join("");
+}
+
+function readSvgViewBox(svg: SVGSVGElement) {
+  const viewBox = normalizeText(svg.getAttribute("viewBox"));
+  const parts = viewBox.split(/[\s,]+/).map((part) => Number(part));
+  if (parts.length === 4 && parts.every((part) => Number.isFinite(part))) {
+    return {
+      x: parts[0]!,
+      y: parts[1]!,
+      width: parts[2]!,
+      height: parts[3]!,
+    };
+  }
+
+  return {
+    x: 0,
+    y: 0,
+    width: readSvgNumericAttribute(svg, "width") || 1,
+    height: readSvgNumericAttribute(svg, "height") || 1,
+  };
+}
+
+function parseSvgPointList(raw: string | null | undefined) {
+  const tokens = normalizeText(raw).split(/\s+/).filter(Boolean);
+  const points = tokens
+    .map((token) => {
+      const [x, y] = token.split(",").map((part) => Number(part));
+      return Number.isFinite(x) && Number.isFinite(y) ? { x: x!, y: y! } : null;
+    })
+    .filter((point): point is { x: number; y: number } => Boolean(point));
+  return points;
+}
+
+function isPageScaleElement(element: HTMLElement) {
+  if (element.matches("section.page,.export-page-shell")) {
+    return true;
+  }
+
+  const width = readNumericStyle(element, "width");
+  const height = readNumericStyle(element, "height");
+  return width >= 1200 && height >= 700;
+}
+
+function readNearestElementHeadings(root: HTMLElement) {
+  const headingRoot =
+    root.closest<HTMLElement>('[data-html-visual-kind="chart-frame"]') ??
+    root.parentElement ??
+    root;
+  const headings = Array.from(headingRoot.querySelectorAll<HTMLElement>('[data-html-block-kind="heading"]'))
+    .map((element) => normalizeText(element.textContent))
+    .filter(Boolean);
+
+  return {
+    title: headings[0] ?? "",
+    subtitle: headings[1] ?? "",
+  };
+}
+
+function collectLocalPlotRoots(root: HTMLElement) {
+  const directChildren = Array.from(root.children).filter(
+    (child): child is HTMLElement => child instanceof HTMLElement,
+  );
+  return [root, ...directChildren].filter((element, index, elements) => {
+    if (elements.indexOf(element) !== index || isPageScaleElement(element)) {
+      return false;
+    }
+
+    const position = normalizeText(element.style.position);
+    const height = readNumericStyle(element, "height");
+    return position === "relative" || height > 0;
+  });
+}
+
 function getModuleRoot(element: Element) {
   return element.closest(
     `[data-html-module-kind="${CHART_MODULE_KIND}"],[data-html-module-kind="${TABLE_MODULE_KIND}"]`,
   );
+}
+
+function containsModuleRoot(element: Element) {
+  return Boolean(
+    element.querySelector(
+      `[data-html-module-kind="${CHART_MODULE_KIND}"],[data-html-module-kind="${TABLE_MODULE_KIND}"]`,
+    ),
+  );
+}
+
+function elementDepth(element: Element) {
+  let depth = 0;
+  let current: Element | null = element;
+  while (current.parentElement) {
+    depth += 1;
+    current = current.parentElement;
+  }
+  return depth;
 }
 
 function normalizeSeriesLabel(label: string | null | undefined, fallback: string) {
@@ -89,6 +210,46 @@ function normalizeSeriesLabel(label: string | null | undefined, fallback: string
 
 function normalizeChartText(value: string | null | undefined, fallback = "") {
   return normalizeText(value) || fallback;
+}
+
+function normalizeChartRatio(value: unknown, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? clamp(parsed, 0, 1) : fallback;
+}
+
+function isSeriesChartSpec(
+  spec: HtmlChartSpec,
+): spec is HtmlBasicChartSpec | HtmlComboChartSpec {
+  return (
+    spec.kind === "bar" ||
+    spec.kind === "stacked" ||
+    spec.kind === "line" ||
+    spec.kind === "waterfall" ||
+    spec.kind === "combo"
+  );
+}
+
+function cloneChartSpecForUpdate(spec: HtmlChartSpec): HtmlChartSpec {
+  if (spec.kind === "bubble") {
+    return {
+      ...spec,
+      points: spec.points.map((point) => ({ ...point })),
+    };
+  }
+  if (spec.kind === "matrix") {
+    return {
+      ...spec,
+      plotBounds: spec.plotBounds ? { ...spec.plotBounds } : spec.plotBounds,
+      quadrants: spec.quadrants?.map((quadrant) => ({ ...quadrant })),
+      items: spec.items.map((item) => ({ ...item })),
+      callout: spec.callout ? { ...spec.callout } : spec.callout,
+      colors: spec.colors ? [...spec.colors] : spec.colors,
+    };
+  }
+  return {
+    ...spec,
+    series: spec.series.map((series) => ({ ...series, values: [...series.values] })),
+  };
 }
 
 function pickColor(index: number, role: HtmlChartSeriesRole = "bar") {
@@ -157,6 +318,77 @@ export function parseHtmlChartSpec(raw: string | null | undefined): HtmlChartSpe
       };
     }
 
+    if (parsed.kind === "matrix") {
+      const matrix = parsed as Partial<HtmlMatrixChartSpec>;
+      const items = Array.isArray(matrix.items)
+        ? matrix.items
+            .map((item, index) => ({
+              id: normalizeText(item?.id) || `item-${index + 1}`,
+              label: normalizeSeriesLabel(item?.label, `Item ${index + 1}`),
+              detail: normalizeChartText(item?.detail),
+              x: normalizeChartRatio(item?.x, index % 2 ? 0.56 : 0.08),
+              y: normalizeChartRatio(item?.y, index < 2 ? 0.08 : 0.56),
+              w: normalizeChartRatio(item?.w, 0.34),
+              h: normalizeChartRatio(item?.h, 0.24),
+              color: normalizeText(item?.color) || DEFAULT_BAR_COLORS[index % DEFAULT_BAR_COLORS.length]!,
+              textColor: normalizeText(item?.textColor) || null,
+            }))
+            .filter((item) => item.label)
+        : [];
+      if (!items.length) {
+        return null;
+      }
+      const quadrants = Array.isArray(matrix.quadrants)
+        ? matrix.quadrants.map((quadrant, index) => ({
+            id: normalizeText(quadrant?.id) || `quadrant-${index + 1}`,
+            label: normalizeChartText(quadrant?.label),
+            x: normalizeChartRatio(quadrant?.x, index % 2 ? 0.5 : 0),
+            y: normalizeChartRatio(quadrant?.y, index > 1 ? 0.5 : 0),
+            w: normalizeChartRatio(quadrant?.w, 0.5),
+            h: normalizeChartRatio(quadrant?.h, 0.5),
+            color: normalizeText(quadrant?.color) || null,
+            textColor: normalizeText(quadrant?.textColor) || null,
+          }))
+        : undefined;
+      const callout = matrix.callout
+        ? {
+            title: normalizeChartText(matrix.callout.title),
+            body: normalizeChartText(matrix.callout.body),
+            x: normalizeChartRatio(matrix.callout.x, 0.7),
+            y: normalizeChartRatio(matrix.callout.y, 0.08),
+            w: normalizeChartRatio(matrix.callout.w, 0.24),
+            h: normalizeChartRatio(matrix.callout.h, 0.24),
+            color: normalizeText(matrix.callout.color) || null,
+            textColor: normalizeText(matrix.callout.textColor) || null,
+            borderColor: normalizeText(matrix.callout.borderColor) || null,
+          }
+        : null;
+      return {
+        kind: "matrix",
+        title: normalizeChartText(matrix.title),
+        subtitle: normalizeChartText(matrix.subtitle),
+        insight: normalizeChartText(matrix.insight),
+        xLabel: normalizeChartText(matrix.xLabel, "X axis"),
+        yLabel: normalizeChartText(matrix.yLabel, "Y axis"),
+        xMinLabel: normalizeChartText(matrix.xMinLabel),
+        xMaxLabel: normalizeChartText(matrix.xMaxLabel),
+        yMinLabel: normalizeChartText(matrix.yMinLabel),
+        yMaxLabel: normalizeChartText(matrix.yMaxLabel),
+        plotBounds: matrix.plotBounds
+          ? {
+              x: normalizeChartRatio(matrix.plotBounds.x, 0),
+              y: normalizeChartRatio(matrix.plotBounds.y, 0),
+              w: normalizeChartRatio(matrix.plotBounds.w, 1),
+              h: normalizeChartRatio(matrix.plotBounds.h, 1),
+            }
+          : null,
+        quadrants,
+        items,
+        callout,
+        colors: Array.isArray(matrix.colors) ? matrix.colors.map(normalizeText).filter(Boolean) : undefined,
+      };
+    }
+
     const kind = parsed.kind;
     if (
       kind !== "bar" &&
@@ -199,6 +431,8 @@ export function parseHtmlChartSpec(raw: string | null | undefined): HtmlChartSpe
         insight: normalizeChartText((parsed as { insight?: string }).insight),
         unit: normalizeChartText((parsed as { unit?: string }).unit),
         secondaryUnit: normalizeChartText((parsed as { secondaryUnit?: string }).secondaryUnit),
+        valueAxisMin: parseFiniteNumber((parsed as { valueAxisMin?: unknown }).valueAxisMin),
+        valueAxisMax: parseFiniteNumber((parsed as { valueAxisMax?: unknown }).valueAxisMax),
         categories:
           categories.length > 0
             ? categories
@@ -213,6 +447,8 @@ export function parseHtmlChartSpec(raw: string | null | undefined): HtmlChartSpe
       subtitle: normalizeChartText((parsed as { subtitle?: string }).subtitle),
       insight: normalizeChartText((parsed as { insight?: string }).insight),
       unit: normalizeChartText((parsed as { unit?: string }).unit),
+      valueAxisMin: parseFiniteNumber((parsed as { valueAxisMin?: unknown }).valueAxisMin),
+      valueAxisMax: parseFiniteNumber((parsed as { valueAxisMax?: unknown }).valueAxisMax),
       categories:
         categories.length > 0
           ? categories
@@ -357,6 +593,11 @@ function setModuleMetadata(args: {
   } else {
     args.element.removeAttribute(HTML_TABLE_SPEC_ATTRIBUTE);
   }
+}
+
+function resolveChartModuleTarget(element: Element) {
+  const chartFrame = element.closest('[data-html-visual-kind="chart-frame"],[data-export-role="chart-frame"]');
+  return chartFrame && chartFrame !== element ? chartFrame : element;
 }
 
 function parseTableElement(element: HTMLTableElement): HtmlTableSpec | null {
@@ -647,23 +888,310 @@ function detectComboChartSpec(svg: SVGSVGElement): HtmlChartSpec | null {
   };
 }
 
+function collectLineChartCategories(svg: SVGSVGElement, pointCount: number) {
+  const plotRoot = svg.parentElement;
+  const categories = plotRoot
+    ? Array.from(plotRoot.querySelectorAll<HTMLElement>("[style*='bottom'][style*='left']"))
+        .map((element) => ({
+          text: normalizeText(element.textContent),
+          left: readNumericStyle(element, "left"),
+        }))
+        .filter((item) => item.text && parsePercentOrNumberToken(item.text) === null)
+        .sort((left, right) => left.left - right.left)
+        .map((item) => item.text)
+    : [];
+
+  return categories.length >= pointCount
+    ? categories.slice(0, pointCount)
+    : Array.from({ length: pointCount }, (_, index) => `Point ${index + 1}`);
+}
+
+function collectLineChartValueTicks(svg: SVGSVGElement) {
+  const plotRoot = svg.parentElement;
+  if (!plotRoot) {
+    return [];
+  }
+
+  return Array.from(plotRoot.querySelectorAll<HTMLElement>("[style*='top']"))
+    .map((element) => ({
+      value: parsePercentOrNumberToken(element.textContent),
+      top: readNumericStyle(element, "top"),
+      left: readNumericStyle(element, "left"),
+    }))
+    .filter((item): item is { value: number; top: number; left: number } => item.value !== null)
+    .filter((item) => item.left <= 4)
+    .sort((left, right) => left.top - right.top);
+}
+
+function collectLineChartLegendLabels(svg: SVGSVGElement) {
+  const plotRoot = svg.parentElement;
+  const labels = new Map<string, string>();
+  if (!plotRoot) {
+    return labels;
+  }
+
+  Array.from(plotRoot.querySelectorAll<HTMLElement>("span")).forEach((element) => {
+    const color = normalizeColorKey(element.style.backgroundColor || element.style.background);
+    if (!color) {
+      return;
+    }
+    const label = normalizeText(element.parentElement?.textContent);
+    if (label) {
+      labels.set(color, label);
+    }
+  });
+
+  return labels;
+}
+
+function readNearestChartHeadings(svg: SVGSVGElement) {
+  const frame = svg.closest<HTMLElement>('[data-html-visual-kind="chart-frame"]');
+  const headings = frame
+    ? Array.from(frame.querySelectorAll<HTMLElement>('[data-html-block-kind="heading"]'))
+        .map((element) => normalizeText(element.textContent))
+        .filter(Boolean)
+    : [];
+
+  return {
+    title: headings[0] ?? "",
+    subtitle: headings[1] ?? "",
+  };
+}
+
+function detectLineAreaChartSpec(svg: SVGSVGElement): HtmlChartSpec | null {
+  const lines = Array.from(svg.querySelectorAll("polyline"))
+    .map((line, index) => ({
+      element: line,
+      points: parseSvgPointList(line.getAttribute("points")),
+      index,
+    }))
+    .filter((line) => line.points.length >= 3);
+  if (!lines.length) {
+    return null;
+  }
+
+  const pointCount = Math.max(...lines.map((line) => line.points.length));
+  if (pointCount < 3) {
+    return null;
+  }
+
+  const viewBox = readSvgViewBox(svg);
+  const ticks = collectLineChartValueTicks(svg);
+  const topTick = ticks[0];
+  const bottomTick = ticks.at(-1);
+  const valueFromY =
+    topTick && bottomTick && bottomTick.top !== topTick.top
+      ? (y: number) =>
+          topTick.value +
+          ((y - topTick.top) / Math.max(1, bottomTick.top - topTick.top)) *
+            (bottomTick.value - topTick.value)
+      : (y: number) => {
+          const normalized = 1 - (y - viewBox.y) / Math.max(1, viewBox.height);
+          return normalized * 100;
+        };
+
+  const legendLabels = collectLineChartLegendLabels(svg);
+  const categories = collectLineChartCategories(svg, pointCount);
+  const headings = readNearestChartHeadings(svg);
+  const series = lines.map((line, index) => {
+    const color = normalizeText(line.element.getAttribute("stroke")) || DEFAULT_LINE_COLORS[index % DEFAULT_LINE_COLORS.length]!;
+    const label = legendLabels.get(normalizeColorKey(color)) ?? `Series ${index + 1}`;
+    return {
+      id: `series-${index + 1}`,
+      label,
+      values: line.points.slice(0, pointCount).map((point) => Math.round(valueFromY(point.y) * 10) / 10),
+      color,
+      role: "line" as const,
+      axis: "primary" as const,
+    } satisfies HtmlChartSeries;
+  });
+
+  return {
+    kind: "line",
+    title: headings.title,
+    subtitle: headings.subtitle,
+    insight: "",
+    unit: "",
+    valueAxisMin: bottomTick?.value,
+    valueAxisMax: topTick?.value,
+    categories,
+    series,
+  };
+}
+
+function collectWaterfallBarCandidates(plotRoot: HTMLElement) {
+  return Array.from(plotRoot.children)
+    .filter((child): child is HTMLElement => child instanceof HTMLElement)
+    .map((element) => {
+      const left = readNumericStyle(element, "left");
+      const bottom = readNumericStyle(element, "bottom");
+      const width = readNumericStyle(element, "width");
+      const height = readNumericStyle(element, "height");
+      const background = normalizeText(element.style.backgroundColor || element.style.background);
+      return {
+        element,
+        left,
+        bottom,
+        width,
+        height,
+        background,
+      };
+    })
+    .filter((bar) => {
+      if (!bar.element.style.bottom || !bar.background) {
+        return false;
+      }
+      if (bar.width < 16 || bar.height < 8 || Math.abs(bar.width - bar.height) <= 8) {
+        return false;
+      }
+      return !/transparent/i.test(bar.background);
+    })
+    .sort((left, right) => left.left - right.left);
+}
+
+function collectWaterfallCategoryLabels(plotRoot: HTMLElement) {
+  return collectAbsoluteTextNodes(plotRoot)
+    .filter((node) => parsePercentOrNumberToken(node.text) === null)
+    .filter((node) => node.top >= readNumericStyle(plotRoot, "height") - 4 || node.element.style.bottom.startsWith("-"))
+    .sort((left, right) => left.left - right.left)
+    .map((node) => node.text);
+}
+
+function collectWaterfallValueLabels(plotRoot: HTMLElement) {
+  return collectAbsoluteTextNodes(plotRoot)
+    .map((node) => ({
+      ...node,
+      value: parsePercentOrNumberToken(node.text),
+    }))
+    .filter((node): node is PositionedTextNode & { value: number } => node.value !== null)
+    .sort((left, right) => left.left - right.left);
+}
+
+function detectDivWaterfallChartSpec(root: HTMLElement): HtmlChartSpec | null {
+  if (isPageScaleElement(root)) {
+    return null;
+  }
+
+  const roots = collectLocalPlotRoots(root);
+  for (const plotRoot of roots) {
+    const bars = collectWaterfallBarCandidates(plotRoot);
+    if (bars.length < 4 || bars.length > 8) {
+      continue;
+    }
+
+    const medianWidth = [...bars].sort((left, right) => left.width - right.width)[Math.floor(bars.length / 2)]?.width ?? 0;
+    const similarlySizedBars = bars.filter((bar) => Math.abs(bar.width - medianWidth) <= Math.max(12, medianWidth * 0.4));
+    if (similarlySizedBars.length < 4) {
+      continue;
+    }
+
+    const text = normalizeText(root.textContent);
+    const categoryLabels = collectWaterfallCategoryLabels(plotRoot);
+    const valueLabels = collectWaterfallValueLabels(plotRoot);
+    const looksLikeWaterfall =
+      /waterfall|bridge/i.test(text) ||
+      categoryLabels.some((label) => /^start$/i.test(label)) ||
+      categoryLabels.some((label) => /^end$/i.test(label)) ||
+      valueLabels.some((label) => label.text.trim().startsWith("+") || label.text.trim().startsWith("-"));
+
+    if (!looksLikeWaterfall) {
+      continue;
+    }
+
+    const categories =
+      categoryLabels.length >= bars.length
+        ? categoryLabels.slice(0, bars.length)
+        : bars.map((_, index) => `Step ${index + 1}`);
+    const values =
+      valueLabels.length >= bars.length
+        ? valueLabels.slice(0, bars.length).map((label) => label.value)
+        : bars.map((bar) => Math.round(bar.height));
+    const headings = readNearestElementHeadings(root);
+
+    return {
+      kind: "waterfall",
+      title: headings.title || "Waterfall",
+      subtitle: headings.subtitle,
+      insight: "",
+      unit: "",
+      categories,
+      series: [
+        {
+          id: "waterfall-values",
+          label: "Value",
+          values,
+          color: normalizeText(bars.at(-1)?.background) || DEFAULT_BAR_COLORS[0],
+          role: "bar",
+          axis: "primary",
+        },
+      ],
+    };
+  }
+
+  return null;
+}
+
 function detectBubbleChartSpec(root: HTMLElement): HtmlChartSpec | null {
-  const circles = Array.from(root.querySelectorAll<HTMLElement>("[style*='border-radius:50%'],[style*='border-radius: 50%']"))
+  if (isPageScaleElement(root)) {
+    return null;
+  }
+
+  const localPlotRoots = collectLocalPlotRoots(root);
+  const plotRoot =
+    localPlotRoots.find((candidate) => {
+      const nestedChartModule = candidate.querySelector<HTMLElement>(
+        `[data-html-module-kind="${CHART_MODULE_KIND}"]`,
+      );
+      if (nestedChartModule && nestedChartModule !== candidate) {
+        return false;
+      }
+      const circles = Array.from(
+        candidate.querySelectorAll<HTMLElement>("[style*='border-radius:50%'],[style*='border-radius: 50%']"),
+      ).filter((element) => {
+        const width = readNumericStyle(element, "width");
+        const height = readNumericStyle(element, "height");
+        return width >= 24 && Math.abs(width - height) <= 18;
+      });
+      return circles.length >= 3;
+    }) ??
+    (Array.from(root.children).filter((child): child is HTMLElement => {
+      if (!(child instanceof HTMLElement)) {
+        return false;
+      }
+      const width = readNumericStyle(child, "width");
+      const height = readNumericStyle(child, "height");
+      const radius = normalizeText(child.style.borderRadius);
+      return width >= 24 && Math.abs(width - height) <= 18 && radius.includes("50%");
+    }).length >= 3
+      ? root
+      : null);
+
+  if (!plotRoot) {
+    return null;
+  }
+
+  const circles = Array.from(plotRoot.querySelectorAll<HTMLElement>("[style*='border-radius:50%'],[style*='border-radius: 50%']"))
     .filter((element) => {
-      if (getModuleRoot(element) && getModuleRoot(element) !== root) {
+      if (getModuleRoot(element) && getModuleRoot(element) !== root && getModuleRoot(element) !== plotRoot) {
         return false;
       }
       const width = readNumericStyle(element, "width");
       const height = readNumericStyle(element, "height");
-      return width >= 50 && Math.abs(width - height) <= 18;
+      return width >= 24 && width <= 180 && Math.abs(width - height) <= 18;
     });
   if (circles.length < 3) {
     return null;
   }
 
-  const textNodes = collectAbsoluteTextNodes(root);
+  const textNodes = collectAbsoluteTextNodes(plotRoot);
+  const plotWidth =
+    readNumericStyle(plotRoot, "width") ||
+    Math.max(...circles.map((element) => readNumericStyle(element, "left") + readNumericStyle(element, "width")), 1);
+  const plotHeight =
+    readNumericStyle(plotRoot, "height") ||
+    Math.max(...circles.map((element) => readNumericStyle(element, "top") + readNumericStyle(element, "height")), 1);
   const xTicks = textNodes
-    .filter((node) => node.top >= 410 && parsePercentOrNumberToken(node.text) !== null)
+    .filter((node) => node.top >= plotHeight * 0.76 && parsePercentOrNumberToken(node.text) !== null)
     .sort((left, right) => left.left - right.left);
   const yTicks = textNodes
     .filter((node) => node.left <= 90 && parsePercentOrNumberToken(node.text) !== null)
@@ -673,9 +1201,9 @@ function detectBubbleChartSpec(root: HTMLElement): HtmlChartSpec | null {
   const yMax = yTicks.length >= 2 ? (parsePercentOrNumberToken(yTicks[0]!.text) ?? 100) : 100;
   const yMin = yTicks.length >= 2 ? (parsePercentOrNumberToken(yTicks.at(-1)?.text) ?? 0) : 0;
   const xStart = xTicks.length >= 2 ? xTicks[0]!.left : 60;
-  const xEnd = xTicks.length >= 2 ? xTicks.at(-1)!.left : Math.max(960, root.clientWidth - 120);
+  const xEnd = xTicks.length >= 2 ? xTicks.at(-1)!.left : Math.max(1, plotWidth - 20);
   const yTop = yTicks.length >= 2 ? yTicks[0]!.top : 90;
-  const yBottom = yTicks.length >= 2 ? yTicks.at(-1)!.top : 420;
+  const yBottom = yTicks.length >= 2 ? yTicks.at(-1)!.top : Math.max(1, plotHeight - 12);
 
   const points = circles
     .sort((left, right) => readNumericStyle(left, "left") - readNumericStyle(right, "left"))
@@ -717,14 +1245,40 @@ function detectBubbleChartSpec(root: HTMLElement): HtmlChartSpec | null {
   if (points.length < 3) {
     return null;
   }
-  const title = textNodes.find((node) => node.weight >= 700 && node.top < 180)?.text ?? "";
+  const headings = readNearestElementHeadings(root);
+  const title = headings.title || (textNodes.find((node) => node.weight >= 700 && node.top < 180)?.text ?? "");
   const subtitle =
-    textNodes.find((node) => node.weight < 700 && node.width > 400 && node.top < 260)?.text ?? "";
+    headings.subtitle || (textNodes.find((node) => node.weight < 700 && node.width > 400 && node.top < 260)?.text ?? "");
+  const bottomAxisLabels = textNodes
+    .filter((node) => node.top >= plotHeight * 0.7 || node.element.style.bottom.startsWith("-"))
+    .filter((node) => parsePercentOrNumberToken(node.text) === null)
+    .map((node) => ({
+      ...node,
+      sortLeft: node.element.style.right
+        ? plotWidth - readNumericStyle(node.element, "right") - Math.max(node.width, 1)
+        : node.left,
+    }))
+    .sort((left, right) => left.sortLeft - right.sortLeft);
+  const sideAxisLabels = textNodes
+    .filter((node) => node.left <= Math.max(160, plotWidth * 0.18) || node.element.style.left.startsWith("-"))
+    .filter((node) => parsePercentOrNumberToken(node.text) === null)
+    .filter((node) => !/effort|complex|cost|risk/i.test(node.text))
+    .filter((node) => /^(low|high)\b/i.test(node.text))
+    .sort((left, right) => left.top - right.top);
+  const explicitYAxisTitle = textNodes.find((node) => /impact|value|priority|lift|return/i.test(node.text));
+  const xAxisLabels =
+    bottomAxisLabels.filter((node) => /effort|complex|cost|risk/i.test(node.text)).length >= 2
+      ? bottomAxisLabels.filter((node) => /effort|complex|cost|risk/i.test(node.text))
+      : bottomAxisLabels.filter((node) => !/^(low|high)$/i.test(node.text));
   const xLabel =
-    textNodes.find((node) => node.top >= 430 && node.width > 200)?.text ?? "X axis";
+    xAxisLabels.length >= 2
+      ? `${xAxisLabels[0]!.text} / ${xAxisLabels.at(-1)!.text}`
+      : xAxisLabels[0]?.text ?? "X axis";
   const yLabel =
-    textNodes.find((node) => node.left < 160 && node.top < 120 && node.width > 120)?.text ??
-    "Y axis";
+    explicitYAxisTitle?.text ??
+    (sideAxisLabels.length >= 2
+      ? `${sideAxisLabels.at(-1)!.text} / ${sideAxisLabels[0]!.text}`
+      : sideAxisLabels[0]?.text ?? "Y axis");
 
   return {
     kind: "bubble",
@@ -736,6 +1290,209 @@ function detectBubbleChartSpec(root: HTMLElement): HtmlChartSpec | null {
     yLabel,
     sizeLabel: "Bubble size",
     points,
+  };
+}
+
+function elementRectWithin(container: HTMLElement, element: HTMLElement) {
+  const containerRect = container.getBoundingClientRect();
+  const elementRect = element.getBoundingClientRect();
+  return {
+    left: elementRect.left - containerRect.left,
+    top: elementRect.top - containerRect.top,
+    width: elementRect.width,
+    height: elementRect.height,
+  };
+}
+
+function readElementPaint(element: HTMLElement) {
+  const view = element.ownerDocument.defaultView;
+  const computed = view?.getComputedStyle(element);
+  const inline = normalizeText(element.style.backgroundColor || element.style.background);
+  return normalizeText(inline || computed?.backgroundColor || "");
+}
+
+function isMatrixCardCandidate(plotRoot: HTMLElement, element: HTMLElement) {
+  if (element === plotRoot || element.closest("[data-html-block-id]")) {
+    return false;
+  }
+  const radius = normalizeText(element.style.borderRadius);
+  const rect = elementRectWithin(plotRoot, element);
+  const text = normalizeMultilineText(element.innerText || element.textContent);
+  const paint = readElementPaint(element);
+  const border = normalizeText(element.style.border || element.style.borderColor);
+  if (!text || radius.includes("50%")) {
+    return false;
+  }
+  if (rect.width < 58 || rect.height < 34) {
+    return false;
+  }
+  if (!paint && !border && !element.className.toString().includes("card")) {
+    return false;
+  }
+  return true;
+}
+
+function splitMatrixItemText(text: string) {
+  const lines = text
+    .split(/\n+/)
+    .map((line) => normalizeText(line))
+    .filter(Boolean);
+  if (lines.length > 1) {
+    return {
+      label: lines[0] ?? "",
+      detail: lines.slice(1).join(" "),
+    };
+  }
+  const sentenceMatch = text.match(/^([^.!?:]{3,72})[:.!?]\s+(.+)$/);
+  if (sentenceMatch?.[1] && sentenceMatch[2]) {
+    return {
+      label: normalizeText(sentenceMatch[1]),
+      detail: normalizeText(sentenceMatch[2]),
+    };
+  }
+  return {
+    label: normalizeText(text),
+    detail: "",
+  };
+}
+
+function detectMatrixAxisLabels(plotRoot: HTMLElement) {
+  const texts = collectAbsoluteTextNodes(plotRoot);
+  const plotWidth = plotRoot.getBoundingClientRect().width || readNumericStyle(plotRoot, "width") || 1;
+  const plotHeight = plotRoot.getBoundingClientRect().height || readNumericStyle(plotRoot, "height") || 1;
+  const bottomLabels = texts
+    .filter((node) => node.top >= plotHeight * 0.72 || node.element.style.bottom.startsWith("-"))
+    .sort((left, right) => left.left - right.left);
+  const sideLabels = texts
+    .filter((node) => node.left <= plotWidth * 0.18 || node.element.style.left.startsWith("-"))
+    .sort((left, right) => left.top - right.top);
+  const xMinLabel = bottomLabels[0]?.text ?? "";
+  const xMaxLabel = bottomLabels.at(-1)?.text && bottomLabels.at(-1)?.text !== xMinLabel ? bottomLabels.at(-1)?.text ?? "" : "";
+  const yMaxLabel = sideLabels[0]?.text ?? "";
+  const yMinLabel = sideLabels.at(-1)?.text && sideLabels.at(-1)?.text !== yMaxLabel ? sideLabels.at(-1)?.text ?? "" : "";
+  const xLabel = [xMinLabel, xMaxLabel].find((label) => /effort|cost|risk|complex/i.test(label)) ?? "X axis";
+  const yLabel = [yMinLabel, yMaxLabel].find((label) => /impact|value|lift|priority|return/i.test(label)) ?? "Y axis";
+  return {
+    xLabel,
+    yLabel,
+    xMinLabel,
+    xMaxLabel,
+    yMinLabel,
+    yMaxLabel,
+  };
+}
+
+function detectMatrixChartSpec(root: HTMLElement): HtmlChartSpec | null {
+  if (isPageScaleElement(root)) {
+    return null;
+  }
+
+  const text = normalizeText(root.textContent);
+  const plotRoot = collectLocalPlotRoots(root)
+    .map((candidate) => {
+      const candidateText = normalizeText(candidate.textContent);
+      const style = candidate.style;
+      const hasAxisScaffold =
+        Boolean(style.borderLeft || style.borderBottom || style.backgroundImage) ||
+        candidate.querySelector(".matrix-axis-h,.matrix-axis-v");
+      const cards = Array.from(candidate.querySelectorAll<HTMLElement>("article,div,aside"))
+        .filter((element) => isMatrixCardCandidate(candidate, element));
+      return {
+        element: candidate,
+        score:
+          (hasAxisScaffold ? 2 : 0) +
+          (/\b(matrix|quadrant|priority|prioritization|effort|impact)\b/i.test(candidateText) ? 1 : 0) +
+          cards.length,
+        cards,
+      };
+    })
+    .filter((candidate) => candidate.cards.length >= 2 && candidate.score >= 4)
+    .sort((left, right) => right.score - left.score)[0];
+
+  if (!plotRoot || !/\b(matrix|quadrant|priority|prioritization|effort|impact)\b/i.test(text)) {
+    return null;
+  }
+
+  const plotRect = plotRoot.element.getBoundingClientRect();
+  const plotWidth = plotRect.width || readNumericStyle(plotRoot.element, "width") || 1;
+  const plotHeight = plotRect.height || readNumericStyle(plotRoot.element, "height") || 1;
+  const items = plotRoot.cards
+    .slice(0, 8)
+    .map((element, index): HtmlMatrixItem => {
+      const rect = elementRectWithin(plotRoot.element, element);
+      const itemText = splitMatrixItemText(normalizeMultilineText(element.innerText || element.textContent));
+      return {
+        id: element.getAttribute("data-html-visual-id") ?? `matrix-item-${index + 1}`,
+        label: itemText.label || `Item ${index + 1}`,
+        detail: itemText.detail,
+        x: normalizeChartRatio(rect.left / Math.max(1, plotWidth), index % 2 ? 0.56 : 0.08),
+        y: normalizeChartRatio(rect.top / Math.max(1, plotHeight), index < 2 ? 0.08 : 0.56),
+        w: normalizeChartRatio(rect.width / Math.max(1, plotWidth), 0.32),
+        h: normalizeChartRatio(rect.height / Math.max(1, plotHeight), 0.22),
+        color: readElementPaint(element) || DEFAULT_BAR_COLORS[index % DEFAULT_BAR_COLORS.length]!,
+        textColor: normalizeText(element.style.color) || null,
+      };
+    })
+    .filter((item) => item.label);
+
+  if (items.length < 2) {
+    return null;
+  }
+
+  const headings = readNearestElementHeadings(root);
+  const axisLabels = detectMatrixAxisLabels(plotRoot.element);
+  const rootRect = root.getBoundingClientRect();
+  const calloutCandidate = Array.from(root.children)
+    .filter((child): child is HTMLElement => child instanceof HTMLElement && child !== plotRoot.element)
+    .map((element) => {
+      const rect = elementRectWithin(root, element);
+      return {
+        element,
+        rect,
+        text: splitMatrixItemText(normalizeMultilineText(element.innerText || element.textContent)),
+      };
+    })
+    .filter((candidate) => candidate.text.label && candidate.rect.width >= 120 && candidate.rect.height >= 50)
+    .sort((left, right) => right.rect.width * right.rect.height - left.rect.width * left.rect.height)[0];
+
+  return {
+    kind: "matrix",
+    title: headings.title || "Matrix",
+    subtitle: headings.subtitle,
+    insight: "",
+    xLabel: axisLabels.xLabel,
+    yLabel: axisLabels.yLabel,
+    xMinLabel: axisLabels.xMinLabel,
+    xMaxLabel: axisLabels.xMaxLabel,
+    yMinLabel: axisLabels.yMinLabel,
+    yMaxLabel: axisLabels.yMaxLabel,
+    plotBounds: {
+      x: normalizeChartRatio((plotRect.left - rootRect.left) / Math.max(1, rootRect.width), 0.08),
+      y: normalizeChartRatio((plotRect.top - rootRect.top) / Math.max(1, rootRect.height), 0.18),
+      w: normalizeChartRatio(plotRect.width / Math.max(1, rootRect.width), 0.72),
+      h: normalizeChartRatio(plotRect.height / Math.max(1, rootRect.height), 0.68),
+    },
+    quadrants: [
+      { id: "quadrant-top-left", label: "", x: 0, y: 0, w: 0.5, h: 0.5, color: "rgba(181,86,56,0.06)" },
+      { id: "quadrant-top-right", label: "", x: 0.5, y: 0, w: 0.5, h: 0.5, color: "rgba(48,92,99,0.06)" },
+      { id: "quadrant-bottom-left", label: "", x: 0, y: 0.5, w: 0.5, h: 0.5, color: "rgba(127,157,161,0.06)" },
+      { id: "quadrant-bottom-right", label: "", x: 0.5, y: 0.5, w: 0.5, h: 0.5, color: "rgba(208,143,115,0.06)" },
+    ],
+    items,
+    callout: calloutCandidate
+      ? {
+          title: calloutCandidate.text.label,
+          body: calloutCandidate.text.detail,
+          x: normalizeChartRatio(calloutCandidate.rect.left / Math.max(1, rootRect.width), 0.72),
+          y: normalizeChartRatio(calloutCandidate.rect.top / Math.max(1, rootRect.height), 0.18),
+          w: normalizeChartRatio(calloutCandidate.rect.width / Math.max(1, rootRect.width), 0.22),
+          h: normalizeChartRatio(calloutCandidate.rect.height / Math.max(1, rootRect.height), 0.2),
+          color: readElementPaint(calloutCandidate.element) || "rgba(255,255,255,0.86)",
+          textColor: normalizeText(calloutCandidate.element.style.color) || null,
+          borderColor: normalizeText(calloutCandidate.element.style.borderColor) || null,
+        }
+      : null,
+    colors: items.map((item) => item.color).filter((color): color is string => Boolean(color)),
   };
 }
 
@@ -789,12 +1546,13 @@ export function canonicalizeDataBackedModulesOnPage(page: Element): void {
     if (element.hasAttribute(HTML_CHART_SPEC_ATTRIBUTE)) {
       return;
     }
-    const spec = detectComboChartSpec(element) ?? detectWaterfallChartSpec(element);
+    const spec = detectComboChartSpec(element) ?? detectLineAreaChartSpec(element) ?? detectWaterfallChartSpec(element);
     if (!spec) {
       return;
     }
+    const targetElement = resolveChartModuleTarget(element);
     setModuleMetadata({
-      element,
+      element: targetElement,
       moduleKind: CHART_MODULE_KIND,
       moduleLabel: "Chart",
       visualKind: "chart-frame",
@@ -802,35 +1560,62 @@ export function canonicalizeDataBackedModulesOnPage(page: Element): void {
     });
   });
 
-  Array.from(page.querySelectorAll<HTMLElement>("div, article, aside, section, figure")).forEach((element) => {
-    if (getModuleRoot(element) && getModuleRoot(element) !== element) {
-      return;
-    }
-    if (element.getAttribute("data-html-module-kind")) {
-      return;
-    }
-    const bubbleSpec = detectBubbleChartSpec(element);
-    if (bubbleSpec) {
-      setModuleMetadata({
-        element,
-        moduleKind: CHART_MODULE_KIND,
-        moduleLabel: "Bubble chart",
-        visualKind: "chart-frame",
-        chartSpec: bubbleSpec,
-      });
-      return;
-    }
-    const tableSpec = detectPseudoTableModule(element);
-    if (tableSpec) {
-      setModuleMetadata({
-        element,
-        moduleKind: TABLE_MODULE_KIND,
-        moduleLabel: "Table",
-        visualKind: "surface",
-        tableSpec,
-      });
-    }
-  });
+  Array.from(page.querySelectorAll<HTMLElement>("div, article, aside, section, figure"))
+    .sort((left, right) => elementDepth(right) - elementDepth(left))
+    .forEach((element) => {
+      if (getModuleRoot(element) && getModuleRoot(element) !== element) {
+        return;
+      }
+      if (element.getAttribute("data-html-module-kind")) {
+        return;
+      }
+      if (containsModuleRoot(element)) {
+        return;
+      }
+      const waterfallSpec = detectDivWaterfallChartSpec(element);
+      if (waterfallSpec) {
+        setModuleMetadata({
+          element,
+          moduleKind: CHART_MODULE_KIND,
+          moduleLabel: "Waterfall chart",
+          visualKind: "chart-frame",
+          chartSpec: waterfallSpec,
+        });
+        return;
+      }
+      const matrixSpec = detectMatrixChartSpec(element);
+      if (matrixSpec) {
+        setModuleMetadata({
+          element,
+          moduleKind: CHART_MODULE_KIND,
+          moduleLabel: "Matrix chart",
+          visualKind: "chart-frame",
+          chartSpec: matrixSpec,
+        });
+        return;
+      }
+      const bubbleSpec = detectBubbleChartSpec(element);
+      if (bubbleSpec) {
+        setModuleMetadata({
+          element,
+          moduleKind: CHART_MODULE_KIND,
+          moduleLabel: "Bubble chart",
+          visualKind: "chart-frame",
+          chartSpec: bubbleSpec,
+        });
+        return;
+      }
+      const tableSpec = detectPseudoTableModule(element);
+      if (tableSpec) {
+        setModuleMetadata({
+          element,
+          moduleKind: TABLE_MODULE_KIND,
+          moduleLabel: "Table",
+          visualKind: "surface",
+          tableSpec,
+        });
+      }
+    });
 }
 
 function chartSpecToDataTable(spec: HtmlChartSpec): DataTableModel {
@@ -843,6 +1628,23 @@ function chartSpecToDataTable(spec: HtmlChartSpec): DataTableModel {
         String(point.y),
         String(point.size),
         point.group ?? "",
+      ]),
+    ]
+      .map((row) => row.join("\t"))
+      .join("\n");
+    return parseDataBlockInput(raw);
+  }
+
+  if (spec.kind === "matrix") {
+    const raw = [
+      ["Item", "Detail", "X", "Y", "W", "H"],
+      ...spec.items.map((item) => [
+        item.label,
+        item.detail,
+        String(item.x),
+        String(item.y),
+        String(item.w),
+        String(item.h),
       ]),
     ]
       .map((row) => row.join("\t"))
@@ -890,11 +1692,50 @@ function dataTableToChartSpec(args: {
       title: baseSpec?.title ?? "",
       subtitle: baseSpec?.subtitle ?? "",
       insight: baseSpec?.insight ?? "",
-      unit: baseSpec?.unit ?? "",
+      unit: baseSpec?.kind === "bubble" || (baseSpec && isSeriesChartSpec(baseSpec)) ? baseSpec.unit : "",
       xLabel: baseSpec?.kind === "bubble" ? baseSpec.xLabel : "X axis",
       yLabel: baseSpec?.kind === "bubble" ? baseSpec.yLabel : "Y axis",
       sizeLabel: baseSpec?.kind === "bubble" ? baseSpec.sizeLabel : "Bubble size",
       points,
+    };
+  }
+
+  if (kind === "matrix") {
+    const items = dataTable.rows
+      .map((row, index) => ({
+        id: baseSpec?.kind === "matrix" ? baseSpec.items[index]?.id ?? `item-${index + 1}` : `item-${index + 1}`,
+        label: normalizeSeriesLabel(row[0], `Item ${index + 1}`),
+        detail: normalizeChartText(row[1]),
+        x: normalizeChartRatio(row[2], index % 2 ? 0.56 : 0.08),
+        y: normalizeChartRatio(row[3], index < 2 ? 0.08 : 0.56),
+        w: normalizeChartRatio(row[4], 0.32),
+        h: normalizeChartRatio(row[5], 0.22),
+        color:
+          baseSpec?.kind === "matrix"
+            ? baseSpec.items[index]?.color ?? DEFAULT_BAR_COLORS[index % DEFAULT_BAR_COLORS.length]!
+            : DEFAULT_BAR_COLORS[index % DEFAULT_BAR_COLORS.length]!,
+        textColor: baseSpec?.kind === "matrix" ? baseSpec.items[index]?.textColor ?? null : null,
+      }))
+      .filter((item) => item.label);
+    if (!items.length) {
+      return null;
+    }
+    return {
+      kind: "matrix",
+      title: baseSpec?.title ?? "",
+      subtitle: baseSpec?.subtitle ?? "",
+      insight: baseSpec?.insight ?? "",
+      xLabel: baseSpec?.kind === "matrix" ? baseSpec.xLabel : "X axis",
+      yLabel: baseSpec?.kind === "matrix" ? baseSpec.yLabel : "Y axis",
+      xMinLabel: baseSpec?.kind === "matrix" ? baseSpec.xMinLabel : "",
+      xMaxLabel: baseSpec?.kind === "matrix" ? baseSpec.xMaxLabel : "",
+      yMinLabel: baseSpec?.kind === "matrix" ? baseSpec.yMinLabel : "",
+      yMaxLabel: baseSpec?.kind === "matrix" ? baseSpec.yMaxLabel : "",
+      plotBounds: baseSpec?.kind === "matrix" ? baseSpec.plotBounds : null,
+      quadrants: baseSpec?.kind === "matrix" ? baseSpec.quadrants?.map((quadrant) => ({ ...quadrant })) : undefined,
+      items,
+      callout: baseSpec?.kind === "matrix" && baseSpec.callout ? { ...baseSpec.callout } : null,
+      colors: items.map((item) => item.color).filter((color): color is string => Boolean(color)),
     };
   }
 
@@ -906,13 +1747,13 @@ function dataTableToChartSpec(args: {
     normalizeChartSeries(
       {
         id:
-          baseSpec?.kind !== "bubble"
+          baseSpec && isSeriesChartSpec(baseSpec)
             ? baseSpec?.series[columnIndex]?.id ?? `series-${columnIndex + 1}`
             : `series-${columnIndex + 1}`,
         label: column.label,
         values: dataTable.rows.map((row) => Number(row[columnIndex + 1]) || 0),
         color:
-          baseSpec?.kind !== "bubble"
+          baseSpec && isSeriesChartSpec(baseSpec)
             ? baseSpec?.series[columnIndex]?.color ?? undefined
             : undefined,
         role:
@@ -952,7 +1793,7 @@ function dataTableToChartSpec(args: {
       title: baseSpec?.title ?? "",
       subtitle: baseSpec?.subtitle ?? "",
       insight: baseSpec?.insight ?? "",
-      unit: baseSpec?.unit ?? "",
+      unit: baseSpec && isSeriesChartSpec(baseSpec) ? baseSpec.unit : "",
       secondaryUnit: baseSpec?.kind === "combo" ? baseSpec.secondaryUnit ?? "" : "",
       categories,
       series,
@@ -963,7 +1804,7 @@ function dataTableToChartSpec(args: {
     title: baseSpec?.title ?? "",
     subtitle: baseSpec?.subtitle ?? "",
     insight: baseSpec?.insight ?? "",
-    unit: baseSpec?.unit ?? "",
+    unit: baseSpec && isSeriesChartSpec(baseSpec) ? baseSpec.unit : "",
     categories,
     series,
   };
@@ -977,12 +1818,7 @@ export function updateHtmlChartSpecFromRawData(args: {
   return dataTableToChartSpec({
     dataTable,
     kind: args.current.kind,
-    baseSpec: {
-      ...args.current,
-      ...(args.current.kind === "bubble"
-        ? { points: args.current.points.map((point) => ({ ...point })) }
-        : { series: args.current.series.map((series) => ({ ...series, values: [...series.values] })) }),
-    } as HtmlChartSpec,
+    baseSpec: cloneChartSpecForUpdate(args.current),
   });
 }
 
@@ -1001,13 +1837,17 @@ function renderChartHeader(spec: HtmlChartSpec) {
       <div style="font-size:16px;font-weight:700;letter-spacing:-0.02em;color:#1a2630;">${escapeHtml(spec.title || "Chart")}</div>
       ${subtitle ? `<div style="margin-top:6px;font-size:12px;line-height:1.45;color:#667d90;max-width:720px;">${escapeHtml(subtitle)}</div>` : ""}
     </div>
-    ${spec.kind === "bubble"
-      ? `<div style="font-size:12px;color:#667d90;text-align:right;">${escapeHtml(spec.sizeLabel)}</div>`
-      : `<div style="font-size:12px;color:#667d90;text-align:right;">${escapeHtml(spec.unit || "")}</div>`}
+    ${
+      spec.kind === "bubble"
+        ? `<div style="font-size:12px;color:#667d90;text-align:right;">${escapeHtml(spec.sizeLabel)}</div>`
+        : spec.kind === "matrix"
+          ? `<div style="font-size:12px;color:#667d90;text-align:right;">${escapeHtml(spec.xLabel)} / ${escapeHtml(spec.yLabel)}</div>`
+          : `<div style="font-size:12px;color:#667d90;text-align:right;">${escapeHtml(spec.unit || "")}</div>`
+    }
   </div>`;
 }
 
-function renderBarLikeChart(spec: Exclude<HtmlChartSpec, HtmlBubbleChartSpec | { kind: "combo" }>) {
+function renderBarLikeChart(spec: HtmlBasicChartSpec) {
   const width = 1160;
   const height = 460;
   const left = 84;
@@ -1227,6 +2067,54 @@ function renderBubbleChart(spec: HtmlBubbleChartSpec) {
   </svg>`;
 }
 
+function renderMatrixChart(spec: HtmlMatrixChartSpec) {
+  const width = 1160;
+  const height = 500;
+  const left = 96;
+  const right = width - 72;
+  const top = 62;
+  const bottom = height - 82;
+  const plotWidth = right - left;
+  const plotHeight = bottom - top;
+  const quadrants =
+    spec.quadrants?.length
+      ? spec.quadrants
+      : [
+          { id: "q1", label: "", x: 0, y: 0, w: 0.5, h: 0.5, color: "rgba(181,86,56,0.06)" },
+          { id: "q2", label: "", x: 0.5, y: 0, w: 0.5, h: 0.5, color: "rgba(48,92,99,0.06)" },
+          { id: "q3", label: "", x: 0, y: 0.5, w: 0.5, h: 0.5, color: "rgba(127,157,161,0.06)" },
+          { id: "q4", label: "", x: 0.5, y: 0.5, w: 0.5, h: 0.5, color: "rgba(208,143,115,0.06)" },
+        ];
+  return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="display:block;">
+    <rect x="${left}" y="${top}" width="${plotWidth}" height="${plotHeight}" rx="14" fill="rgba(255,255,255,0.54)" stroke="#d9e5ef" stroke-width="1.2" />
+    ${quadrants
+      .map(
+        (quadrant) =>
+          `<rect x="${left + quadrant.x * plotWidth}" y="${top + quadrant.y * plotHeight}" width="${quadrant.w * plotWidth}" height="${quadrant.h * plotHeight}" fill="${escapeHtml(quadrant.color || "rgba(47,93,132,0.04)")}" />`,
+      )
+      .join("")}
+    <line x1="${left + plotWidth / 2}" y1="${top}" x2="${left + plotWidth / 2}" y2="${bottom}" stroke="#c3d0da" stroke-width="1.2" />
+    <line x1="${left}" y1="${top + plotHeight / 2}" x2="${right}" y2="${top + plotHeight / 2}" stroke="#c3d0da" stroke-width="1.2" />
+    ${spec.items
+      .map((item, index) => {
+        const x = left + item.x * plotWidth;
+        const y = top + item.y * plotHeight;
+        const w = Math.max(92, item.w * plotWidth);
+        const h = Math.max(54, item.h * plotHeight);
+        return `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="12" fill="${escapeHtml(item.color || DEFAULT_BAR_COLORS[index % DEFAULT_BAR_COLORS.length]!)}" opacity="0.88" stroke="rgba(255,255,255,0.82)" stroke-width="2" />
+          <text x="${x + 14}" y="${y + 22}" font-size="13" font-weight="700" fill="${escapeHtml(item.textColor || "#17283a")}">${escapeHtml(item.label)}</text>
+          ${item.detail ? `<text x="${x + 14}" y="${y + 42}" font-size="11" fill="${escapeHtml(item.textColor || "#526779")}">${escapeHtml(item.detail)}</text>` : ""}`;
+      })
+      .join("")}
+    <text x="${left}" y="${bottom + 30}" font-size="12" fill="#667d90">${escapeHtml(spec.xMinLabel || "")}</text>
+    <text x="${right}" y="${bottom + 30}" text-anchor="end" font-size="12" fill="#667d90">${escapeHtml(spec.xMaxLabel || "")}</text>
+    <text x="${(left + right) / 2}" y="${height - 18}" text-anchor="middle" font-size="13" fill="#5f7384">${escapeHtml(spec.xLabel)}</text>
+    <text x="${left - 42}" y="${top + 12}" text-anchor="end" font-size="12" fill="#667d90">${escapeHtml(spec.yMaxLabel || "")}</text>
+    <text x="${left - 42}" y="${bottom}" text-anchor="end" font-size="12" fill="#667d90">${escapeHtml(spec.yMinLabel || "")}</text>
+    <text x="24" y="${(top + bottom) / 2}" transform="rotate(-90 24 ${(top + bottom) / 2})" text-anchor="middle" font-size="13" fill="#5f7384">${escapeHtml(spec.yLabel)}</text>
+  </svg>`;
+}
+
 export function renderHtmlChartModule(args: {
   spec: HtmlChartSpec;
   background?: string | null;
@@ -1239,6 +2127,8 @@ export function renderHtmlChartModule(args: {
   const svg =
     args.spec.kind === "bubble"
       ? renderBubbleChart(args.spec)
+      : args.spec.kind === "matrix"
+        ? renderMatrixChart(args.spec)
       : args.spec.kind === "combo"
         ? renderComboChart(args.spec)
         : renderBarLikeChart(args.spec);

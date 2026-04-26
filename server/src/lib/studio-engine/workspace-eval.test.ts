@@ -45,6 +45,22 @@ test("eval override can force fast lane and remove task grammar packs", () => {
   assert.equal(preparation.briefSynthesis.structuredSparseMode, false);
 });
 
+test("long-form page budgets promote the preparation lane to deep", () => {
+  const preparation = resolveStudioGenerationPreparation({
+    brief:
+      "Create a 10 page long-form deck on enterprise AI rollout. Cover operating model, governance, adoption risks, capability roadmap, measurement, and executive implications.",
+    requestedPageCount: 10,
+  });
+
+  assert.equal(preparation.complexityProfile.workloadLane, "deep");
+  assert.equal(preparation.complexityProfile.rigorLevel, "high-spec");
+  assert.ok(
+    preparation.complexityProfile.taskGrammarPacks.some((pack) => pack.id === "unstructured-synthesis"),
+    "long-form budgets should add an explicit synthesis grammar pack",
+  );
+  assert.match(preparation.complexityProfile.reason, /Long-form page budget/i);
+});
+
 test("page workspace stays raw-brief-first and disableLayoutPlanningBlock suppresses old layout scaffolding", () => {
   const preparation = resolveStudioGenerationPreparation({
     brief: VALUATION_PROMPT,

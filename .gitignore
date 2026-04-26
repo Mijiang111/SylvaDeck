@@ -12,6 +12,7 @@ playwright-report
 test-results
 tests/stability/artifacts
 tests/workspace-eval/artifacts
+tests/golden-set/artifacts
 server/dist
 ui/dist
 ui/tsconfig*.tsbuildinfo

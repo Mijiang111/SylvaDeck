@@ -36,6 +36,27 @@ function parseDeckPageCountToken(value: string | null | undefined) {
   return CHINESE_PAGE_COUNT_WORDS.get(normalized);
 }
 
+function isPageCountMatchPartOfAspectRatio(sourceText: string, match: RegExpMatchArray) {
+  const matchIndex = match.index ?? -1;
+  if (matchIndex <= 0) {
+    return false;
+  }
+
+  const separator = sourceText[matchIndex - 1];
+  if (separator !== ":" && separator !== "：") {
+    return false;
+  }
+
+  let cursor = matchIndex - 2;
+  let hasLeftNumber = false;
+  while (cursor >= 0 && /\d/.test(sourceText[cursor] ?? "")) {
+    hasLeftNumber = true;
+    cursor -= 1;
+  }
+
+  return hasLeftNumber;
+}
+
 export function inferRequestedHtmlPageCount(sourceText: string) {
   const normalized = sourceText.trim().toLowerCase();
   if (!normalized) {
@@ -56,6 +77,9 @@ export function inferRequestedHtmlPageCount(sourceText: string) {
   for (const pattern of numericTotalPatterns) {
     let lastParsed: number | undefined;
     for (const match of normalized.matchAll(pattern)) {
+      if (isPageCountMatchPartOfAspectRatio(normalized, match)) {
+        continue;
+      }
       const parsed = parseDeckPageCountToken(match[1] ?? "");
       if (parsed !== undefined) {
         lastParsed = parsed;

@@ -1097,7 +1097,7 @@ export type NeuralNetworkDiagramSpec = {
 
 export type ScientificDiagramSpec = NeuralNetworkDiagramSpec;
 
-export type HtmlChartKind = ModuleChartKind | "combo" | "bubble";
+export type HtmlChartKind = ModuleChartKind | "combo" | "bubble" | "matrix";
 export type HtmlChartSeriesRole = "bar" | "line";
 export type HtmlChartAxisRole = "primary" | "secondary";
 export type HtmlChartSeries = {
@@ -1125,6 +1125,8 @@ export type HtmlBasicChartSpec = {
   unit: string;
   categories: string[];
   series: HtmlChartSeries[];
+  valueAxisMin?: number;
+  valueAxisMax?: number;
 };
 export type HtmlComboChartSpec = {
   kind: "combo";
@@ -1135,6 +1137,8 @@ export type HtmlComboChartSpec = {
   secondaryUnit?: string;
   categories: string[];
   series: HtmlChartSeries[];
+  valueAxisMin?: number;
+  valueAxisMax?: number;
 };
 export type HtmlBubbleChartSpec = {
   kind: "bubble";
@@ -1147,10 +1151,66 @@ export type HtmlBubbleChartSpec = {
   sizeLabel: string;
   points: HtmlBubblePoint[];
 };
+export type HtmlMatrixItem = {
+  id: string;
+  label: string;
+  detail: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  color?: string | null;
+  textColor?: string | null;
+};
+export type HtmlMatrixCallout = {
+  title: string;
+  body: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  color?: string | null;
+  textColor?: string | null;
+  borderColor?: string | null;
+};
+export type HtmlMatrixPlotBounds = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+};
+export type HtmlMatrixQuadrant = {
+  id: string;
+  label: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  color?: string | null;
+  textColor?: string | null;
+};
+export type HtmlMatrixChartSpec = {
+  kind: "matrix";
+  title: string;
+  subtitle: string;
+  insight: string;
+  xLabel: string;
+  yLabel: string;
+  xMinLabel?: string;
+  xMaxLabel?: string;
+  yMinLabel?: string;
+  yMaxLabel?: string;
+  plotBounds?: HtmlMatrixPlotBounds | null;
+  quadrants?: HtmlMatrixQuadrant[];
+  items: HtmlMatrixItem[];
+  callout?: HtmlMatrixCallout | null;
+  colors?: string[];
+};
 export type HtmlChartSpec =
   | HtmlBasicChartSpec
   | HtmlComboChartSpec
-  | HtmlBubbleChartSpec;
+  | HtmlBubbleChartSpec
+  | HtmlMatrixChartSpec;
 export type HtmlTableSpec = DataTableModel;
 
 export type HtmlVisualModuleKind = "scientific-diagram" | "chart" | "table";

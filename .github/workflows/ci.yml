@@ -36,5 +36,8 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      - name: Golden set
+        run: pnpm test:golden
+
       - name: Quick stability
         run: pnpm test:stability:quick

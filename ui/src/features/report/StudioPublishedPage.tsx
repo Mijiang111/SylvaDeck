@@ -30,11 +30,13 @@ function formatPptxWarningSummary(code: PptExportResult["warnings"][number]["cod
     case "color-fallback":
       return "Color fell back to the closest PowerPoint-safe value.";
     case "gradient-flattened":
-      return "Complex gradient was flattened to keep export stable.";
+      return "Complex gradient was flattened because it could not be represented as native PowerPoint fill.";
     case "chart-image-fallback":
       return "Chart was exported as an image to preserve visibility.";
     case "chart-native-unsupported":
       return "Chart type is not natively supported by the current PPTX renderer.";
+    case "table-native-unsupported":
+      return "Table could not be converted into a native PowerPoint table.";
     case "frame-missing":
       return "One page surface was not ready when export started.";
     case "page-missing":
@@ -370,6 +372,11 @@ export function StudioPublishedPage({ projectId }: { projectId: string }) {
           <div className="mt-2 text-sm">
             {lastPptxExportResult.fileName} • {lastPptxExportResult.slideCount} slides
           </div>
+          <div className="mt-2 text-xs uppercase tracking-[0.16em] text-[#5c7581]">
+            Quality {lastPptxExportResult.qualityReport.score} •{" "}
+            {lastPptxExportResult.qualityReport.nativeObjectCount} native •{" "}
+            {lastPptxExportResult.qualityReport.fallbackObjectCount} fallback
+          </div>
           {lastPptxExportResult.warningCount > 0 ? (
             <div className="mt-3 flex flex-wrap gap-2">
               {lastPptxExportResult.warnings.slice(0, 6).map((warning, index) => (
@@ -387,6 +394,32 @@ export function StudioPublishedPage({ projectId }: { projectId: string }) {
               No export notes
             </div>
           )}
+          {lastPptxExportResult.diagnostics.some(
+            (diagnostic) => diagnostic.severity === "success" || diagnostic.severity === "info",
+          ) ? (
+            <details className="mt-3 text-xs text-[#6b7783]">
+              <summary className="cursor-pointer uppercase tracking-[0.16em]">
+                Export diagnostics
+              </summary>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {lastPptxExportResult.diagnostics
+                  .filter(
+                    (diagnostic) =>
+                      diagnostic.severity === "success" || diagnostic.severity === "info",
+                  )
+                  .slice(0, 6)
+                  .map((diagnostic, index) => (
+                    <span
+                      key={`${diagnostic.code}-${diagnostic.pageNumber ?? "all"}-${index}`}
+                      className="rounded-full border border-[#d9d0c0] bg-white/70 px-3 py-1"
+                    >
+                      {diagnostic.pageNumber ? `P${diagnostic.pageNumber} · ` : ""}
+                      {diagnostic.code}
+                    </span>
+                  ))}
+              </div>
+            </details>
+          ) : null}
         </div>
       ) : null}
 

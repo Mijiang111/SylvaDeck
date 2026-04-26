@@ -108,6 +108,21 @@ Avoid:
 
 Read `references/visual-briefing.md` when you need the visual prompting rules, `references/data-story-patterns.md` when you need to map source material to an archetype, `references/premium-visual-cues.md` for effective visual language, and `references/preflight-aware-visual-budget.md` when you need to keep ambition inside the engine's fit limits.
 
+## Structured flowchart and swimlane rule
+
+When the user asks for a process flow, swimlane, consulting workflow, project plan with many steps, or a reference image that is visibly a flowchart:
+
+- Think in a 2D diagram model before writing the Studio prompt.
+- Treat the x-axis as lanes, owners, or workstreams such as `客户`, `项目小组`, `专家委员会`, `埃森克咨询`.
+- Treat the y-axis as phases or stage bands such as `现状诊断`, `方案设计`, `辅导实施`, `长期服务`.
+- Assign every node to an x-axis lane and y-axis phase before describing connectors.
+- Preserve the user's labels verbatim; do not invent missing process content.
+- Use explicit structure cues: `swimlane flowchart`, `process diagram`, `流程图`, `泳道`, `lane headers`, `phase bands`, `numbered nodes`, `decision diamonds`, `orthogonal connectors`.
+- Include lane headers, phase bands, all numbered nodes, decision-node labels, and any known arrow chains in the prompt.
+- Avoid vague `roadmap` wording unless the target is truly a Gantt/timeline with time buckets.
+
+Visual thesis: the page should read like a role-by-stage operating map, not a hero page, card wall, or prose summary.
+
 ## Meaningful prompt inputs
 
 The current engine responds well to:
@@ -115,7 +130,7 @@ The current engine responds well to:
 - explicit page count
 - each page having a clear role
 - one main claim per page
-- structure cues like `chart`, `matrix`, `quadrant`, `figure`, `timeline`
+- structure cues like `chart`, `matrix`, `quadrant`, `figure`, `timeline`, `swimlane flowchart`, `phase bands`, `lane headers`
 - one visual thesis per page
 - language and density posture
 - a clear instruction to stay inside the observed source facts

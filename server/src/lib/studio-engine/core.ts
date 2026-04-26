@@ -84,6 +84,7 @@ import {
   extractMarkdownSection,
 } from "./skills.js";
 import { resolveDeckThinkingMode } from "./thinking-mode.js";
+import { buildStructuredDiagramSpec } from "./structured-diagram.js";
 import {
   assessGeneratedTitleQuality,
   clampText,
@@ -106,8 +107,6 @@ import {
 } from "./brief.js";
 import {
   buildSanitizedFinalReport,
-  composeDeckHtml,
-  composeDeterministicPageSection,
   composeSinglePageHtml,
   countPages,
   escapeHtml,
@@ -122,6 +121,14 @@ import {
   replaceDocumentTitle,
   validateGeneratedPageHtml,
 } from "./render.js";
+import {
+  buildFinalStudioReport,
+  collectStudioDeckSections,
+  collectStudioPageRenderResults,
+  recoverDeterministicPageAfterRenderFailures,
+  renderDeterministicPageFromRecipe,
+  type StudioPageRenderResult,
+} from "./page-render-boundary.js";
 import {
   applyDeterministicShrink,
   formatMeasurementElements,
@@ -1941,24 +1948,28 @@ function buildDeckCompositionBrief(args: {
 }
 
 function inferPageRecipeCompositionFingerprint(
-  recipe: Pick<PageRecipe, "pageClass" | "layout" | "chartSpec" | "diagramSpec" | "compositionHint" | "freeformLayoutPlan">,
+  recipe: Pick<PageRecipe, "pageClass" | "layout" | "chartSpec" | "diagramSpec" | "structuredDiagramSpec" | "compositionHint" | "freeformLayoutPlan">,
 ): PageCompositionFingerprint {
   const family =
     recipe.freeformLayoutPlan?.layoutFamily ??
-    (recipe.diagramSpec
-      ? "research-figure-stage"
-      :
-    (recipe.layout === "sequence"
-      ? "sequence-grid"
-      : recipe.layout === "comparison"
-        ? "comparison-split"
-        : recipe.layout === "chart-insight"
-          ? recipe.chartSpec?.composite === "annotation-rail" || recipe.chartSpec?.composite === "decision-footer"
-          ? "chart-rail"
-          : "hero-chart"
-          : recipe.pageClass === "synthesis-support"
-            ? "single-column"
-            : "hero-proof"));
+    (recipe.structuredDiagramSpec
+      ? recipe.structuredDiagramSpec.kind === "gantt"
+        ? "case-timeline"
+        : "center-stage-figure"
+      : recipe.diagramSpec
+        ? "research-figure-stage"
+        : recipe.layout === "sequence"
+          ? "sequence-grid"
+          : recipe.layout === "comparison"
+            ? "comparison-split"
+            : recipe.layout === "chart-insight"
+              ? recipe.chartSpec?.composite === "annotation-rail" ||
+                recipe.chartSpec?.composite === "decision-footer"
+                ? "chart-rail"
+                : "hero-chart"
+              : recipe.pageClass === "synthesis-support"
+                ? "single-column"
+                : "hero-proof");
 
   const hasChart = Boolean(recipe.chartSpec || recipe.diagramSpec);
   const hasRightRail =
@@ -1983,12 +1994,14 @@ function inferPageRecipeCompositionFingerprint(
         ? freeformColumnCount
         : family === "research-figure-stage"
           ? 1
-        : family === "single-column"
-        ? 1
-        : family === "sequence-grid"
-          ? 3
-          : 2,
-    hasHero: family === "hero-proof" || family === "hero-chart",
+          : family === "center-stage-figure"
+            ? 1
+            : family === "single-column"
+              ? 1
+              : family === "sequence-grid"
+                ? 3
+                : 2,
+    hasHero: family === "hero-proof" || family === "hero-chart" || family === "center-stage-figure",
     hasChart,
     hasRightRail,
     hasFooter,
@@ -4526,38 +4539,47 @@ function resolvePageRecipe(args: {
   manifests: PublishedModuleManifest[];
   totalPages: number;
 }) {
-  const chartPriority = resolvePageChartPriority({
+  const structuredDiagramSpec = buildStructuredDiagramSpec({
     brief: args.brief,
     page: args.page,
   });
+  const chartPriority = structuredDiagramSpec
+    ? "none"
+    : resolvePageChartPriority({
+        brief: args.brief,
+        page: args.page,
+      });
   const chartSpec =
-    resolveChartSpec({
-      page: args.page,
-      evidenceGraph: args.evidenceGraph,
-      allowFlexibleChart: chartPriority !== "none",
-    }) ??
-    (chartPriority === "required"
-      ? resolveChartSpec({
-          page: {
-            ...args.page,
-            desiredChartKind:
-              args.evidenceGraph.timelineSets.some(isRenderableTimelineSet)
-                ? "line"
-                : args.evidenceGraph.comparisonSets.some(isRenderableComparisonSet)
-                  ? "bar"
-                  : "none",
-            layout: "chart-insight",
-          },
+    structuredDiagramSpec
+      ? null
+      : resolveChartSpec({
+          page: args.page,
           evidenceGraph: args.evidenceGraph,
-          allowFlexibleChart: true,
-        })
-      : null);
+          allowFlexibleChart: chartPriority !== "none",
+        }) ??
+        (chartPriority === "required"
+          ? resolveChartSpec({
+              page: {
+                ...args.page,
+                desiredChartKind:
+                  args.evidenceGraph.timelineSets.some(isRenderableTimelineSet)
+                    ? "line"
+                    : args.evidenceGraph.comparisonSets.some(isRenderableComparisonSet)
+                      ? "bar"
+                      : "none",
+                layout: "chart-insight",
+              },
+              evidenceGraph: args.evidenceGraph,
+              allowFlexibleChart: true,
+            })
+          : null);
   const scientificDiagramLane = isScientificShortDeckLane({
     thinkingMode: args.briefSynthesis.thinkingMode ?? "neutral",
     brief: args.brief,
     pageCount: args.totalPages,
   });
   const diagramSpec =
+    !structuredDiagramSpec &&
     scientificDiagramLane &&
     isScientificDiagramFigurePage({
       pageNumber: args.page.pageNumber,
@@ -4577,7 +4599,9 @@ function resolvePageRecipe(args: {
         })
       : null;
   const effectiveLayout =
-    diagramSpec
+    structuredDiagramSpec
+      ? "sequence"
+      : diagramSpec
       ? "hero-proof"
       : args.page.layout === "chart-insight" && !chartSpec
         ? "comparison"
@@ -4598,7 +4622,9 @@ function resolvePageRecipe(args: {
         : args.manifests;
   const moduleBinding = diagramSpec
     ? null
-    : pickBestModuleManifest({
+    : structuredDiagramSpec
+      ? null
+      : pickBestModuleManifest({
         page: {
           ...args.page,
           layout: effectiveLayout,
@@ -4621,21 +4647,25 @@ function resolvePageRecipe(args: {
     args.briefSynthesis.pageIntents.find((item) => item.pageNumber === args.page.pageNumber) ??
     args.briefSynthesis.pageIntents[0] ??
     null;
+  const pageTitle = structuredDiagramSpec?.title ?? args.page.pageTitle;
 
   const recipe = {
     pageNumber: args.page.pageNumber,
-    pageTitle: args.page.pageTitle,
+    pageTitle,
     pageIntent: args.page.objective,
     objective: args.page.objective,
     insight: args.page.insight,
     pageClass,
     densityBudget,
-    compositionHint:
-      diagramSpec
+    compositionHint: structuredDiagramSpec
+      ? structuredDiagramSpec.kind === "gantt"
+        ? "Render a deterministic Gantt or roadmap diagram with task bars and milestone metadata."
+        : "Render a deterministic structured process diagram with lanes, nodes, connectors, and metadata."
+      : diagramSpec
         ? "Stage one dominant scientific figure in the middle, keep method cues and caption compact, and never let the page fall back into equal-weight cards."
         : compositionHint,
     layout: effectiveLayout,
-    chartPriority: diagramSpec ? "none" : chartPriority,
+    chartPriority: diagramSpec || structuredDiagramSpec ? "none" : chartPriority,
     evidenceIds: args.page.evidenceIds,
     evidenceBundle: resolveRelevantEvidenceBundle(args.page, args.evidenceGraph),
     heroClaim: synthesizedIntent?.headlineClaim ?? args.page.insight,
@@ -4649,22 +4679,24 @@ function resolvePageRecipe(args: {
         : resolveEvidenceBullets(args.page, args.evidenceGraph),
     takeaway: synthesizedIntent?.takeaway ?? args.page.objective,
     moduleBinding,
-    chartSpec: diagramSpec
-      ? null
-      : chartSpec
-      ? {
-          ...chartSpec,
-          composite:
-            composite === "metric-strip" ||
-            composite === "decision-footer" ||
-            composite === "annotation-rail"
-              ? composite
-              : "annotation-rail",
-        }
-      : null,
+    chartSpec:
+      diagramSpec || structuredDiagramSpec
+        ? null
+        : chartSpec
+          ? {
+              ...chartSpec,
+              composite:
+                composite === "metric-strip" ||
+                composite === "decision-footer" ||
+                composite === "annotation-rail"
+                  ? composite
+                  : "annotation-rail",
+            }
+          : null,
     diagramSpec,
+    structuredDiagramSpec,
     fallbackReason:
-      !diagramSpec && args.page.desiredChartKind !== "none" && !chartSpec
+      !diagramSpec && !structuredDiagramSpec && args.page.desiredChartKind !== "none" && !chartSpec
         ? "Requested chart data was not strong enough."
         : null,
     workloadLane: args.briefSynthesis.workloadLane,
@@ -4672,11 +4704,17 @@ function resolvePageRecipe(args: {
     complexitySignalPhrases: args.briefSynthesis.complexitySignalPhrases,
   } satisfies PageRecipe;
 
-  return refinePageRecipeIntentWithSynthesis({
+  const refinedRecipe = refinePageRecipeIntentWithSynthesis({
     rawBrief: args.brief,
     synthesis: args.briefSynthesis,
     page: recipe,
-  }) satisfies PageRecipe;
+  });
+
+  return {
+    ...refinedRecipe,
+    pageTitle: structuredDiagramSpec?.title ?? refinedRecipe.pageTitle,
+    structuredDiagramSpec,
+  } satisfies PageRecipe;
 }
 
 function buildPageRepairProfile(args: {
@@ -5256,6 +5294,10 @@ export async function runStudioGenerationV2(args: {
       totalPages: alignedRecipePlan.pages.length,
     }),
   );
+  const outputDeckTitle =
+    pageRecipes.length === 1 && pageRecipes[0]?.structuredDiagramSpec
+      ? pageRecipes[0].pageTitle
+      : alignedRecipePlan.title;
 
   let releasePageOneReady: (() => void) | null = null;
   const pageOneReadyGate = new Promise<void>((resolve) => {
@@ -5297,13 +5339,15 @@ export async function runStudioGenerationV2(args: {
       type: "assistant_chunk",
       runId: args.runId,
       stage: `page-recipe-${recipe.pageNumber}`,
-      content: recipe.diagramSpec
-        ? `Page ${recipe.pageNumber} is an ${recipe.pageClass} page routed into the scientific-diagram lane with a deterministic ${recipe.diagramSpec.family} figure.`
-        : recipe.chartSpec
-          ? `Page ${recipe.pageNumber} is an ${recipe.pageClass} page using a ${recipe.chartSpec.kind} chart with ${recipe.chartSpec.categories.length} categories${chartPageIntent.enabled ? " in chart-first mode" : ""}.`
-        : heroModelIntent.enabled
-          ? `Page ${recipe.pageNumber} is an ${recipe.pageClass} page and will render as a dominant hero-model concept page for ${heroModelIntent.objectFocus ?? "the core system"}.`
-          : `Page ${recipe.pageNumber} is an ${recipe.pageClass} page with a ${recipe.compositionHint ?? "content-led"} composition direction and ${recipe.moduleBinding?.label ?? "built-in"} template support.`,
+      content: recipe.structuredDiagramSpec
+        ? `Page ${recipe.pageNumber} is an ${recipe.pageClass} page routed into the structured-diagram lane with a deterministic ${recipe.structuredDiagramSpec.kind} renderer.`
+        : recipe.diagramSpec
+          ? `Page ${recipe.pageNumber} is an ${recipe.pageClass} page routed into the scientific-diagram lane with a deterministic ${recipe.diagramSpec.family} figure.`
+          : recipe.chartSpec
+            ? `Page ${recipe.pageNumber} is an ${recipe.pageClass} page using a ${recipe.chartSpec.kind} chart with ${recipe.chartSpec.categories.length} categories${chartPageIntent.enabled ? " in chart-first mode" : ""}.`
+            : heroModelIntent.enabled
+              ? `Page ${recipe.pageNumber} is an ${recipe.pageClass} page and will render as a dominant hero-model concept page for ${heroModelIntent.objectFocus ?? "the core system"}.`
+              : `Page ${recipe.pageNumber} is an ${recipe.pageClass} page with a ${recipe.compositionHint ?? "content-led"} composition direction and ${recipe.moduleBinding?.label ?? "built-in"} template support.`,
     });
     await emit({
       type: "page_started",
@@ -5318,16 +5362,47 @@ export async function runStudioGenerationV2(args: {
       label: `Rendering page ${recipe.pageNumber}`,
       pageNumber: recipe.pageNumber,
     });
+    if (recipe.structuredDiagramSpec) {
+      const deterministicPage = renderDeterministicPageFromRecipe({
+        deckTitle: outputDeckTitle,
+        recipe,
+        styleProfile,
+        reportStyleProfile,
+        htmlOutputMode: args.payload.htmlOutputMode,
+      });
+      await emit({
+        type: "assistant_chunk",
+        runId: args.runId,
+        stage: `page-render-${recipe.pageNumber}`,
+        content: `Page ${recipe.pageNumber} matched the structured-diagram lane (${recipe.structuredDiagramSpec.kind}), so Studio rendered it deterministically instead of asking the model to author raw diagram HTML.`,
+      });
+      if (waitForPageOneReady) {
+        await pageOneReadyGate;
+      }
+      await emit({
+        type: "page_ready",
+        runId: args.runId,
+        pageNumber: recipe.pageNumber,
+        pageTitle: deterministicPage.pageTitle,
+        pageHtml: deterministicPage.pageHtml,
+      });
+      if (recipe.pageNumber === 1) {
+        releasePageOneReady?.();
+        releasePageOneReady = null;
+      }
+      return {
+        pageNumber: recipe.pageNumber,
+        sectionHtml: deterministicPage.sectionHtml,
+        model: args.agentConfig.model,
+        animationPage: deterministicPage.animationPage ?? null,
+      };
+    }
     if (recipe.diagramSpec) {
-      const deterministicPage = validateGeneratedPageHtml({
-        html: composeSinglePageHtml({
-          title: alignedRecipePlan.title,
-          sectionHtml: composeDeterministicPageSection(recipe, styleProfile),
-          styleProfile: reportStyleProfile,
-          htmlOutputMode: args.payload.htmlOutputMode,
-        }),
-        expectedPageNumber: recipe.pageNumber,
-        expectedPageTitle: recipe.pageTitle,
+      const deterministicPage = renderDeterministicPageFromRecipe({
+        deckTitle: outputDeckTitle,
+        recipe,
+        styleProfile,
+        reportStyleProfile,
         htmlOutputMode: args.payload.htmlOutputMode,
       });
       await emit({
@@ -5521,57 +5596,81 @@ export async function runStudioGenerationV2(args: {
           error instanceof Error ? error.message : "render failure"
         }.`,
       });
-      const fallbackResult = await executeStudioStage({
-        runId: args.runId,
-        stage: `page-fallback-${recipe.pageNumber}`,
-        prompt: fallbackPrompt,
-        payload: args.payload,
-        agentConfig: args.agentConfig,
-        onStageTrace: args.onStageTrace,
-        traceMeta: {
-          ...(fallbackWorkspaceMeta ?? {}),
-          ...buildComplexityTraceMeta(complexityProfile),
-          ...buildStudioEvalTraceMeta(args.evalOverrides),
-          skillLoaded: analysisSkill.source === "file",
-          skillPath: analysisSkill.path,
-          skillHash: analysisSkill.hash,
-          thinkingMode: thinkingContext.mode,
-          thinkingModeSkillLoaded: thinkingSkill?.source === "file",
-          thinkingModeSkillPath: thinkingSkill?.path ?? null,
-          thinkingModeSkillHash: thinkingSkill?.hash ?? null,
-          moduleUsageMode: args.payload.moduleUsageMode,
-          publishedModuleCount: rankedModuleOptions.length,
-          skillSource: analysisSkill.source,
-          compositionHint: recipe.compositionHint,
-          compositionFingerprint: inferPageRecipeCompositionFingerprint(recipe),
-          deckDiversityScore: deckDiversityReport.diversityScore,
-          pressureBudget,
-          ...buildBriefSynthesisTraceMeta(briefSynthesis),
-          pageIntentQualityPass: recipe.pageIntentQuality?.pass ?? null,
-          pageIntentQualityReasons: recipe.pageIntentQuality?.reasons ?? [],
-          deepQaPass: recipe.deepQa?.pass ?? null,
-          deepQaReasons: recipe.deepQa?.reasons ?? [],
-          intentRefinementAttempted: recipe.intentRefinementAttempted ?? false,
-        },
-        assistantTextParser: extractTextBeforeHtml,
-        onAssistantChunk: async (content) => {
-          await emit({
-            type: "assistant_chunk",
-            runId: args.runId,
-            stage: `page-render-${recipe.pageNumber}`,
-            content,
-          });
-        },
-        signal: args.signal,
-      });
-      pageSummary = fallbackResult.summary;
-      pageModel = fallbackResult.model;
-      validatedPage = validateGeneratedPageHtml({
-        html: fallbackResult.summary,
-        expectedPageNumber: recipe.pageNumber,
-        expectedPageTitle: recipe.pageTitle,
-        htmlOutputMode: args.payload.htmlOutputMode,
-      });
+      try {
+        const fallbackResult = await executeStudioStage({
+          runId: args.runId,
+          stage: `page-fallback-${recipe.pageNumber}`,
+          prompt: fallbackPrompt,
+          payload: args.payload,
+          agentConfig: args.agentConfig,
+          onStageTrace: args.onStageTrace,
+          traceMeta: {
+            ...(fallbackWorkspaceMeta ?? {}),
+            ...buildComplexityTraceMeta(complexityProfile),
+            ...buildStudioEvalTraceMeta(args.evalOverrides),
+            skillLoaded: analysisSkill.source === "file",
+            skillPath: analysisSkill.path,
+            skillHash: analysisSkill.hash,
+            thinkingMode: thinkingContext.mode,
+            thinkingModeSkillLoaded: thinkingSkill?.source === "file",
+            thinkingModeSkillPath: thinkingSkill?.path ?? null,
+            thinkingModeSkillHash: thinkingSkill?.hash ?? null,
+            moduleUsageMode: args.payload.moduleUsageMode,
+            publishedModuleCount: rankedModuleOptions.length,
+            skillSource: analysisSkill.source,
+            compositionHint: recipe.compositionHint,
+            compositionFingerprint: inferPageRecipeCompositionFingerprint(recipe),
+            deckDiversityScore: deckDiversityReport.diversityScore,
+            pressureBudget,
+            ...buildBriefSynthesisTraceMeta(briefSynthesis),
+            pageIntentQualityPass: recipe.pageIntentQuality?.pass ?? null,
+            pageIntentQualityReasons: recipe.pageIntentQuality?.reasons ?? [],
+            deepQaPass: recipe.deepQa?.pass ?? null,
+            deepQaReasons: recipe.deepQa?.reasons ?? [],
+            intentRefinementAttempted: recipe.intentRefinementAttempted ?? false,
+          },
+          assistantTextParser: extractTextBeforeHtml,
+          onAssistantChunk: async (content) => {
+            await emit({
+              type: "assistant_chunk",
+              runId: args.runId,
+              stage: `page-render-${recipe.pageNumber}`,
+              content,
+            });
+          },
+          signal: args.signal,
+        });
+        pageSummary = fallbackResult.summary;
+        pageModel = fallbackResult.model;
+        validatedPage = validateGeneratedPageHtml({
+          html: fallbackResult.summary,
+          expectedPageNumber: recipe.pageNumber,
+          expectedPageTitle: recipe.pageTitle,
+          htmlOutputMode: args.payload.htmlOutputMode,
+        });
+      } catch (fallbackError) {
+        await emit({
+          type: "assistant_chunk",
+          runId: args.runId,
+          stage: `page-render-${recipe.pageNumber}`,
+          content: `Page ${recipe.pageNumber} classic fallback failed, so Studio used the deterministic layout renderer: ${
+            fallbackError instanceof Error ? fallbackError.message : "fallback render failure"
+          }.`,
+        });
+        const deterministicRecovery = recoverDeterministicPageAfterRenderFailures({
+          deckTitle: alignedRecipePlan.title,
+          recipe,
+          styleProfile,
+          reportStyleProfile,
+          htmlOutputMode: args.payload.htmlOutputMode,
+          model: args.agentConfig.model,
+          primaryError: error,
+          fallbackError,
+        });
+        validatedPage = deterministicRecovery.page;
+        pageSummary = deterministicRecovery.pageSummary;
+        pageModel = deterministicRecovery.model;
+      }
     }
 
     if (!validatedPage) {
@@ -5615,12 +5714,7 @@ export async function runStudioGenerationV2(args: {
     };
   };
 
-  let pageResults: Array<{
-    pageNumber: number;
-    sectionHtml: string;
-    model: string | null;
-    animationPage: HtmlAnimationPage | null;
-  }> = [];
+  let pageResults: StudioPageRenderResult[] = [];
 
   if (isLongForm) {
     const firstWave = pageRecipes.slice(0, 3);
@@ -5674,18 +5768,8 @@ export async function runStudioGenerationV2(args: {
     ];
   }
 
-  const pageSections: string[] = [];
-  const pageAnimationPages: HtmlAnimationPage[] = [];
-  let resolvedModel: string | null = null;
-  pageResults
-    .sort((left, right) => left.pageNumber - right.pageNumber)
-    .forEach((result) => {
-      pageSections.push(result.sectionHtml);
-      if (result.animationPage) {
-        pageAnimationPages.push(result.animationPage);
-      }
-      resolvedModel = resolvedModel ?? result.model;
-    });
+  const { pageSections, pageAnimationPages, resolvedModel } =
+    collectStudioPageRenderResults(pageResults);
 
   await emit({
     type: "stage_started",
@@ -5694,20 +5778,15 @@ export async function runStudioGenerationV2(args: {
     label: "Finalizing editable deck",
   });
 
-  const baseFinalReport = buildSanitizedFinalReport({
-    html: composeDeckHtml({
-      title: alignedRecipePlan.title,
-      sections: pageSections,
-      styleProfile: reportStyleProfile,
-      htmlOutputMode: args.payload.htmlOutputMode,
-    }),
+  const finalReport = buildFinalStudioReport({
+    title: outputDeckTitle,
+    sections: pageSections,
     brief: args.payload.brief,
-    fallbackTitle: alignedRecipePlan.title,
+    fallbackTitle: outputDeckTitle,
     styleProfile: reportStyleProfile,
     htmlOutputMode: args.payload.htmlOutputMode,
-    animationStructure: { pages: pageAnimationPages },
+    animationPages: pageAnimationPages,
   });
-  const finalReport = baseFinalReport;
 
   await emit({
     type: "final_report",
@@ -6033,20 +6112,15 @@ export async function runStudioGenerationV1(args: {
     label: "Assembling final deck",
   });
 
-  const baseFinalReport = buildSanitizedFinalReport({
-    html: composeDeckHtml({
-      title: alignedDeckPlan.title,
-      sections: pageSections,
-      styleProfile: reportStyleProfile,
-      htmlOutputMode: args.payload.htmlOutputMode,
-    }),
+  const finalReport = buildFinalStudioReport({
+    title: alignedDeckPlan.title,
+    sections: pageSections,
     brief: args.payload.brief,
     fallbackTitle: alignedDeckPlan.title,
     styleProfile: reportStyleProfile,
     htmlOutputMode: args.payload.htmlOutputMode,
-    animationStructure: { pages: pageAnimationPages },
+    animationPages: pageAnimationPages,
   });
-  const finalReport = baseFinalReport;
 
   await emit({
     type: "final_report",
@@ -6562,32 +6636,25 @@ export async function runStudioRevision(args: {
     label: "Finalizing repaired deck",
   });
 
-  const baseFinalReport = buildSanitizedFinalReport({
-    html: composeDeckHtml({
-      title: deckTitle,
-      sections: deckSections
-        .sort((left, right) => left.pageNumber - right.pageNumber)
-        .map((section) => repairedSections.get(section.pageNumber)?.sectionHtml ?? section.sectionHtml),
-      styleProfile: reportStyleProfile,
-      htmlOutputMode: args.payload.report.htmlOutputMode ?? "static",
-    }),
+  const { pageSections, pageAnimationPages } = collectStudioDeckSections(
+    deckSections.map((section) => ({
+      pageNumber: section.pageNumber,
+      sectionHtml: repairedSections.get(section.pageNumber)?.sectionHtml ?? section.sectionHtml,
+      animationPage:
+        repairedSections.get(section.pageNumber)?.animationPage ??
+        existingAnimationPages.get(section.pageNumber) ??
+        null,
+    })),
+  );
+  const finalReport = buildFinalStudioReport({
+    title: deckTitle,
+    sections: pageSections,
     brief: args.payload.brief,
     fallbackTitle: deckTitle,
     styleProfile: reportStyleProfile,
     htmlOutputMode: args.payload.report.htmlOutputMode ?? "static",
-    animationStructure: {
-      pages: deckSections
-        .sort((left, right) => left.pageNumber - right.pageNumber)
-        .map(
-          (section) =>
-            repairedSections.get(section.pageNumber)?.animationPage ??
-            existingAnimationPages.get(section.pageNumber) ??
-            null,
-        )
-        .filter((page): page is HtmlAnimationPage => Boolean(page)),
-    },
+    animationPages: pageAnimationPages,
   });
-  const finalReport = baseFinalReport;
 
   await emit({
     type: "final_report",

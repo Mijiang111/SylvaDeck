@@ -36,16 +36,6 @@ import {
   exportProjectToPptx,
   type PptExportResult,
 } from "@/features/studio/pptx/export-pptx";
-import {
-  getGeneratedHtmlReportBlockCanvasTransform,
-  getGeneratedHtmlReportVisualCanvasTransform,
-  removeGeneratedHtmlReportCanvasBlockTransform,
-  removeGeneratedHtmlReportCanvasVisualTransform,
-  shiftGeneratedHtmlReportCanvasBlockLayer,
-  shiftGeneratedHtmlReportCanvasVisualLayer,
-  updateGeneratedHtmlReportCanvasBlockTransform,
-  updateGeneratedHtmlReportCanvasVisualTransform,
-} from "@/features/studio/html-report-canvas";
 import { updateGeneratedHtmlReportBlock } from "@/features/studio/html-report-structure";
 import {
   addGeneratedHtmlReportVisualNode,
@@ -103,10 +93,7 @@ import type {
   DataTableModel,
   GeneratedDraftAsset,
   HtmlOutputMode,
-  HtmlCanvasFrame,
   HtmlEditableBlock,
-  HtmlChartSeriesRole,
-  HtmlChartAxisRole,
   HtmlChartSpec,
   HtmlLayoutZone,
   HtmlVisualContentNode,
@@ -154,6 +141,22 @@ import {
   formatPptxWarningSummary,
   type StreamUiState,
 } from "./runtime-shell-contract";
+import {
+  getHtmlEditorSelectionInspectorTab,
+  resolveHtmlEditorSelection,
+} from "./editor-selection-model";
+import {
+  createHtmlEditorChartModuleInspectorSections,
+  createHtmlEditorScientificDiagramInspectorSections,
+  createHtmlEditorTableModuleInspectorSections,
+  createHtmlEditorTextInspectorSchema,
+  createHtmlEditorVisualInspectorSchema,
+} from "./editor-inspector-schemas";
+import {
+  resolveHtmlEditorCommandTarget,
+  resolveHtmlEditorVisualInsertionTarget,
+} from "./editor-commands";
+import { useHtmlEditorCanvasMutations } from "./hooks/useHtmlEditorCanvasMutations";
 import { useLongFormClarification } from "./hooks/useLongFormClarification";
 import { useStudioDeckReviewFlow } from "./hooks/useStudioDeckReviewFlow";
 import { useStudioExportActions } from "./hooks/useStudioExportActions";
@@ -186,34 +189,6 @@ const HTML_OUTPUT_MODE_OPTIONS: Array<{
 }> = [
   { value: "static", label: "Static HTML" },
   { value: "animated-preview-js", label: "Animated HTML" },
-];
-
-const HTML_CHART_KIND_OPTIONS: Array<{
-  value: HtmlChartSpec["kind"];
-  label: string;
-}> = [
-  { value: "bar", label: "Bar" },
-  { value: "stacked", label: "Stacked" },
-  { value: "line", label: "Line" },
-  { value: "waterfall", label: "Waterfall" },
-  { value: "combo", label: "Combo" },
-  { value: "bubble", label: "Bubble" },
-];
-
-const CHART_SERIES_ROLE_OPTIONS: Array<{
-  value: HtmlChartSeriesRole;
-  label: string;
-}> = [
-  { value: "bar", label: "Bar series" },
-  { value: "line", label: "Line series" },
-];
-
-const CHART_AXIS_ROLE_OPTIONS: Array<{
-  value: HtmlChartAxisRole;
-  label: string;
-}> = [
-  { value: "primary", label: "Primary axis" },
-  { value: "secondary", label: "Secondary axis" },
 ];
 
 const GENERAL_CONSULTING_PROFILE = getIndustryStyleProfile("general-consulting");
@@ -623,55 +598,6 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
       ""
     );
   }, [activePage, activePageNumber, generatedHtmlReport, project]);
-  const activeHtmlStructurePage = useMemo(() => {
-    if (!generatedHtmlReport?.structure?.pages?.length) {
-      return null;
-    }
-
-    const pageNumber = activePageNumber;
-    return (
-      generatedHtmlReport.structure.pages.find((page) => page.pageNumber === pageNumber) ??
-      generatedHtmlReport.structure.pages[0] ??
-      null
-    );
-  }, [activePageNumber, generatedHtmlReport]);
-  const activeHtmlBlock = useMemo(() => {
-    if (!activeHtmlStructurePage || !selection.selectedHtmlBlockId) {
-      return null;
-    }
-
-    const block =
-      activeHtmlStructurePage.blocks.find((block) => block.id === selection.selectedHtmlBlockId) ??
-      null;
-    if (!block || !generatedHtmlReport) {
-      return block;
-    }
-
-    const override = getGeneratedHtmlReportBlockCanvasTransform({
-      report: generatedHtmlReport,
-      pageNumber: activeHtmlStructurePage.pageNumber,
-      blockId: block.id,
-    });
-    if (!override?.fontSize) {
-      return block;
-    }
-
-    return {
-      ...block,
-      fontSize: override.fontSize,
-    };
-  }, [activeHtmlStructurePage, generatedHtmlReport, selection.selectedHtmlBlockId]);
-  const activeHtmlBlockCanvasTransform = useMemo(() => {
-    if (!activeHtmlStructurePage || !selection.selectedHtmlBlockId || !generatedHtmlReport) {
-      return null;
-    }
-
-    return getGeneratedHtmlReportBlockCanvasTransform({
-      report: generatedHtmlReport,
-      pageNumber: activeHtmlStructurePage.pageNumber,
-      blockId: selection.selectedHtmlBlockId,
-    });
-  }, [activeHtmlStructurePage, generatedHtmlReport, selection.selectedHtmlBlockId]);
   const activeHtmlVisualStyle = useMemo(() => {
     if (!generatedHtmlReport) {
       return null;
@@ -682,69 +608,45 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
       pageNumber: activePageNumber,
     });
   }, [activePageNumber, generatedHtmlReport]);
-  const activeHtmlVisualPage = useMemo(() => {
-    if (!generatedHtmlReport?.visualStructure?.pages?.length) {
-      return null;
-    }
-
-    return (
-      generatedHtmlReport.visualStructure.pages.find(
-        (page) => page.pageNumber === activePageNumber,
-      ) ?? null
-    );
-  }, [activePageNumber, generatedHtmlReport]);
-  const activeHtmlVisualNode = useMemo<HtmlVisualNode | null>(() => {
-    if (!activeHtmlVisualPage || !selection.selectedVisualNodeId) {
-      return null;
-    }
-
-    const node =
-      activeHtmlVisualPage.nodes.find((node) => node.id === selection.selectedVisualNodeId) ?? null;
-    if (!node || !generatedHtmlReport) {
-      return node;
-    }
-
-    const override = getGeneratedHtmlReportVisualCanvasTransform({
-      report: generatedHtmlReport,
-      pageNumber: activeHtmlVisualPage.pageNumber,
-      nodeId: node.id,
-    });
-    if (!override) {
-      return node;
-    }
-
-    return {
-      ...node,
-      style: {
-        ...node.style,
-        widthPercent: undefined,
-        height: override.frame.h,
-        minHeight: override.frame.h,
-      },
-    };
-  }, [activeHtmlVisualPage, generatedHtmlReport, selection.selectedVisualNodeId]);
-  const activeHtmlVisualCanvasTransform = useMemo(() => {
-    if (!activeHtmlVisualPage || !selection.selectedVisualNodeId || !generatedHtmlReport) {
-      return null;
-    }
-
-    return getGeneratedHtmlReportVisualCanvasTransform({
-      report: generatedHtmlReport,
-      pageNumber: activeHtmlVisualPage.pageNumber,
-      nodeId: selection.selectedVisualNodeId,
-    });
-  }, [activeHtmlVisualPage, generatedHtmlReport, selection.selectedVisualNodeId]);
-  const activeHtmlVisualContentNodes = useMemo<HtmlVisualContentNode[]>(() => {
-    if (!generatedHtmlReport || !selection.selectedVisualNodeId) {
-      return [];
-    }
-
-    return extractGeneratedHtmlReportVisualNodeContent({
-      report: generatedHtmlReport,
-      pageNumber: activePageNumber,
-      nodeId: selection.selectedVisualNodeId,
-    });
-  }, [activePageNumber, generatedHtmlReport, selection.selectedVisualNodeId]);
+  const activeHtmlEditorSelection = useMemo(
+    () =>
+      resolveHtmlEditorSelection({
+        report: generatedHtmlReport,
+        selection,
+        pageNumber: activePageNumber,
+        pageTitle: activeHtmlPageTitle,
+        getVisualContentNodes: extractGeneratedHtmlReportVisualNodeContent,
+      }),
+    [
+      activeHtmlPageTitle,
+      activePageNumber,
+      generatedHtmlReport,
+      selection.selectedHtmlBlockId,
+      selection.selectedVisualNodeId,
+    ],
+  );
+  const activeHtmlBlock =
+    activeHtmlEditorSelection.kind === "text" ? activeHtmlEditorSelection.block : null;
+  const activeHtmlBlockCanvasTransform =
+    activeHtmlEditorSelection.kind === "text" ? activeHtmlEditorSelection.transform : null;
+  const activeHtmlVisualNode =
+    activeHtmlEditorSelection.kind === "visual" ? activeHtmlEditorSelection.node : null;
+  const activeHtmlVisualCanvasTransform =
+    activeHtmlEditorSelection.kind === "visual" ? activeHtmlEditorSelection.transform : null;
+  const activeHtmlVisualContentNodes: HtmlVisualContentNode[] =
+    activeHtmlEditorSelection.kind === "visual" ? activeHtmlEditorSelection.contentNodes : [];
+  const {
+    updateHtmlBlockTransformOnPage,
+    returnHtmlBlockToFlow,
+    updateHtmlVisualTransformOnPage,
+    returnHtmlVisualToFlow,
+    shiftHtmlBlockCanvasLayer,
+    shiftHtmlVisualCanvasLayer,
+  } = useHtmlEditorCanvasMutations({
+    project,
+    activeSelection: activeHtmlEditorSelection,
+    updateGeneratedDraft,
+  });
   const activeScientificDiagramSpec = useMemo<ScientificDiagramSpec | null>(() => {
     if (activeHtmlVisualNode?.moduleKind !== SCIENTIFIC_DIAGRAM_MODULE_KIND) {
       return null;
@@ -771,24 +673,10 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
   }, [activeChartSpec]);
 
   useEffect(() => {
-    if (!activeHtmlStructurePage || !selection.selectedHtmlBlockId) {
-      return;
-    }
-
-    if (!activeHtmlStructurePage.blocks.some((block) => block.id === selection.selectedHtmlBlockId)) {
+    if (activeHtmlEditorSelection.kind === "stale") {
       clearSelection("page");
     }
-  }, [activeHtmlStructurePage, clearSelection, selection.selectedHtmlBlockId]);
-
-  useEffect(() => {
-    if (!activeHtmlVisualPage || !selection.selectedVisualNodeId) {
-      return;
-    }
-
-    if (!activeHtmlVisualPage.nodes.some((node) => node.id === selection.selectedVisualNodeId)) {
-      clearSelection("page");
-    }
-  }, [activeHtmlVisualPage, clearSelection, selection.selectedVisualNodeId]);
+  }, [activeHtmlEditorSelection.kind, clearSelection]);
 
   const publishedHref = project
     ? `/projects/${project.id}/published`
@@ -1315,69 +1203,6 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
     });
   }
 
-  function updateHtmlBlockTransformOnPage(
-    pageNumber: number,
-    blockId: string,
-    frame: HtmlCanvasFrame,
-    fontSize?: number,
-  ) {
-    if (!project?.generatedDraft?.htmlReport) {
-      return;
-    }
-
-    const baseReport =
-      typeof fontSize === "number" && Number.isFinite(fontSize) && fontSize > 0
-        ? updateGeneratedHtmlReportBlock({
-            report: project.generatedDraft.htmlReport,
-            pageNumber,
-            blockId,
-            fontSize,
-          })
-        : project.generatedDraft.htmlReport;
-
-    const nextHtmlReport = updateGeneratedHtmlReportCanvasBlockTransform({
-      report: baseReport,
-      pageNumber,
-      id: blockId,
-      frame,
-      fontSize,
-    });
-
-    updateGeneratedDraft({
-      generatedDraft: {
-        ...project.generatedDraft,
-        htmlReport: nextHtmlReport,
-      },
-      label: "Move text block",
-      scope: "text",
-      inspectorTab: "text",
-      statusLine: "Moved the selected text block on the page canvas.",
-    });
-  }
-
-  function returnHtmlBlockToFlow(pageNumber: number, blockId: string) {
-    if (!project?.generatedDraft?.htmlReport) {
-      return;
-    }
-
-    const nextHtmlReport = removeGeneratedHtmlReportCanvasBlockTransform({
-      report: project.generatedDraft.htmlReport,
-      pageNumber,
-      id: blockId,
-    });
-
-    updateGeneratedDraft({
-      generatedDraft: {
-        ...project.generatedDraft,
-        htmlReport: nextHtmlReport,
-      },
-      label: "Return text block to flow",
-      scope: "text",
-      inspectorTab: "text",
-      statusLine: "Returned the selected text block to the page flow.",
-    });
-  }
-
   function updateActiveHtmlVisualStyle(nextStyle: HtmlPageVisualStyle) {
     if (!project?.generatedDraft?.htmlReport) {
       return;
@@ -1406,14 +1231,18 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
   }
 
   function updateActiveHtmlVisualNodeStyle(nextStyle: Partial<HtmlVisualNodeStyle>) {
-    if (!project?.generatedDraft?.htmlReport || !selection.selectedVisualNodeId) {
+    const target = resolveHtmlEditorCommandTarget(
+      activeHtmlEditorSelection,
+      "edit-visual-style",
+    );
+    if (!project?.generatedDraft?.htmlReport || target?.kind !== "visual") {
       return;
     }
 
     const nextHtmlReport = updateGeneratedHtmlReportVisualNode({
       report: project.generatedDraft.htmlReport,
-      pageNumber: activePageNumber,
-      nodeId: selection.selectedVisualNodeId,
+      pageNumber: target.pageNumber,
+      nodeId: target.nodeId,
       style: nextStyle,
     });
 
@@ -1434,9 +1263,13 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
   }
 
   function updateActiveScientificDiagramSpec(nextDiagramSpec: ScientificDiagramSpec) {
+    const target = resolveHtmlEditorCommandTarget(
+      activeHtmlEditorSelection,
+      "edit-scientific-diagram",
+    );
     if (
       !project?.generatedDraft?.htmlReport ||
-      !selection.selectedVisualNodeId ||
+      target?.kind !== "visual" ||
       !activeScientificDiagramSpec
     ) {
       return;
@@ -1444,8 +1277,8 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
 
     const nextHtmlReport = updateGeneratedHtmlReportScientificDiagram({
       report: project.generatedDraft.htmlReport,
-      pageNumber: activePageNumber,
-      nodeId: selection.selectedVisualNodeId,
+      pageNumber: target.pageNumber,
+      nodeId: target.nodeId,
       diagramSpec: nextDiagramSpec,
     });
 
@@ -1475,9 +1308,13 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
   }
 
   function updateActiveChartSpec(nextChartSpec: HtmlChartSpec) {
+    const target = resolveHtmlEditorCommandTarget(
+      activeHtmlEditorSelection,
+      "edit-data-module",
+    );
     if (
       !project?.generatedDraft?.htmlReport ||
-      !selection.selectedVisualNodeId ||
+      target?.kind !== "visual" ||
       !activeChartSpec
     ) {
       return;
@@ -1485,8 +1322,8 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
 
     const nextHtmlReport = updateGeneratedHtmlReportChartModule({
       report: project.generatedDraft.htmlReport,
-      pageNumber: activePageNumber,
-      nodeId: selection.selectedVisualNodeId,
+      pageNumber: target.pageNumber,
+      nodeId: target.nodeId,
       chartSpec: nextChartSpec,
     });
 
@@ -1518,9 +1355,13 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
   }
 
   function updateActiveTableSpec(nextTableSpec: DataTableModel) {
+    const target = resolveHtmlEditorCommandTarget(
+      activeHtmlEditorSelection,
+      "edit-data-module",
+    );
     if (
       !project?.generatedDraft?.htmlReport ||
-      !selection.selectedVisualNodeId ||
+      target?.kind !== "visual" ||
       !activeTableSpec
     ) {
       return;
@@ -1528,8 +1369,8 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
 
     const nextHtmlReport = updateGeneratedHtmlReportTableModule({
       report: project.generatedDraft.htmlReport,
-      pageNumber: activePageNumber,
-      nodeId: selection.selectedVisualNodeId,
+      pageNumber: target.pageNumber,
+      nodeId: target.nodeId,
       tableSpec: nextTableSpec,
     });
 
@@ -1549,120 +1390,6 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
     });
   }
 
-  function updateHtmlVisualTransformOnPage(
-    pageNumber: number,
-    nodeId: string,
-    frame: HtmlCanvasFrame,
-  ) {
-    if (!project?.generatedDraft?.htmlReport) {
-      return;
-    }
-
-    const nextHtmlReport = updateGeneratedHtmlReportCanvasVisualTransform({
-      report: project.generatedDraft.htmlReport,
-      pageNumber,
-      id: nodeId,
-      frame,
-    });
-
-    updateGeneratedDraft({
-      generatedDraft: {
-        ...project.generatedDraft,
-        htmlReport: nextHtmlReport,
-      },
-      label: "Move visual block",
-      scope: "visual",
-      inspectorTab: "visual",
-      statusLine: "Moved the selected visual element on the page canvas.",
-    });
-  }
-
-  function returnHtmlVisualToFlow(pageNumber: number, nodeId: string) {
-    if (!project?.generatedDraft?.htmlReport) {
-      return;
-    }
-
-    const nextHtmlReport = removeGeneratedHtmlReportCanvasVisualTransform({
-      report: project.generatedDraft.htmlReport,
-      pageNumber,
-      id: nodeId,
-    });
-
-    updateGeneratedDraft({
-      generatedDraft: {
-        ...project.generatedDraft,
-        htmlReport: nextHtmlReport,
-      },
-      label: "Return visual to flow",
-      scope: "visual",
-      inspectorTab: "visual",
-      statusLine: "Returned the selected visual element to the page flow.",
-    });
-  }
-
-  function shiftHtmlBlockCanvasLayer(
-    pageNumber: number,
-    blockId: string,
-    direction: "forward" | "backward",
-    frame: HtmlCanvasFrame,
-    fontSize?: number,
-  ) {
-    if (!project?.generatedDraft?.htmlReport) {
-      return;
-    }
-
-    const nextHtmlReport = shiftGeneratedHtmlReportCanvasBlockLayer({
-      report: project.generatedDraft.htmlReport,
-      pageNumber,
-      id: blockId,
-      direction,
-      frame,
-      fontSize,
-    });
-
-    updateGeneratedDraft({
-      generatedDraft: {
-        ...project.generatedDraft,
-        htmlReport: nextHtmlReport,
-      },
-      label: direction === "forward" ? "Bring text block forward" : "Send text block backward",
-      scope: "text",
-      inspectorTab: "text",
-      statusLine: "Adjusted the selected text block layer on the canvas.",
-    });
-  }
-
-  function shiftHtmlVisualCanvasLayer(
-    pageNumber: number,
-    nodeId: string,
-    direction: "forward" | "backward",
-    frame: HtmlCanvasFrame,
-  ) {
-    if (!project?.generatedDraft?.htmlReport) {
-      return;
-    }
-
-    const nextHtmlReport = shiftGeneratedHtmlReportCanvasVisualLayer({
-      report: project.generatedDraft.htmlReport,
-      pageNumber,
-      id: nodeId,
-      direction,
-      frame,
-    });
-
-    updateGeneratedDraft({
-      generatedDraft: {
-        ...project.generatedDraft,
-        htmlReport: nextHtmlReport,
-      },
-      label:
-        direction === "forward" ? "Bring visual element forward" : "Send visual element backward",
-      scope: "visual",
-      inspectorTab: "visual",
-      statusLine: "Adjusted the selected visual element layer on the canvas.",
-    });
-  }
-
   function addVisualElement(
     kind: HtmlVisualNodeKind,
     placement: HtmlVisualInsertionMode = "page-end",
@@ -1671,14 +1398,16 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
       return;
     }
 
-    const actualPlacement =
-      selection.selectedVisualNodeId && placement !== "page-end" ? placement : "page-end";
+    const insertionTarget = resolveHtmlEditorVisualInsertionTarget({
+      selection: activeHtmlEditorSelection,
+      requestedPlacement: placement,
+    });
     const { report: nextHtmlReport, nodeId } = addGeneratedHtmlReportVisualNode({
       report: project.generatedDraft.htmlReport,
-      pageNumber: activePageNumber,
+      pageNumber: insertionTarget.pageNumber,
       kind,
-      placement: actualPlacement,
-      anchorNodeId: selection.selectedVisualNodeId,
+      placement: insertionTarget.placement,
+      anchorNodeId: insertionTarget.anchorNodeId,
     });
 
     if (nextHtmlReport.html === project.generatedDraft.htmlReport.html) {
@@ -1696,19 +1425,23 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
       statusLine: `Added a ${kind.replace(/-/g, " ")} to this page.`,
     });
     if (nodeId) {
-      selectVisualNode(activePageNumber, nodeId);
+      selectVisualNode(insertionTarget.pageNumber, nodeId);
     }
   }
 
   function duplicateSelectedVisualElement() {
-    if (!project?.generatedDraft?.htmlReport || !selection.selectedVisualNodeId) {
+    const target = resolveHtmlEditorCommandTarget(
+      activeHtmlEditorSelection,
+      "duplicate-visual",
+    );
+    if (!project?.generatedDraft?.htmlReport || target?.kind !== "visual") {
       return;
     }
 
     const { report: nextHtmlReport, nodeId } = duplicateGeneratedHtmlReportVisualNode({
       report: project.generatedDraft.htmlReport,
-      pageNumber: activePageNumber,
-      nodeId: selection.selectedVisualNodeId,
+      pageNumber: target.pageNumber,
+      nodeId: target.nodeId,
     });
 
     if (nextHtmlReport.html === project.generatedDraft.htmlReport.html) {
@@ -1726,19 +1459,23 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
       statusLine: "Duplicated the selected visual element.",
     });
     if (nodeId) {
-      selectVisualNode(activePageNumber, nodeId);
+      selectVisualNode(target.pageNumber, nodeId);
     }
   }
 
   function deleteSelectedVisualElement() {
-    if (!project?.generatedDraft?.htmlReport || !selection.selectedVisualNodeId) {
+    const target = resolveHtmlEditorCommandTarget(
+      activeHtmlEditorSelection,
+      "delete-visual",
+    );
+    if (!project?.generatedDraft?.htmlReport || target?.kind !== "visual") {
       return;
     }
 
     const nextHtmlReport = deleteGeneratedHtmlReportVisualNode({
       report: project.generatedDraft.htmlReport,
-      pageNumber: activePageNumber,
-      nodeId: selection.selectedVisualNodeId,
+      pageNumber: target.pageNumber,
+      nodeId: target.nodeId,
     });
 
     if (nextHtmlReport.html === project.generatedDraft.htmlReport.html) {
@@ -1759,14 +1496,18 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
   }
 
   function duplicateVisualContentElement(contentNodeId: string) {
-    if (!project?.generatedDraft?.htmlReport || !selection.selectedVisualNodeId) {
+    const target = resolveHtmlEditorCommandTarget(
+      activeHtmlEditorSelection,
+      "edit-visual-content",
+    );
+    if (!project?.generatedDraft?.htmlReport || target?.kind !== "visual") {
       return;
     }
 
     const nextHtmlReport = duplicateGeneratedHtmlReportVisualContentNode({
       report: project.generatedDraft.htmlReport,
-      pageNumber: activePageNumber,
-      nodeId: selection.selectedVisualNodeId,
+      pageNumber: target.pageNumber,
+      nodeId: target.nodeId,
       contentNodeId,
     });
 
@@ -1787,14 +1528,18 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
   }
 
   function deleteVisualContentElement(contentNodeId: string) {
-    if (!project?.generatedDraft?.htmlReport || !selection.selectedVisualNodeId) {
+    const target = resolveHtmlEditorCommandTarget(
+      activeHtmlEditorSelection,
+      "edit-visual-content",
+    );
+    if (!project?.generatedDraft?.htmlReport || target?.kind !== "visual") {
       return;
     }
 
     const nextHtmlReport = deleteGeneratedHtmlReportVisualContentNode({
       report: project.generatedDraft.htmlReport,
-      pageNumber: activePageNumber,
-      nodeId: selection.selectedVisualNodeId,
+      pageNumber: target.pageNumber,
+      nodeId: target.nodeId,
       contentNodeId,
     });
 
@@ -1904,17 +1649,20 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
 
   const replaceSelectedVisualWithModule = useCallback(
     (manifest: PublishedModuleManifest) => {
-      if (!project?.generatedDraft?.htmlReport || !selection.selectedVisualNodeId) {
+      const target = resolveHtmlEditorCommandTarget(
+        activeHtmlEditorSelection,
+        "replace-visual-module",
+      );
+      if (!project?.generatedDraft?.htmlReport || target?.kind !== "visual") {
         return;
       }
 
-      const pageNumber = activePageNumber;
       const nextKind = inferVisualKindForModule(manifest);
       const pageStyle = activeHtmlVisualStyle ?? resolveModulePageStyleFallback(project);
       const nextHtmlReport = updateGeneratedHtmlReportVisualNode({
         report: project.generatedDraft.htmlReport,
-        pageNumber,
-        nodeId: selection.selectedVisualNodeId,
+        pageNumber: target.pageNumber,
+        nodeId: target.nodeId,
         kind: nextKind,
         moduleId: manifest.moduleId,
         moduleLabel: manifest.label,
@@ -1937,10 +1685,9 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
       });
     },
     [
+      activeHtmlEditorSelection,
       activeHtmlVisualStyle,
       project,
-      selection.activePageId,
-      selection.selectedVisualNodeId,
       updateGeneratedDraft,
     ],
   );
@@ -1951,14 +1698,17 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
         return;
       }
 
-      const pageNumber = activePageNumber;
+      const insertionTarget = resolveHtmlEditorVisualInsertionTarget({
+        selection: activeHtmlEditorSelection,
+        requestedPlacement: "below",
+      });
       const nextKind = inferVisualKindForModule(manifest);
       const inserted = addGeneratedHtmlReportVisualNode({
         report: project.generatedDraft.htmlReport,
-        pageNumber,
+        pageNumber: insertionTarget.pageNumber,
         kind: nextKind,
-        anchorNodeId: selection.selectedVisualNodeId,
-        placement: selection.selectedVisualNodeId ? "below" : "page-end",
+        anchorNodeId: insertionTarget.anchorNodeId,
+        placement: insertionTarget.placement,
       });
       if (!inserted.nodeId) {
         return;
@@ -1968,7 +1718,7 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
         activeHtmlVisualStyle ?? resolveModulePageStyleFallback(project);
       const styledReport = updateGeneratedHtmlReportVisualNode({
         report: inserted.report,
-        pageNumber,
+        pageNumber: insertionTarget.pageNumber,
         nodeId: inserted.nodeId,
         kind: nextKind,
         moduleId: manifest.moduleId,
@@ -1986,15 +1736,14 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
         inspectorTab: "visual",
         statusLine: `Inserted ${manifest.label} into this page.`,
       });
-      selectVisualNode(pageNumber, inserted.nodeId);
+      selectVisualNode(insertionTarget.pageNumber, inserted.nodeId);
       setPropertiesVisible(true);
     },
     [
+      activeHtmlEditorSelection,
       activeHtmlVisualStyle,
       project,
       selectVisualNode,
-      selection.activePageId,
-      selection.selectedVisualNodeId,
       updateGeneratedDraft,
     ],
   );
@@ -2024,12 +1773,9 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
   }
 
   function openPropertiesPanel() {
-    if (selection.selectedHtmlBlockId) {
-      openSidebarTab("text");
-      return;
-    }
-    if (selection.selectedVisualNodeId) {
-      openSidebarTab("visual");
+    const inspectorTab = getHtmlEditorSelectionInspectorTab(activeHtmlEditorSelection);
+    if (inspectorTab !== "page") {
+      openSidebarTab(inspectorTab);
       return;
     }
 
@@ -2496,124 +2242,24 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
       return pageInspectorSchema;
     }
 
-    const contentField =
-      activeHtmlBlock.kind === "list"
-        ? {
-            id: `block-items-${activeHtmlBlock.id}`,
-            kind: "textarea" as const,
-            label: "List items",
-            value: (activeHtmlBlock.items ?? []).join("\n"),
-            description: "One line per item. Updates the selected list directly from the side panel.",
-            onChange: (value: string) =>
-              updateHtmlBlockOnPage(activePageNumber, activeHtmlBlock.id, {
-                items: value
-                  .split("\n")
-                  .map((item) => item.trim())
-                  .filter(Boolean),
-              }),
-            debounceMs: 180,
-          }
-        : {
-            id: `block-content-${activeHtmlBlock.id}`,
-            kind: "textarea" as const,
-            label: "Text",
-            value: activeHtmlBlock.text ?? "",
-            description: "Edit the selected text block directly from the side panel.",
-            onChange: (value: string) =>
-              updateHtmlBlockOnPage(activePageNumber, activeHtmlBlock.id, {
-                text: value,
-              }),
-            debounceMs: 180,
-          };
-
-    return {
-      id: "text-inspector",
-      title: "Text block",
-      description: "Edit copy and typography for the selected text block from the side panel.",
-      sections: [
-        {
-          id: "meta",
-          title: "Selection",
-          fields: [
-            {
-              id: `block-extract-${activeHtmlBlock.id}`,
-              kind: "actions",
-              label: "Authoring handoff",
-              actions: [
-                {
-                  id: `extract-block-${activeHtmlBlock.id}`,
-                  label: "Extract as module",
-                  onPress: () =>
-                    extractSelectionAsModule({
-                      kind: "text",
-                      block: activeHtmlBlock,
-                    }),
-                },
-              ],
-            },
-            {
-              id: `block-kind-${activeHtmlBlock.id}`,
-              kind: "readonly",
-              label: "Block kind",
-              value: activeHtmlBlock.kind,
-            },
-            {
-              id: `block-source-${activeHtmlBlock.id}`,
-              kind: "readonly",
-              label: "Source tag",
-              value: activeHtmlBlock.sourceTag,
-            },
-            {
-              id: `block-canvas-mode-${activeHtmlBlock.id}`,
-              kind: "readonly",
-              label: "Canvas mode",
-              value: activeHtmlBlockCanvasTransform
-                ? `Freeform · ${Math.round(activeHtmlBlockCanvasTransform.frame.x)}, ${Math.round(activeHtmlBlockCanvasTransform.frame.y)}`
-                : "Flow layout",
-              description: activeHtmlBlockCanvasTransform
-                ? "This block is currently placed freely on the canvas."
-                : "This block is following the page flow.",
-            },
-          ],
-        },
-        {
-          id: "typography",
-          title: "Typography",
-          fields: [
-            {
-              id: `block-font-size-${activeHtmlBlock.id}`,
-              kind: "number",
-              label: "Font size",
-              value: Math.round(activeHtmlBlock.fontSize ?? 12),
-              min: 8,
-              max: 120,
-              step: 1,
-              description: "Adjust the selected text block without affecting the rest of the page.",
-              onChange: (value: number) =>
-                updateHtmlBlockOnPage(
-                  activePageNumber,
-                  activeHtmlBlock.id,
-                  { fontSize: value },
-                ),
-              debounceMs: 180,
-            },
-          ],
-        },
-        {
-          id: "content",
-          title: "Content",
-          fields: [
-            contentField,
-          ],
-        },
-      ],
-    };
+    return createHtmlEditorTextInspectorSchema({
+      block: activeHtmlBlock,
+      transform: activeHtmlBlockCanvasTransform,
+      pageNumber: activePageNumber,
+      updateBlock: updateHtmlBlockOnPage,
+      extractBlockAsModule: (block) =>
+        extractSelectionAsModule({
+          kind: "text",
+          block,
+        }),
+    });
   }, [
+    activePageNumber,
     activeHtmlBlock,
     activeHtmlBlockCanvasTransform,
     extractSelectionAsModule,
     pageInspectorSchema,
-    selection.activePageId,
+    updateHtmlBlockOnPage,
   ]);
 
   const visualInspectorSchema = useMemo<InspectorSchema | null>(() => {
@@ -2623,654 +2269,69 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
 
     const scientificDiagramSections =
       activeHtmlVisualNode.moduleKind === SCIENTIFIC_DIAGRAM_MODULE_KIND && activeScientificDiagramSpec
-        ? [
-            {
-              id: "scientific-diagram",
-              title: "Scientific diagram",
-              description:
-                "Edit the neural-network figure as one deterministic module instead of loose node-and-edge objects.",
-              fields: [
-                {
-                  id: `diagram-connectivity-${activeHtmlVisualNode.id}`,
-                  kind: "select" as const,
-                  label: "Topology",
-                  value: activeScientificDiagramSpec.connectivity,
-                  options: SCIENTIFIC_DIAGRAM_CONNECTIVITY_OPTIONS.map((option) => ({
-                    value: option.value,
-                    label: option.label,
-                  })),
-                  onChange: (value: string) =>
-                    patchActiveScientificDiagram((current) =>
-                      switchScientificDiagramConnectivity(current, value as ScientificDiagramSpec["connectivity"]),
-                    ),
-                },
-                {
-                  id: `diagram-layer-count-${activeHtmlVisualNode.id}`,
-                  kind: "number" as const,
-                  label: "Layer count",
-                  value: activeScientificDiagramSpec.layers.length,
-                  min: getScientificDiagramLayerCountBounds(activeScientificDiagramSpec.connectivity).min,
-                  max: getScientificDiagramLayerCountBounds(activeScientificDiagramSpec.connectivity).max,
-                  step: 1,
-                  onChange: (value: number) =>
-                    patchActiveScientificDiagram((current) =>
-                      resizeScientificDiagramLayers(current, value),
-                    ),
-                },
-                {
-                  id: `diagram-title-${activeHtmlVisualNode.id}`,
-                  kind: "text" as const,
-                  label: "Title",
-                  value: activeScientificDiagramSpec.title,
-                  onChange: (value: string) =>
-                    patchActiveScientificDiagram((current) => ({
-                      ...current,
-                      title: value,
-                    })),
-                },
-                {
-                  id: `diagram-caption-${activeHtmlVisualNode.id}`,
-                  kind: "textarea" as const,
-                  label: "Caption",
-                  value: activeScientificDiagramSpec.caption,
-                  onChange: (value: string) =>
-                    patchActiveScientificDiagram((current) => ({
-                      ...current,
-                      caption: value,
-                    })),
-                },
-                {
-                  id: `diagram-top-label-${activeHtmlVisualNode.id}`,
-                  kind: "text" as const,
-                  label: "Top label",
-                  value: activeScientificDiagramSpec.topLabel,
-                  onChange: (value: string) =>
-                    patchActiveScientificDiagram((current) => ({
-                      ...current,
-                      topLabel: value,
-                    })),
-                },
-                {
-                  id: `diagram-bottom-label-${activeHtmlVisualNode.id}`,
-                  kind: "text" as const,
-                  label: "Bottom label",
-                  value: activeScientificDiagramSpec.bottomLabel,
-                  onChange: (value: string) =>
-                    patchActiveScientificDiagram((current) => ({
-                      ...current,
-                      bottomLabel: value,
-                    })),
-                },
-                {
-                  id: `diagram-note-left-${activeHtmlVisualNode.id}`,
-                  kind: "textarea" as const,
-                  label: "Left note",
-                  value:
-                    activeScientificDiagramSpec.sideNotes.find((note) => note.side === "left")?.text ?? "",
-                  onChange: (value: string) =>
-                    patchActiveScientificDiagram((current) => {
-                      const left = current.sideNotes.find((note) => note.side === "left");
-                      const remaining = current.sideNotes.filter((note) => note.side !== "left");
-                      return {
-                        ...current,
-                        sideNotes: value.trim()
-                          ? [...remaining, { id: left?.id ?? "note-1", side: "left" as const, text: value.trim() }].sort((a, b) =>
-                              a.side.localeCompare(b.side),
-                            )
-                          : remaining,
-                      };
-                    }),
-                },
-                {
-                  id: `diagram-note-right-${activeHtmlVisualNode.id}`,
-                  kind: "textarea" as const,
-                  label: "Right note",
-                  value:
-                    activeScientificDiagramSpec.sideNotes.find((note) => note.side === "right")?.text ?? "",
-                  onChange: (value: string) =>
-                    patchActiveScientificDiagram((current) => {
-                      const right = current.sideNotes.find((note) => note.side === "right");
-                      const remaining = current.sideNotes.filter((note) => note.side !== "right");
-                      return {
-                        ...current,
-                        sideNotes: value.trim()
-                          ? [...remaining, { id: right?.id ?? "note-2", side: "right" as const, text: value.trim() }].sort((a, b) =>
-                              a.side.localeCompare(b.side),
-                            )
-                          : remaining,
-                      };
-                    }),
-                },
-                {
-                  id: `diagram-accent-${activeHtmlVisualNode.id}`,
-                  kind: "color" as const,
-                  label: "Accent color",
-                  value: activeHtmlVisualNode.style.accent ?? "#2f5d84",
-                  onChange: (value: string) => updateActiveHtmlVisualNodeStyle({ accent: value }),
-                },
-              ],
-            },
-            ...activeScientificDiagramSpec.layers.map((layer, index) => ({
-              id: `scientific-diagram-layer-${index + 1}`,
-              title: `Layer ${index + 1}`,
-              fields: [
-                {
-                  id: `diagram-layer-label-${activeHtmlVisualNode.id}-${layer.id}`,
-                  kind: "text" as const,
-                  label: "Layer label",
-                  value: layer.label,
-                  onChange: (value: string) =>
-                    patchActiveScientificDiagram((current) => ({
-                      ...current,
-                      layers: current.layers.map((entry) =>
-                        entry.id === layer.id ? { ...entry, label: value } : entry,
-                      ),
-                    })),
-                },
-                {
-                  id: `diagram-layer-nodes-${activeHtmlVisualNode.id}-${layer.id}`,
-                  kind: "number" as const,
-                  label: "Node count",
-                  value: layer.nodeCount,
-                  min: layer.role === "output" || layer.role === "bottleneck" ? 1 : 2,
-                  max: 9,
-                  step: 1,
-                  onChange: (value: number) =>
-                    patchActiveScientificDiagram((current) => ({
-                      ...current,
-                      layers: current.layers.map((entry) =>
-                        entry.id === layer.id
-                          ? {
-                              ...entry,
-                              nodeCount: Math.max(
-                                layer.role === "output" || layer.role === "bottleneck" ? 1 : 2,
-                                Math.min(9, Math.round(value)),
-                              ),
-                            }
-                          : entry,
-                      ),
-                    })),
-                },
-              ],
-            })),
-          ]
+        ? createHtmlEditorScientificDiagramInspectorSections({
+            nodeId: activeHtmlVisualNode.id,
+            diagramSpec: activeScientificDiagramSpec,
+            nodeStyle: activeHtmlVisualNode.style,
+            connectivityOptions: SCIENTIFIC_DIAGRAM_CONNECTIVITY_OPTIONS,
+            getLayerCountBounds: getScientificDiagramLayerCountBounds,
+            switchConnectivity: switchScientificDiagramConnectivity,
+            resizeLayers: resizeScientificDiagramLayers,
+            patchDiagramSpec: patchActiveScientificDiagram,
+            updateNodeStyle: updateActiveHtmlVisualNodeStyle,
+          })
         : [];
 
     const chartModuleSections =
       activeHtmlVisualNode.moduleKind === CHART_MODULE_KIND && activeChartSpec && activeChartDataTable
-        ? [
-            {
-              id: "chart-module",
-              title: "Chart module",
-              description:
-                "Edit the chart as structured data so titles, series values, and labels stay in sync.",
-              fields: [
-                {
-                  id: `chart-kind-${activeHtmlVisualNode.id}`,
-                  kind: "select" as const,
-                  label: "Chart kind",
-                  value: activeChartSpec.kind,
-                  options: HTML_CHART_KIND_OPTIONS.map((option) => ({
-                    value: option.value,
-                    label: option.label,
-                  })),
-                  onChange: (value: string) =>
-                    patchActiveChartSpec((current) =>
-                      updateHtmlChartSpecFromRawData({
-                        current: {
-                          ...current,
-                          kind: value as HtmlChartSpec["kind"],
-                        } as HtmlChartSpec,
-                        raw: buildHtmlChartDataTable(current).raw,
-                      }),
-                    ),
-                },
-                {
-                  id: `chart-title-${activeHtmlVisualNode.id}`,
-                  kind: "text" as const,
-                  label: "Title",
-                  value: activeChartSpec.title,
-                  onChange: (value: string) =>
-                    patchActiveChartSpec((current) => ({
-                      ...current,
-                      title: value,
-                    })),
-                },
-                {
-                  id: `chart-subtitle-${activeHtmlVisualNode.id}`,
-                  kind: "textarea" as const,
-                  label: "Subtitle / insight",
-                  value: [activeChartSpec.subtitle, activeChartSpec.insight].filter(Boolean).join("\n"),
-                  onChange: (value: string) =>
-                    patchActiveChartSpec((current) => {
-                      const [subtitle, ...rest] = value.split("\n");
-                      return {
-                        ...current,
-                        subtitle: subtitle?.trim() ?? "",
-                        insight: rest.join(" ").trim(),
-                      };
-                    }),
-                },
-                {
-                  id: `chart-unit-${activeHtmlVisualNode.id}`,
-                  kind: "text" as const,
-                  label: "Primary unit",
-                  value: activeChartSpec.unit,
-                  onChange: (value: string) =>
-                    patchActiveChartSpec((current) => ({
-                      ...current,
-                      unit: value,
-                    })),
-                },
-                ...(activeChartSpec.kind === "combo"
-                  ? [
-                      {
-                        id: `chart-secondary-unit-${activeHtmlVisualNode.id}`,
-                        kind: "text" as const,
-                        label: "Secondary unit",
-                        value: activeChartSpec.secondaryUnit ?? "",
-                        onChange: (value: string) =>
-                          patchActiveChartSpec((current) =>
-                            current.kind === "combo"
-                              ? {
-                                  ...current,
-                                  secondaryUnit: value,
-                                }
-                              : current,
-                          ),
-                      },
-                    ]
-                  : []),
-                {
-                  id: `chart-data-${activeHtmlVisualNode.id}`,
-                  kind: "textarea" as const,
-                  label: activeChartSpec.kind === "bubble" ? "Bubble data (Label / X / Y / Size / Group)" : "Chart data (Category + series)",
-                  value: activeChartDataTable.raw,
-                  description:
-                    "Paste TSV or CSV. Studio will rebuild the chart module from this table instead of loose SVG labels.",
-                  onChange: (value: string) =>
-                    patchActiveChartSpec((current) =>
-                      updateHtmlChartSpecFromRawData({
-                        current,
-                        raw: value,
-                      }),
-                    ),
-                },
-                {
-                  id: `chart-summary-${activeHtmlVisualNode.id}`,
-                  kind: "readonly" as const,
-                  label: "Data summary",
-                  value:
-                    activeChartSpec.kind === "bubble"
-                      ? `${activeChartSpec.points.length} points · ${activeChartDataTable.columns.length} columns`
-                      : `${activeChartDataTable.rows.length} categories · ${activeChartSpec.series.length} series`,
-                },
-                {
-                  id: `chart-accent-${activeHtmlVisualNode.id}`,
-                  kind: "color" as const,
-                  label: "Accent color",
-                  value: activeHtmlVisualNode.style.accent ?? "#2a6f97",
-                  onChange: (value: string) => updateActiveHtmlVisualNodeStyle({ accent: value }),
-                },
-              ],
-            },
-            ...(activeChartSpec.kind === "combo"
-              ? activeChartSpec.series.map((series, index) => ({
-                  id: `chart-series-${index + 1}`,
-                  title: `Series ${index + 1}`,
-                  fields: [
-                    {
-                      id: `chart-series-label-${activeHtmlVisualNode.id}-${series.id}`,
-                      kind: "text" as const,
-                      label: "Series label",
-                      value: series.label,
-                      onChange: (value: string) =>
-                        patchActiveChartSpec((current) =>
-                          current.kind === "combo"
-                            ? {
-                                ...current,
-                                series: current.series.map((entry) =>
-                                  entry.id === series.id ? { ...entry, label: value } : entry,
-                                ),
-                              }
-                            : current,
-                        ),
-                    },
-                    {
-                      id: `chart-series-role-${activeHtmlVisualNode.id}-${series.id}`,
-                      kind: "select" as const,
-                      label: "Series role",
-                      value: series.role ?? "bar",
-                      options: CHART_SERIES_ROLE_OPTIONS.map((option) => ({
-                        value: option.value,
-                        label: option.label,
-                      })),
-                      onChange: (value: string) =>
-                        patchActiveChartSpec((current) =>
-                          current.kind === "combo"
-                            ? {
-                                ...current,
-                                series: current.series.map((entry) =>
-                                  entry.id === series.id
-                                    ? { ...entry, role: value as HtmlChartSeriesRole }
-                                    : entry,
-                                ),
-                              }
-                            : current,
-                        ),
-                    },
-                    {
-                      id: `chart-series-axis-${activeHtmlVisualNode.id}-${series.id}`,
-                      kind: "select" as const,
-                      label: "Axis",
-                      value: series.axis ?? "primary",
-                      options: CHART_AXIS_ROLE_OPTIONS.map((option) => ({
-                        value: option.value,
-                        label: option.label,
-                      })),
-                      onChange: (value: string) =>
-                        patchActiveChartSpec((current) =>
-                          current.kind === "combo"
-                            ? {
-                                ...current,
-                                series: current.series.map((entry) =>
-                                  entry.id === series.id
-                                    ? { ...entry, axis: value as HtmlChartAxisRole }
-                                    : entry,
-                                ),
-                              }
-                            : current,
-                        ),
-                    },
-                    {
-                      id: `chart-series-color-${activeHtmlVisualNode.id}-${series.id}`,
-                      kind: "color" as const,
-                      label: "Series color",
-                      value: series.color ?? "#2a6f97",
-                      onChange: (value: string) =>
-                        patchActiveChartSpec((current) =>
-                          current.kind === "combo"
-                            ? {
-                                ...current,
-                                series: current.series.map((entry) =>
-                                  entry.id === series.id ? { ...entry, color: value } : entry,
-                                ),
-                              }
-                            : current,
-                        ),
-                    },
-                  ],
-                }))
-              : []),
-          ]
+        ? createHtmlEditorChartModuleInspectorSections({
+            nodeId: activeHtmlVisualNode.id,
+            chartSpec: activeChartSpec,
+            chartDataTable: activeChartDataTable,
+            nodeStyle: activeHtmlVisualNode.style,
+            getChartRawData: (current) => buildHtmlChartDataTable(current).raw,
+            rebuildChartSpecFromRawData: updateHtmlChartSpecFromRawData,
+            patchChartSpec: patchActiveChartSpec,
+            updateNodeStyle: updateActiveHtmlVisualNodeStyle,
+          })
         : [];
 
     const tableModuleSections =
       activeHtmlVisualNode.moduleKind === TABLE_MODULE_KIND && activeTableSpec
-        ? [
-            {
-              id: "table-module",
-              title: "Table module",
-              description:
-                "Edit the whole table as raw structured data instead of trying to select cell-by-cell surfaces.",
-              fields: [
-                {
-                  id: `table-data-${activeHtmlVisualNode.id}`,
-                  kind: "textarea" as const,
-                  label: "Table data (TSV / CSV)",
-                  value: activeTableSpec.raw,
-                  onChange: (value: string) => updateActiveTableSpec(buildHtmlTableSpecFromRaw(value)),
-                },
-                {
-                  id: `table-summary-${activeHtmlVisualNode.id}`,
-                  kind: "readonly" as const,
-                  label: "Shape",
-                  value: `${activeTableSpec.columns.length} columns · ${activeTableSpec.rows.length} rows`,
-                },
-                {
-                  id: `table-columns-${activeHtmlVisualNode.id}`,
-                  kind: "readonly" as const,
-                  label: "Columns",
-                  value: activeTableSpec.columns.map((column) => `${column.label} · ${column.type}`).join(" | "),
-                },
-                {
-                  id: `table-accent-${activeHtmlVisualNode.id}`,
-                  kind: "color" as const,
-                  label: "Accent color",
-                  value: activeHtmlVisualNode.style.accent ?? "#2a6f97",
-                  onChange: (value: string) => updateActiveHtmlVisualNodeStyle({ accent: value }),
-                },
-              ],
-            },
-          ]
+        ? createHtmlEditorTableModuleInspectorSections({
+            nodeId: activeHtmlVisualNode.id,
+            tableSpec: activeTableSpec,
+            nodeStyle: activeHtmlVisualNode.style,
+            parseTableRaw: buildHtmlTableSpecFromRaw,
+            updateTableSpec: updateActiveTableSpec,
+            updateNodeStyle: updateActiveHtmlVisualNodeStyle,
+          })
         : [];
 
-    return {
-      id: "visual-inspector",
-      title: "Visual module",
-      description: "Treat each annotation, surface, divider, or frame as an addressable design node.",
-      sections: [
-        {
-          id: "selected-node",
-          title: "Selected module",
-          fields: [
-            ...(activeHtmlVisualNode.moduleLabel
-              ? [
-                  {
-                    id: `node-module-${activeHtmlVisualNode.id}`,
-                    kind: "readonly" as const,
-                    label: "Applied capability",
-                    value: activeHtmlVisualNode.moduleLabel,
-                  },
-                ]
-              : []),
-            {
-              id: "node-kind",
-              kind: "readonly",
-              label: "Kind",
-              value: activeHtmlVisualNode.kind,
-            },
-            {
-              id: `node-canvas-mode-${activeHtmlVisualNode.id}`,
-              kind: "readonly",
-              label: "Canvas mode",
-              value: activeHtmlVisualCanvasTransform
-                ? `Freeform · ${Math.round(activeHtmlVisualCanvasTransform.frame.x)}, ${Math.round(activeHtmlVisualCanvasTransform.frame.y)}`
-                : "Flow layout",
-              description: activeHtmlVisualCanvasTransform
-                ? "This visual node is currently placed freely on the canvas."
-                : "This visual node is following the page flow.",
-            },
-            {
-              id: "node-actions",
-              kind: "actions",
-              label: "Node actions",
-              actions: [
-                {
-                  id: "duplicate-node",
-                  label: "Duplicate",
-                  onPress: duplicateSelectedVisualElement,
-                },
-                {
-                  id: "extract-node",
-                  label: "Extract as module",
-                  onPress: () =>
-                    extractSelectionAsModule({
-                      kind: "visual",
-                      node: activeHtmlVisualNode,
-                      contentNodes: activeHtmlVisualContentNodes,
-                    }),
-                },
-                {
-                  id: "delete-node",
-                  label: "Delete",
-                  onPress: deleteSelectedVisualElement,
-                  tone: "danger",
-                },
-              ],
-            },
-          ],
-        },
-        ...(recommendedModuleManifests.length > 0
-          ? [
-              {
-                id: "replace-node",
-                title: "Replace with module",
-                fields: [
-                  {
-                    id: `replace-node-actions-${activeHtmlVisualNode.id}`,
-                    kind: "actions" as const,
-                    label: "Published capabilities",
-                    description: "Swap the selected visual region onto a published module style and contract.",
-                    actions: recommendedModuleManifests.map((manifest) => ({
-                      id: `replace-node-${manifest.moduleId}`,
-                      label: manifest.label,
-                      onPress: () => replaceSelectedVisualWithModule(manifest),
-                    })),
-                  },
-                ],
-              },
-            ]
-          : []),
+    return createHtmlEditorVisualInspectorSchema({
+      node: activeHtmlVisualNode,
+      transform: activeHtmlVisualCanvasTransform,
+      contentNodes: activeHtmlVisualContentNodes,
+      moduleSections: [
         ...scientificDiagramSections,
         ...chartModuleSections,
         ...tableModuleSections,
-        {
-          id: "new-node",
-          title: "Add nearby module",
-          fields: [
-            {
-              id: "add-node-actions",
-              kind: "actions",
-              label: "Add visual",
-              actions: (
-                [
-                  "surface",
-                  "divider",
-                  "badge",
-                  "highlight",
-                  "annotation",
-                  "rail",
-                  "chart-frame",
-                ] as HtmlVisualNodeKind[]
-              ).map((kind) => ({
-                id: `add-${kind}`,
-                label: kind.replace(/-/g, " "),
-                onPress: () => addVisualElement(kind),
-              })),
-            },
-          ],
-        },
-        {
-          id: "node-style",
-          title: "Style",
-          fields: [
-            {
-              id: `node-background-${activeHtmlVisualNode.id}`,
-              kind: "color",
-              label: "Background",
-              value: activeHtmlVisualNode.style.background ?? "#ffffff",
-              onChange: (value: string) =>
-                updateActiveHtmlVisualNodeStyle({ background: value }),
-            },
-            {
-              id: `node-border-${activeHtmlVisualNode.id}`,
-              kind: "color",
-              label: "Border",
-              value: activeHtmlVisualNode.style.border ?? "#d7d1c6",
-              onChange: (value: string) =>
-                updateActiveHtmlVisualNodeStyle({ border: value }),
-            },
-            {
-              id: `node-accent-${activeHtmlVisualNode.id}`,
-              kind: "color",
-              label: "Accent",
-              value: activeHtmlVisualNode.style.accent ?? "#c6994a",
-              onChange: (value: string) =>
-                updateActiveHtmlVisualNodeStyle({ accent: value }),
-            },
-            {
-              id: `node-opacity-${activeHtmlVisualNode.id}`,
-              kind: "range",
-              label: "Opacity",
-              value: Math.round((activeHtmlVisualNode.style.opacity ?? 1) * 100),
-              min: 10,
-              max: 100,
-              step: 5,
-              onChange: (value: number) =>
-                updateActiveHtmlVisualNodeStyle({ opacity: value / 100 }),
-            },
-            {
-              id: `node-radius-${activeHtmlVisualNode.id}`,
-              kind: "number",
-              label: "Radius",
-              value: Math.round(activeHtmlVisualNode.style.radius ?? 0),
-              min: 0,
-              max: 48,
-              step: 1,
-              onChange: (value: number) =>
-                updateActiveHtmlVisualNodeStyle({ radius: value }),
-            },
-            {
-              id: `node-padding-${activeHtmlVisualNode.id}`,
-              kind: "number",
-              label: "Padding",
-              value: Math.round(activeHtmlVisualNode.style.padding ?? 0),
-              min: 0,
-              max: 64,
-              step: 1,
-              onChange: (value: number) =>
-                updateActiveHtmlVisualNodeStyle({ padding: value }),
-            },
-            {
-              id: `node-width-${activeHtmlVisualNode.id}`,
-              kind: "number",
-              label: "Width %",
-              value: Math.round(activeHtmlVisualNode.style.widthPercent ?? 100),
-              min: 10,
-              max: 100,
-              step: 1,
-              onChange: (value: number) =>
-                updateActiveHtmlVisualNodeStyle({ widthPercent: value }),
-            },
-          ],
-        },
-        ...(activeHtmlVisualContentNodes.length
-          ? [
-              {
-                id: "node-content",
-                title: "Content nodes",
-                fields: activeHtmlVisualContentNodes.flatMap((contentNode) => [
-                  {
-                    id: `content-${contentNode.id}`,
-                    kind: "readonly" as const,
-                    label: `${contentNode.kind}`,
-                    value: contentNode.text,
-                  },
-                  {
-                    id: `content-actions-${contentNode.id}`,
-                    kind: "actions" as const,
-                    label: "Content actions",
-                    actions: [
-                      {
-                        id: `duplicate-${contentNode.id}`,
-                        label: "Duplicate",
-                        onPress: () => duplicateVisualContentElement(contentNode.id),
-                      },
-                      {
-                        id: `delete-${contentNode.id}`,
-                        label: "Delete",
-                        onPress: () => deleteVisualContentElement(contentNode.id),
-                        tone: "danger" as const,
-                      },
-                    ],
-                  },
-                ]),
-              },
-            ]
-          : []),
       ],
-    };
+      recommendedModuleManifests,
+      duplicateNode: duplicateSelectedVisualElement,
+      extractVisualAsModule: (node, contentNodes) =>
+        extractSelectionAsModule({
+          kind: "visual",
+          node,
+          contentNodes,
+        }),
+      deleteNode: deleteSelectedVisualElement,
+      replaceWithModule: replaceSelectedVisualWithModule,
+      addVisualElement,
+      updateNodeStyle: updateActiveHtmlVisualNodeStyle,
+      duplicateContentNode: duplicateVisualContentElement,
+      deleteContentNode: deleteVisualContentElement,
+    });
   }, [
     activeChartDataTable,
     activeChartSpec,
@@ -4343,6 +3404,11 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                               <div className="mt-3 text-[12px] leading-6 text-[var(--studio-muted-strong)]">
                                 {lastPptxExportResult.fileName} · {lastPptxExportResult.slideCount} slides
                               </div>
+                              <div className="mt-2 border border-[rgba(0,242,255,0.16)] bg-[rgba(0,242,255,0.05)] px-3 py-2 text-[12px] leading-6 text-[var(--studio-ink)]">
+                                Quality {lastPptxExportResult.qualityReport.score} ·{" "}
+                                {lastPptxExportResult.qualityReport.nativeObjectCount} native objects ·{" "}
+                                {lastPptxExportResult.qualityReport.fallbackObjectCount} fallback objects
+                              </div>
                               {lastPptxExportResult.warnings.length > 0 ? (
                                 <div className="mt-3 space-y-2">
                                   {lastPptxExportResult.warnings.slice(0, 8).map((warning, index) => (
@@ -4364,6 +3430,31 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                                   The latest PPTX export completed without export notes.
                                 </div>
                               )}
+                              {lastPptxExportResult.diagnostics.some(
+                                (diagnostic) =>
+                                  diagnostic.severity === "success" || diagnostic.severity === "info",
+                              ) ? (
+                                <details className="mt-3 border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.03)] px-3 py-3 text-[12px] leading-6 text-[var(--studio-muted-strong)]">
+                                  <summary className="cursor-pointer text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--studio-muted)]">
+                                    Export diagnostics
+                                  </summary>
+                                  <div className="mt-2 space-y-1">
+                                    {lastPptxExportResult.diagnostics
+                                      .filter(
+                                        (diagnostic) =>
+                                          diagnostic.severity === "success" ||
+                                          diagnostic.severity === "info",
+                                      )
+                                      .slice(0, 8)
+                                      .map((diagnostic, index) => (
+                                        <div key={`${diagnostic.code}-${diagnostic.pageNumber ?? 0}-${index}`}>
+                                          {diagnostic.pageNumber ? `Page ${diagnostic.pageNumber} · ` : ""}
+                                          {diagnostic.code}
+                                        </div>
+                                      ))}
+                                  </div>
+                                </details>
+                              ) : null}
                             </section>
                           ) : null}
 
