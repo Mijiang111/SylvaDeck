@@ -89,6 +89,71 @@ test("bubble chart data tables round-trip through runtime helpers", () => {
   }
 });
 
+test("chart raw-data updates preserve native style contract", () => {
+  const lineSpec: HtmlChartSpec = {
+    kind: "line",
+    title: "Scenario paths",
+    subtitle: "",
+    insight: "",
+    unit: "index",
+    categories: ["Q1", "Q2"],
+    valueAxisMin: 40,
+    valueAxisMax: 90,
+    style: {
+      yAxis: {
+        lineColor: "#305c63",
+        gridColor: "#d8cfbc",
+        gridDash: "dash",
+        labelFontSize: 8,
+      },
+    },
+    series: [
+      {
+        id: "solid-line",
+        label: "Solid",
+        values: [50, 62],
+        color: "#305c63",
+        role: "line",
+        axis: "primary",
+        style: { lineDash: "solid", lineWidthPt: 2.4, marker: "circle" },
+      },
+      {
+        id: "dash-line",
+        label: "Dashed",
+        values: [54, 70],
+        color: "#b55638",
+        role: "line",
+        axis: "primary",
+        style: {
+          lineDash: "dash",
+          lineWidthPt: 2.8,
+          marker: "none",
+          shadow: { opacity: 0.18, blurPt: 4, offsetPt: 1, angle: 45 },
+        },
+      },
+    ],
+  };
+
+  const parsed = parseHtmlChartSpec(serializeHtmlChartSpec(lineSpec));
+  assert.equal(parsed?.kind, "line");
+  if (parsed?.kind === "line") {
+    assert.equal(parsed.style?.yAxis?.gridDash, "dash");
+    assert.equal(parsed.series[1]?.style?.lineDash, "dash");
+    assert.equal(parsed.series[1]?.style?.marker, "none");
+  }
+
+  const next = updateHtmlChartSpecFromRawData({
+    current: lineSpec,
+    raw: "Category\tSolid\tDashed\nQ3\t65\t76\nQ4\t69\t83",
+  });
+  assert.equal(next?.kind, "line");
+  if (next?.kind === "line") {
+    assert.equal(next.style?.yAxis?.gridDash, "dash");
+    assert.equal(next.series[1]?.style?.lineDash, "dash");
+    assert.equal(next.series[1]?.style?.shadow?.opacity, 0.18);
+  }
+});
+
 test("table specs can be rebuilt from raw TSV", () => {
   const table = buildHtmlTableSpecFromRaw(
     "Operator\tCapacity\tMargin\nHyperscaler\t8.4 GW\t41%\nEnterprise colo\t2.8 GW\t18%",

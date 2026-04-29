@@ -1,0 +1,80 @@
+[
+  {
+    "id": "ordinary-openai-one-page",
+    "label": "Ordinary one-page product brief",
+    "prompt": "1 page ppt for OpenAI",
+    "pageCount": 1,
+    "expectations": {
+      "thinkingMode": "neutral",
+      "workloadLane": "fast",
+      "subjectIncludes": ["openai"],
+      "minPageIntents": 1,
+      "forbiddenWorkspaceBlocks": ["task-rigor-brief", "proof-plan"],
+      "minScore": 86
+    }
+  },
+  {
+    "id": "case-study-shipping-robotics",
+    "label": "Case-study mode from task-first brief",
+    "prompt": "2 page ppt for case-study of application of Robotic in Shipping\n```{ The shipping industry handles over 80% of international trade volume and still relies heavily on manual work. Robotics applications now target harsh working conditions, rising labor cost, safety incidents caused by human error, and tighter sustainability demands. }```",
+    "pageCount": 2,
+    "expectations": {
+      "thinkingMode": "case-study",
+      "subjectIncludes": ["shipping", "robotic"],
+      "minPageIntents": 2,
+      "minScore": 88
+    }
+  },
+  {
+    "id": "academic-research-retrieval",
+    "label": "Academic research presentation mode",
+    "prompt": "3 page academic research presentation on long-context retrieval degradation in enterprise QA. Keep research question, method, result, and interpretation explicit.",
+    "pageCount": 3,
+    "expectations": {
+      "thinkingMode": "academic-research",
+      "subjectIncludes": ["retrieval", "enterprise qa", "long-context"],
+      "minPageIntents": 3,
+      "minScore": 88
+    }
+  },
+  {
+    "id": "deep-valuation-codex",
+    "label": "Finance-grade valuation lane",
+    "prompt": "1 page Top Ibank level Codex Product Valuation",
+    "pageCount": 1,
+    "expectations": {
+      "workloadLane": "deep",
+      "subjectIncludes": ["codex"],
+      "deliverableIncludes": ["valuation"],
+      "requiredWorkspaceBlocks": ["task-rigor-brief"],
+      "minPageIntents": 1,
+      "minScore": 86
+    }
+  },
+  {
+    "id": "explicit-3d-chip-system",
+    "label": "Explicit 3D request keeps 3D as intentional capability",
+    "prompt": "Create a 3-page report on a next-generation AI chip system. Make page 1 a strong 3D cutaway concept page that explains the physical system object.",
+    "pageCount": 3,
+    "expectations": {
+      "subjectIncludes": ["chip", "system"],
+      "requiredCapabilityCards": ["explicit-3d"],
+      "minPageIntents": 3,
+      "minScore": 84
+    }
+  },
+  {
+    "id": "long-form-ai-rollout",
+    "label": "Long-form deck keeps page budget explicit",
+    "prompt": "Create a 10 page long-form deck on enterprise AI rollout. Cover operating model, governance, adoption risks, capability roadmap, measurement, and executive implications.",
+    "pageCount": 10,
+    "generationMode": "long-form",
+    "expectations": {
+      "workloadLane": "deep",
+      "subjectIncludes": ["enterprise ai", "rollout"],
+      "minPageIntents": 10,
+      "requiredWorkspaceBlocks": ["task-rigor-brief"],
+      "minScore": 84
+    }
+  }
+]

@@ -348,6 +348,54 @@ export type CompositeChartSpec = ChartSpec & {
   composite: "annotation-rail" | "metric-strip" | "decision-footer";
 };
 
+export type StructuredDiagramKind = "flowchart" | "swimlane" | "gantt";
+
+export type StructuredDiagramLane = {
+  id: string;
+  label: string;
+};
+
+export type StructuredDiagramPhase = {
+  id: string;
+  label: string;
+};
+
+export type StructuredDiagramNode = {
+  id: string;
+  label: string;
+  number?: number;
+  laneId?: string | null;
+  phaseId?: string | null;
+  shape: "process" | "decision" | "milestone";
+};
+
+export type StructuredDiagramConnector = {
+  fromId: string;
+  toId: string;
+  label?: string | null;
+};
+
+export type StructuredGanttTask = {
+  id: string;
+  label: string;
+  trackId: string;
+  startBucket: number;
+  endBucket: number;
+  milestone?: boolean;
+};
+
+export type StructuredDiagramSpec = {
+  kind: StructuredDiagramKind;
+  title: string;
+  lanes: StructuredDiagramLane[];
+  phases: StructuredDiagramPhase[];
+  nodes: StructuredDiagramNode[];
+  connectors: StructuredDiagramConnector[];
+  timeBuckets: string[];
+  tasks: StructuredGanttTask[];
+  source: "heuristic";
+};
+
 
 export type DeckCompositionBrief = {
   motif: string;
@@ -532,6 +580,7 @@ export type PageRecipe = {
   chartSpec: CompositeChartSpec | null;
   secondaryChartSpec: CompositeChartSpec | null;
   diagramSpec: ScientificDiagramSpec | null;
+  structuredDiagramSpec?: StructuredDiagramSpec | null;
   fallbackReason: string | null;
   freeformLayoutPlan?: FreeformLayoutPlan | null;
   briefSynthesisConfidence?: StudioBriefSynthesisConfidence;

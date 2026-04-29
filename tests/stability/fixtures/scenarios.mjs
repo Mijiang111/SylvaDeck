@@ -1,3 +1,9 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const FIXTURES_DIR = path.dirname(fileURLToPath(import.meta.url));
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -62,6 +68,182 @@ function chartMarkup({ title, bars, footnote = "" }) {
           ? `<div class="chart-footnote annotation-rail">${escapeHtml(footnote)}</div>`
           : ""
       }
+    </div>
+  `;
+}
+
+function chartSpecMarkup({ spec }) {
+  const encodedSpec = escapeHtml(JSON.stringify(spec));
+  const preview =
+    spec.kind === "bubble"
+      ? bubbleChartPreview(spec)
+      : spec.kind === "matrix"
+        ? matrixChartPreview(spec)
+      : comboChartPreview(spec);
+  return `
+    <div class="html-chart-module" data-html-module-kind="chart" data-html-module-label="Chart" data-html-visual-kind="chart-frame" data-html-fit-role="content" data-html-chart-spec="${encodedSpec}" style="position:relative;margin-top:28px;background:rgba(255,255,255,0.92);border:1px solid rgba(47,93,132,0.16);border-radius:24px;padding:20px 22px 18px;box-shadow:0 18px 42px rgba(93,119,142,0.08);">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:18px;">
+        <div>
+          <div style="font-size:18px;font-weight:700;color:#17283a;">${escapeHtml(spec.title)}</div>
+          <div style="margin-top:6px;font-size:13px;line-height:1.45;color:#617182;">${escapeHtml(spec.subtitle || spec.insight || "")}</div>
+        </div>
+        <div style="font-size:12px;letter-spacing:0.12em;text-transform:uppercase;color:#6f88a0;">${escapeHtml(spec.kind)}</div>
+      </div>
+      <div style="margin-top:18px;">${preview}</div>
+      ${spec.insight ? `<div style="margin-top:12px;font-size:13px;line-height:1.45;color:#617182;">${escapeHtml(spec.insight)}</div>` : ""}
+    </div>
+  `;
+}
+
+function comboChartPreview(spec) {
+  const width = 760;
+  const height = 300;
+  const left = 58;
+  const right = width - 48;
+  const top = 38;
+  const bottom = height - 44;
+  const plotWidth = right - left;
+  const plotHeight = bottom - top;
+  const barSeries = spec.series.filter((series) => (series.role || "bar") === "bar");
+  const lineSeries = spec.series.filter((series) => (series.role || "bar") === "line");
+  const primaryMax = Math.max(1, ...barSeries.flatMap((series) => series.values).map(Math.abs));
+  const secondaryMax = Math.max(1, ...lineSeries.flatMap((series) => series.values).map(Math.abs));
+  const slotWidth = plotWidth / Math.max(1, spec.categories.length);
+  const barWidth = Math.max(34, slotWidth * 0.34);
+  const bars = spec.categories
+    .map((category, categoryIndex) => {
+      const value = barSeries[0]?.values[categoryIndex] ?? 0;
+      const barHeight = (Math.abs(value) / primaryMax) * plotHeight;
+      const x = left + categoryIndex * slotWidth + (slotWidth - barWidth) / 2;
+      const y = bottom - barHeight;
+      return `
+        <rect x="${x}" y="${y}" width="${barWidth}" height="${barHeight}" rx="10" fill="${escapeHtml(barSeries[0]?.color || "#5d7f9d")}" />
+        <text x="${x + barWidth / 2}" y="${bottom + 24}" text-anchor="middle" font-size="12" fill="#526779">${escapeHtml(category)}</text>
+      `;
+    })
+    .join("");
+  const linePoints = spec.categories.map((_, categoryIndex) => {
+    const value = lineSeries[0]?.values[categoryIndex] ?? 0;
+    return {
+      x: left + categoryIndex * slotWidth + slotWidth / 2,
+      y: bottom - (Math.abs(value) / secondaryMax) * plotHeight,
+    };
+  });
+  const linePath = linePoints
+    .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`)
+    .join(" ");
+  return `
+    <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(spec.title)}" style="display:block;width:100%;height:300px;">
+      <line x1="${left}" y1="${bottom}" x2="${right}" y2="${bottom}" stroke="rgba(47,93,132,0.26)" stroke-width="1.4" />
+      ${Array.from({ length: 4 }, (_, index) => {
+        const y = bottom - (index / 3) * plotHeight;
+        return `<line x1="${left}" y1="${y}" x2="${right}" y2="${y}" stroke="rgba(47,93,132,0.12)" stroke-width="1" />`;
+      }).join("")}
+      ${bars}
+      <path d="${linePath}" fill="none" stroke="${escapeHtml(lineSeries[0]?.color || "#19c6df")}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+      ${linePoints.map((point) => `<circle cx="${point.x}" cy="${point.y}" r="6" fill="${escapeHtml(lineSeries[0]?.color || "#19c6df")}" stroke="#fff" stroke-width="3" />`).join("")}
+    </svg>
+  `;
+}
+
+function bubbleChartPreview(spec) {
+  const width = 760;
+  const height = 300;
+  const left = 64;
+  const right = width - 46;
+  const top = 34;
+  const bottom = height - 50;
+  const plotWidth = right - left;
+  const plotHeight = bottom - top;
+  const xValues = spec.points.map((point) => point.x);
+  const yValues = spec.points.map((point) => point.y);
+  const sizeMax = Math.max(1, ...spec.points.map((point) => point.size));
+  const xMin = Math.min(...xValues);
+  const xMax = Math.max(...xValues);
+  const yMin = Math.min(...yValues);
+  const yMax = Math.max(...yValues);
+  const points = spec.points
+    .map((point) => {
+      const x =
+        xMax === xMin ? left + plotWidth / 2 : left + ((point.x - xMin) / Math.max(1, xMax - xMin)) * plotWidth;
+      const y =
+        yMax === yMin ? top + plotHeight / 2 : bottom - ((point.y - yMin) / Math.max(1, yMax - yMin)) * plotHeight;
+      const radius = 18 + (point.size / sizeMax) * 34;
+      return `
+        <circle cx="${x}" cy="${y}" r="${radius}" fill="${escapeHtml(point.color || "#20d3ff")}" opacity="0.82" stroke="#ffffff" stroke-width="3" />
+        <text x="${x + radius + 8}" y="${y - 4}" font-size="12" font-weight="700" fill="#17283a">${escapeHtml(point.label)}</text>
+      `;
+    })
+    .join("");
+  return `
+    <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(spec.title)}" style="display:block;width:100%;height:300px;">
+      <line x1="${left}" y1="${bottom}" x2="${right}" y2="${bottom}" stroke="rgba(47,93,132,0.26)" stroke-width="1.4" />
+      <line x1="${left}" y1="${top}" x2="${left}" y2="${bottom}" stroke="rgba(47,93,132,0.26)" stroke-width="1.4" />
+      ${points}
+      <text x="${(left + right) / 2}" y="${height - 16}" text-anchor="middle" font-size="12" fill="#617182">${escapeHtml(spec.xLabel)}</text>
+      <text x="18" y="${(top + bottom) / 2}" transform="rotate(-90 18 ${(top + bottom) / 2})" text-anchor="middle" font-size="12" fill="#617182">${escapeHtml(spec.yLabel)}</text>
+    </svg>
+  `;
+}
+
+function matrixChartPreview(spec) {
+  const width = 760;
+  const height = 330;
+  const left = 64;
+  const right = width - 46;
+  const top = 34;
+  const bottom = height - 58;
+  const plotWidth = right - left;
+  const plotHeight = bottom - top;
+  const quadrants =
+    spec.quadrants?.length
+      ? spec.quadrants
+      : [
+          { x: 0, y: 0, w: 0.5, h: 0.5, color: "#f6e8df" },
+          { x: 0.5, y: 0, w: 0.5, h: 0.5, color: "#e7f1f3" },
+          { x: 0, y: 0.5, w: 0.5, h: 0.5, color: "#eef2ec" },
+          { x: 0.5, y: 0.5, w: 0.5, h: 0.5, color: "#f6eee2" },
+        ];
+  return `
+    <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(spec.title)}" style="display:block;width:100%;height:330px;">
+      <rect x="${left}" y="${top}" width="${plotWidth}" height="${plotHeight}" rx="14" fill="#fffaf3" stroke="#d7c8b9" stroke-width="1.4" />
+      ${quadrants.map((quadrant) => `<rect x="${left + quadrant.x * plotWidth}" y="${top + quadrant.y * plotHeight}" width="${quadrant.w * plotWidth}" height="${quadrant.h * plotHeight}" fill="${escapeHtml(quadrant.color || "#f7f3eb")}" opacity="0.74" />`).join("")}
+      <line x1="${left + plotWidth / 2}" y1="${top}" x2="${left + plotWidth / 2}" y2="${bottom}" stroke="#b9a897" stroke-width="1.2" />
+      <line x1="${left}" y1="${top + plotHeight / 2}" x2="${right}" y2="${top + plotHeight / 2}" stroke="#b9a897" stroke-width="1.2" />
+      ${spec.items.map((item) => {
+        const x = left + item.x * plotWidth;
+        const y = top + item.y * plotHeight;
+        const w = Math.max(92, item.w * plotWidth);
+        const h = Math.max(54, item.h * plotHeight);
+        return `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="12" fill="${escapeHtml(item.color || "#ffffff")}" stroke="#ffffff" stroke-width="2" />
+          <text x="${x + 12}" y="${y + 22}" font-size="12" font-weight="700" fill="#17283a">${escapeHtml(item.label)}</text>`;
+      }).join("")}
+      <text x="${left}" y="${bottom + 28}" font-size="12" fill="#617182">${escapeHtml(spec.xMinLabel || "")}</text>
+      <text x="${right}" y="${bottom + 28}" text-anchor="end" font-size="12" fill="#617182">${escapeHtml(spec.xMaxLabel || "")}</text>
+      <text x="18" y="${(top + bottom) / 2}" transform="rotate(-90 18 ${(top + bottom) / 2})" text-anchor="middle" font-size="12" fill="#617182">${escapeHtml(spec.yLabel)}</text>
+    </svg>
+  `;
+}
+
+function tableMarkup({ columns, rows }) {
+  const spec = {
+    raw: [columns, ...rows].map((row) => row.join("\t")).join("\n"),
+    hasHeader: true,
+    columns: columns.map((label, index) => ({
+      id: `column-${index + 1}`,
+      label,
+      type: index === 0 ? "text" : "number",
+    })),
+    rows,
+  };
+  return `
+    <div class="html-table-module" data-html-module-kind="table" data-html-module-label="Table" data-html-visual-kind="surface" data-html-fit-role="content" data-html-table-spec="${escapeHtml(JSON.stringify(spec))}" style="position:relative;margin-top:28px;background:rgba(255,255,255,0.9);border:1px solid rgba(47,93,132,0.16);border-radius:24px;padding:18px 18px 12px;">
+      <div style="display:grid;grid-template-columns:1.6fr 1fr 1fr 1fr;gap:0;padding:12px 10px 14px;border-bottom:1px solid rgba(47,93,132,0.16);font-size:12px;letter-spacing:0.12em;text-transform:uppercase;color:#6d8294;font-weight:700;">
+        ${columns.map((column) => `<div>${escapeHtml(column)}</div>`).join("")}
+      </div>
+      ${rows.map((row, rowIndex) => `<div style="display:grid;grid-template-columns:1.6fr 1fr 1fr 1fr;gap:0;padding:14px 10px;border-bottom:${rowIndex === rows.length - 1 ? "0" : "1px solid rgba(47,93,132,0.12)"};background:${rowIndex === 0 ? "rgba(31,211,255,0.06)" : "transparent"};">
+        ${row.map((cell, cellIndex) => `<div style="font-size:${cellIndex === 0 ? "15px" : "14px"};line-height:1.45;color:${cellIndex === 0 ? "#162430" : "#415566"};font-weight:${cellIndex === 0 ? "700" : "500"};">${escapeHtml(cell)}</div>`).join("")}
+      </div>`).join("")}
     </div>
   `;
 }
@@ -615,6 +797,18 @@ function createSectionPages(definitions) {
     title: definition.title,
     markup: pageSection(definition),
   }));
+}
+
+function readFixtureText(relativePath) {
+  return readFileSync(path.join(FIXTURES_DIR, relativePath), "utf8");
+}
+
+function extractFirstFixturePage(html) {
+  const match = html.match(/<section class="page"(?:\s|>)[\s\S]*?<\/section>/);
+  if (!match) {
+    throw new Error("Fixture HTML did not contain a section.page element.");
+  }
+  return match[0];
 }
 
 const standardPages = createSectionPages([
@@ -1746,6 +1940,727 @@ const longformPages = createSectionPages(
 );
 const longformReport = createReport("Long-form operating storyline", longformPages);
 
+const mckinseyChartTargetReport = {
+  title: "McKinsey-style chart export target",
+  html: readFixtureText("html/mckinsey-chart-target.html"),
+  pageCount: 1,
+  pageTitles: ["Chart Capability Demonstration"],
+};
+
+const exportedMckinseyChartRegressionReport = {
+  title: "Exported McKinsey chart regression",
+  html: readFixtureText("html/a-one-page-mckinsey-style-presentation-demonstrating-chart.html"),
+  pageCount: 1,
+  pageTitles: ["Chart Capability Demonstration"],
+};
+
+const observedFactsQ1RegressionReport = {
+  title: "Observed facts Q1 2026 regression",
+  html: readFixtureText("html/observed-facts-q1-2026-total-2.html"),
+  pageCount: 3,
+  pageTitles: [
+    "特斯拉投资判断：基本面修复已兑现，但估值弹性仍押注AI与Robotaxi",
+    "盈利与现金流修复已出现，但交付与利润质量仍偏混合",
+    "Migration Risks and Rollback",
+  ],
+};
+
+const textOwnershipRegressionReport = {
+  title: "PPTX text ownership regression",
+  html: buildReportDocument("PPTX text ownership regression", [
+    `
+      <section class="page" data-page-number="1" data-page-title="Filled visual containers keep child text single-source" style="width:1600px;height:900px;position:relative;overflow:hidden;background:#f7f4ec;color:#1f3045;" data-page-bg="#f7f4ec" data-surface-fill="#fbf8f1" data-divider-color="#d8cfbc">
+        <div data-html-block-id="ownership-title" data-html-block-kind="heading" data-html-fit-role="content" style="position:absolute;left:72px;top:58px;width:1180px;font-size:46px;line-height:1.12;font-weight:700;color:#17304b;">Ownership graph keeps card text single-source</div>
+        <div data-html-block-id="ownership-subtitle" data-html-block-kind="paragraph" data-html-fit-role="content" style="position:absolute;left:72px;top:128px;width:1240px;font-size:21px;line-height:1.35;color:#536171;">Each filled card is a visual shape. Its child blocks remain editable text, and the parent never exports its concatenated innerText as a second filled text box.</div>
+
+        <div data-html-visual-id="ownership-card-1" data-html-visual-kind="label-surface" data-export-role="label-surface" data-export-fill="#fbf8f1" data-export-border="#d8cfbc" data-export-border-width="1" data-export-radius="14" data-export-opacity="1" data-html-fit-role="content" style="position:absolute;left:88px;top:238px;width:420px;height:230px;background:#fbf8f1;border:1px solid #d8cfbc;border-radius:14px;padding:24px;box-sizing:border-box;">
+          <div data-html-block-id="ownership-card-1-title" data-html-block-kind="heading" data-html-fit-role="content" style="font-size:30px;line-height:1.1;font-weight:700;color:#17304b;">Key signal</div>
+          <div data-html-block-id="ownership-card-1-metric" data-html-block-kind="heading" data-html-fit-role="content" style="margin-top:18px;font-size:25px;line-height:1.2;font-weight:650;color:#b08a42;">Services revenue grew 42%</div>
+          <div data-html-block-id="ownership-card-1-body" data-html-block-kind="paragraph" data-html-fit-role="content" style="margin-top:14px;font-size:17px;line-height:1.45;color:#536171;">The parent card background should export as a shape while this paragraph remains the only editable text source for the body copy.</div>
+        </div>
+
+        <div data-html-visual-id="ownership-card-2" data-html-visual-kind="label-surface" data-export-role="label-surface" data-export-fill="#17304b" data-export-border="#9f8a5d" data-export-border-width="1" data-export-radius="0" data-export-opacity="1" data-html-fit-role="content" style="position:absolute;left:590px;top:238px;width:360px;height:230px;background:#17304b;border:1px solid #9f8a5d;padding:22px;box-sizing:border-box;color:#f8f4eb;">
+          <div data-html-block-id="ownership-card-2-title" data-html-block-kind="heading" data-html-fit-role="content" style="font-size:31px;line-height:1.1;font-weight:700;">Interpretation</div>
+          <div data-html-block-id="ownership-card-2-body" data-html-block-kind="paragraph" data-html-fit-role="content" style="margin-top:18px;font-size:18px;line-height:1.4;color:#efe4ce;">A dark filled parent should not become a late z-order text box that covers the separately exported child text.</div>
+        </div>
+
+        <div data-html-visual-id="ownership-card-3" data-html-visual-kind="label-surface" data-export-role="label-surface" data-export-fill="#d9c79f" data-export-border="#b59c66" data-export-border-width="1" data-export-radius="0" data-export-opacity="1" data-html-fit-role="content" style="position:absolute;left:1030px;top:238px;width:380px;height:230px;background:#d9c79f;border:1px solid #b59c66;padding:22px;box-sizing:border-box;color:#1f3045;">
+          <div data-html-block-id="ownership-card-3-title" data-html-block-kind="heading" data-html-fit-role="content" style="font-size:31px;line-height:1.1;font-weight:700;">Investment meaning</div>
+          <div data-html-block-id="ownership-card-3-body" data-html-block-kind="paragraph" data-html-fit-role="content" style="margin-top:18px;font-size:18px;line-height:1.4;">The ownership planner should choose leaf text and suppress the visual container's descendant text aggregate.</div>
+        </div>
+      </section>
+    `,
+  ]),
+  pageCount: 1,
+  pageTitles: ["Filled visual containers keep child text single-source"],
+};
+
+const tableExportPages = createSectionPages([
+  {
+    title: "Native table export should preserve the operating comparison as PowerPoint cells",
+    eyebrow: "Export quality",
+    left: `
+      <h1>Native table export should preserve the operating comparison as PowerPoint cells.</h1>
+      <p class="lede">The table is intentionally structured through Studio's table module contract so PPTX export can produce an editable PowerPoint table instead of a flattened picture.</p>
+      ${tableMarkup({
+        columns: ["Workstream", "Baseline", "Current", "Delta"],
+        rows: [
+          ["Intake handoff", "42m", "34m", "-8m"],
+          ["Referral release", "61m", "58m", "-3m"],
+          ["Exception routing", "18%", "14%", "-4pt"],
+        ],
+      })}
+    `,
+    right: "",
+  },
+]);
+const tableExportReport = createReport("Native table export fixture", tableExportPages);
+
+const svgLineExportPages = createSectionPages([
+  {
+    title: "Unstructured SVG line chart should be promoted to a native PowerPoint chart",
+    eyebrow: "Export quality",
+    left: `
+      <h1>Unstructured SVG line chart should be promoted to a native PowerPoint chart.</h1>
+      <p class="lede">This fixture mirrors Studio output where a consulting-style line chart is authored as SVG polylines without an explicit chart data contract.</p>
+      <div style="margin-top:28px;background:#fcfaf6;border:1px solid #dbd1c2;padding:20px 22px 18px;position:relative;min-height:440px;" data-html-visual-kind="chart-frame" data-export-role="chart-frame" data-html-fit-role="content">
+        <div style="font-size:18px;font-weight:700;color:#223037;" data-html-block-id="svg-line-title" data-html-block-kind="heading" data-html-fit-role="content">Illustrative demand pathways show divergence across scenarios</div>
+        <div style="font-size:13px;color:#756958;margin-top:4px;" data-html-block-id="svg-line-subtitle" data-html-block-kind="heading" data-html-fit-role="content">Index, base period = 100</div>
+        <div style="position:relative;margin-top:18px;height:340px;border-left:2px solid #a9a093;border-bottom:2px solid #a9a093;">
+          <div style="position:absolute;bottom:-30px;left:2%;font-size:12px;color:#7c6f61;">Y1</div>
+          <div style="position:absolute;bottom:-30px;left:20%;font-size:12px;color:#7c6f61;">Y2</div>
+          <div style="position:absolute;bottom:-30px;left:38%;font-size:12px;color:#7c6f61;">Y3</div>
+          <div style="position:absolute;bottom:-30px;left:56%;font-size:12px;color:#7c6f61;">Y4</div>
+          <div style="position:absolute;bottom:-30px;left:74%;font-size:12px;color:#7c6f61;">Y5</div>
+          <div style="position:absolute;bottom:-30px;left:91%;font-size:12px;color:#7c6f61;">Y6</div>
+          <div style="position:absolute;left:-32px;top:-8px;font-size:12px;color:#7c6f61;">180</div>
+          <div style="position:absolute;left:-32px;top:64px;font-size:12px;color:#7c6f61;">160</div>
+          <div style="position:absolute;left:-32px;top:132px;font-size:12px;color:#7c6f61;">140</div>
+          <div style="position:absolute;left:-32px;top:200px;font-size:12px;color:#7c6f61;">120</div>
+          <div style="position:absolute;left:-32px;top:270px;font-size:12px;color:#7c6f61;">100</div>
+          <svg viewBox="0 0 760 340" width="100%" height="100%" style="position:absolute;left:0;top:0;overflow:visible;">
+            <polygon points="16,275 148,255 282,218 414,170 548,116 716,55 716,338 16,338" fill="rgba(181,86,56,0.10)"></polygon>
+            <polyline points="16,275 148,255 282,218 414,170 548,116 716,55" fill="none" stroke="#b55638" stroke-width="4"></polyline>
+            <polyline points="16,275 148,262 282,242 414,222 548,198 716,176" fill="none" stroke="#305c63" stroke-width="4"></polyline>
+            <polyline points="16,275 148,281 282,292 414,301 548,306 716,312" fill="none" stroke="#9a9f95" stroke-width="4" stroke-dasharray="8 8"></polyline>
+          </svg>
+          <div style="position:absolute;right:24px;top:22px;background:#fcfaf6;border:1px solid #ddd2c4;padding:8px 10px;font-size:12px;line-height:1.45;color:#48555b;">
+            <div><span style="display:inline-block;width:11px;height:11px;background:#b55638;margin-right:7px;"></span>Accelerated adoption</div>
+            <div><span style="display:inline-block;width:11px;height:11px;background:#305c63;margin-right:7px;"></span>Base case</div>
+            <div><span style="display:inline-block;width:11px;height:11px;background:#9a9f95;margin-right:7px;"></span>Constrained case</div>
+          </div>
+        </div>
+      </div>
+    `,
+    right: "",
+  },
+]);
+const svgLineExportReport = createReport("Native SVG line chart export fixture", svgLineExportPages);
+
+const divWaterfallExportPages = createSectionPages([
+  {
+    title: "Div-built waterfall should be promoted to a native PowerPoint chart",
+    eyebrow: "Export quality",
+    left: `
+      <h1>Div-built waterfall should be promoted to a native PowerPoint chart.</h1>
+      <p class="lede">This fixture mirrors Studio output where a value bridge is authored as absolute-positioned bars and labels.</p>
+      <div style="margin-top:28px;background:#fcfaf6;border:1px solid #dbd1c2;padding:18px 18px 16px;min-height:260px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-end;">
+          <div>
+            <div style="font-size:17px;font-weight:700;color:#223037;" data-html-block-id="div-waterfall-title" data-html-block-kind="heading" data-html-fit-role="content">Illustrative value bridge isolates drivers</div>
+            <div style="font-size:12px;color:#786c5e;margin-top:4px;" data-html-block-id="div-waterfall-subtitle" data-html-block-kind="heading" data-html-fit-role="content">Bridge logic, not reported financials</div>
+          </div>
+          <div style="font-size:11px;color:#8c7b68;text-transform:uppercase;letter-spacing:1px;">Waterfall</div>
+        </div>
+        <div style="position:relative;margin-top:16px;height:135px;border-bottom:2px solid #aba193;">
+          <div style="position:absolute;left:18px;bottom:0;width:62px;height:58px;background:#305c63;"></div>
+          <div style="position:absolute;left:103px;bottom:58px;width:62px;height:26px;background:#7f9da1;"></div>
+          <div style="position:absolute;left:188px;bottom:40px;width:62px;height:18px;background:#d08f73;"></div>
+          <div style="position:absolute;left:273px;bottom:58px;width:62px;height:42px;background:#7f9da1;"></div>
+          <div style="position:absolute;left:358px;bottom:0;width:62px;height:100px;background:#b55638;"></div>
+          <div style="position:absolute;left:24px;bottom:-28px;font-size:12px;color:#736757;">Start</div>
+          <div style="position:absolute;left:101px;bottom:-28px;font-size:12px;color:#736757;">Mix</div>
+          <div style="position:absolute;left:183px;bottom:-28px;font-size:12px;color:#736757;">Price</div>
+          <div style="position:absolute;left:263px;bottom:-28px;font-size:12px;color:#736757;">Volume</div>
+          <div style="position:absolute;left:364px;bottom:-28px;font-size:12px;color:#736757;">End</div>
+          <div style="position:absolute;left:28px;bottom:66px;font-size:12px;color:#ffffff;font-weight:700;">100</div>
+          <div style="position:absolute;left:117px;bottom:89px;font-size:11px;color:#35565c;font-weight:700;">+18</div>
+          <div style="position:absolute;left:202px;bottom:63px;font-size:11px;color:#7f4d3d;font-weight:700;">-12</div>
+          <div style="position:absolute;left:286px;bottom:106px;font-size:11px;color:#35565c;font-weight:700;">+29</div>
+          <div style="position:absolute;left:372px;bottom:108px;font-size:12px;color:#ffffff;font-weight:700;">135</div>
+        </div>
+      </div>
+    `,
+    right: "",
+  },
+]);
+const divWaterfallExportReport = createReport("Native div waterfall export fixture", divWaterfallExportPages);
+
+const bubbleMatrixExportPages = createSectionPages([
+  {
+    title: "Small bubble matrix should be promoted to a native PowerPoint bubble chart",
+    eyebrow: "Export quality",
+    left: `
+      <h1>Small bubble matrix should be promoted to a native PowerPoint bubble chart.</h1>
+      <p class="lede">This fixture mirrors Studio output where a prioritization matrix is authored as small absolute-positioned circles.</p>
+      <div style="margin-top:28px;background:#fcfaf6;border:1px solid #dbd1c2;padding:18px 18px 16px;min-height:270px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-end;">
+          <div>
+            <div style="font-size:17px;font-weight:700;color:#223037;" data-html-block-id="bubble-matrix-title" data-html-block-kind="heading" data-html-fit-role="content">Prioritization matrix clarifies where to act first</div>
+            <div style="font-size:12px;color:#786c5e;margin-top:4px;" data-html-block-id="bubble-matrix-subtitle" data-html-block-kind="heading" data-html-fit-role="content">Conceptual sizing only</div>
+          </div>
+          <div style="font-size:11px;color:#8c7b68;text-transform:uppercase;letter-spacing:1px;">Bubble matrix</div>
+        </div>
+        <div style="position:relative;margin-top:16px;height:142px;border-left:2px solid #aba193;border-bottom:2px solid #aba193;background:linear-gradient(to right, transparent 49.5%, #e8dfd2 49.5%, #e8dfd2 50.5%, transparent 50.5%),linear-gradient(to bottom, transparent 49.5%, #e8dfd2 49.5%, #e8dfd2 50.5%, transparent 50.5%);">
+          <div style="position:absolute;left:-14px;top:-8px;font-size:12px;color:#736757;">High</div>
+          <div style="position:absolute;left:-14px;bottom:-28px;font-size:12px;color:#736757;">Low</div>
+          <div style="position:absolute;left:8px;bottom:-28px;font-size:12px;color:#736757;">Low effort</div>
+          <div style="position:absolute;right:0;bottom:-28px;font-size:12px;color:#736757;">High effort</div>
+          <div style="position:absolute;left:62px;top:20px;width:42px;height:42px;border-radius:50%;background:rgba(181,86,56,0.88);display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700;">A</div>
+          <div style="position:absolute;left:168px;top:34px;width:32px;height:32px;border-radius:50%;background:rgba(48,92,99,0.84);display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700;">B</div>
+          <div style="position:absolute;left:250px;top:84px;width:46px;height:46px;border-radius:50%;background:rgba(208,143,115,0.84);display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700;">C</div>
+          <div style="position:absolute;left:108px;top:94px;width:28px;height:28px;border-radius:50%;background:rgba(127,157,161,0.9);display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700;">D</div>
+        </div>
+      </div>
+    `,
+    right: "",
+  },
+]);
+const bubbleMatrixExportReport = createReport("Native bubble matrix export fixture", bubbleMatrixExportPages);
+
+const teslaQuadrantSpec = {
+  kind: "matrix",
+  title: "Tesla operating quadrant separates speed from durability",
+  subtitle: "Illustrative strategy matrix with editable native cards",
+  insight: "The visible chart should be redrawn as PPT shapes, not exported as the SVG preview.",
+  xLabel: "Execution complexity",
+  yLabel: "Strategic impact",
+  xMinLabel: "Low complexity",
+  xMaxLabel: "High complexity",
+  yMinLabel: "Low impact",
+  yMaxLabel: "High impact",
+  plotBounds: { x: 0.08, y: 0.24, w: 0.68, h: 0.62 },
+  quadrants: [
+    { id: "q1", label: "Scale now", x: 0, y: 0, w: 0.5, h: 0.5, color: "#f3e2d9" },
+    { id: "q2", label: "Sequence", x: 0.5, y: 0, w: 0.5, h: 0.5, color: "#e4eef0" },
+    { id: "q3", label: "Watch", x: 0, y: 0.5, w: 0.5, h: 0.5, color: "#edf1e8" },
+    { id: "q4", label: "Defer", x: 0.5, y: 0.5, w: 0.5, h: 0.5, color: "#f6eee2" },
+  ],
+  items: [
+    { id: "item-1", label: "Charging density", detail: "Fast payback", x: 0.08, y: 0.11, w: 0.31, h: 0.2, color: "#ffffff" },
+    { id: "item-2", label: "FSD assurance", detail: "High governance load", x: 0.56, y: 0.14, w: 0.34, h: 0.22, color: "#ffffff" },
+    { id: "item-3", label: "Service routing", detail: "Operational lift", x: 0.14, y: 0.62, w: 0.32, h: 0.2, color: "#ffffff" },
+    { id: "item-4", label: "Cell sourcing", detail: "Long-cycle constraint", x: 0.58, y: 0.62, w: 0.32, h: 0.2, color: "#ffffff" },
+  ],
+  callout: {
+    title: "Decision read",
+    body: "Prioritize density moves while sequencing high-assurance autonomy work.",
+    x: 0.78,
+    y: 0.28,
+    w: 0.18,
+    h: 0.24,
+    color: "#fffaf3",
+    borderColor: "#d7c8b9",
+  },
+};
+
+const teslaQuadrantExportPages = createSectionPages([
+  {
+    title: "Tesla-style quadrant matrix should redraw semantic cards and clip chart-owned overflow",
+    eyebrow: "Export quality",
+    left: `
+      <h1>Tesla-style quadrant matrix should stay editable without shape overflow.</h1>
+      <p class="lede">This fixture includes a structured matrix contract and an SVG preview; PPTX export should keep the chart as native editable shapes with no media fallback.</p>
+      ${chartSpecMarkup({ spec: teslaQuadrantSpec })}
+      <div data-html-visual-id="page-overflow-strip" data-html-visual-kind="surface" style="position:absolute;left:1320px;top:802px;width:420px;height:22px;background:#d08f73;border-radius:11px;"></div>
+    `,
+    right: `
+      <article class="surface-card" style="margin-top:156px;">
+        <h3>Right conclusion box</h3>
+        <p>The conclusion rail should remain readable; any oversized rectangles must be clipped before they cross the slide edge.</p>
+      </article>
+    `,
+  },
+]);
+const teslaQuadrantExportReport = createReport("Tesla quadrant matrix export fixture", teslaQuadrantExportPages);
+
+const comboExportSpec = {
+  kind: "combo",
+  title: "Throughput and release quality move on different axes",
+  subtitle: "Structured combo fixture",
+  insight: "Backlog minutes fall while release quality rises, so the chart needs editable bars and an editable line.",
+  unit: "minutes",
+  secondaryUnit: "%",
+  categories: ["Baseline", "Pilot", "Scaled"],
+  series: [
+    {
+      id: "series-1",
+      label: "Backlog minutes",
+      values: [61, 48, 36],
+      color: "#5d7f9d",
+      role: "bar",
+      axis: "primary",
+    },
+    {
+      id: "series-2",
+      label: "Release quality",
+      values: [72, 81, 88],
+      color: "#19c6df",
+      role: "line",
+      axis: "secondary",
+    },
+  ],
+};
+
+const comboExportPages = createSectionPages([
+  {
+    title: "Combo chart export should preserve bars and line as native PowerPoint chart parts",
+    eyebrow: "Export quality",
+    left: `
+      <h1>Combo chart export should preserve bars and line as native PowerPoint chart parts.</h1>
+      <p class="lede">This fixture forces Studio's structured combo chart contract through PPTX export so the XML inspector can verify native bar and line chart parts.</p>
+      ${chartSpecMarkup({ spec: comboExportSpec })}
+    `,
+    right: "",
+  },
+]);
+const comboExportReport = createReport("Native combo chart export fixture", comboExportPages);
+
+const bubbleExportSpec = {
+  kind: "bubble",
+  title: "Scientific segmentation uses bubble area and axis position together",
+  subtitle: "Structured bubble fixture",
+  insight: "The export path should keep the bubble plot as a native PowerPoint chart with editable point data.",
+  unit: "score",
+  xLabel: "Model fit",
+  yLabel: "Clinical lift",
+  sizeLabel: "Study scale",
+  points: [
+    { id: "point-1", label: "Cohort A", x: 22, y: 31, size: 44, color: "#20d3ff" },
+    { id: "point-2", label: "Cohort B", x: 48, y: 58, size: 64, color: "#8aa1b5" },
+    { id: "point-3", label: "Cohort C", x: 73, y: 69, size: 96, color: "#9ec7ff" },
+  ],
+  style: {
+    bubbleScale: 70,
+    xAxis: { lineColor: "#5d7f9d", gridColor: "#d8e3ea", labelColor: "#536171", labelFontSize: 8 },
+    yAxis: { lineColor: "#b55638", gridColor: "#e6d6ca", gridDash: "dash", labelColor: "#536171", labelFontSize: 8 },
+  },
+};
+
+const bubbleExportPages = createSectionPages([
+  {
+    title: "Bubble chart export should preserve a native PowerPoint chart",
+    eyebrow: "Export quality",
+    left: `
+      <h1>Bubble chart export should preserve a native PowerPoint chart.</h1>
+      <p class="lede">This fixture forces Studio's structured bubble chart contract through PPTX export so the XML inspector can verify a native bubble chart part.</p>
+      ${chartSpecMarkup({ spec: bubbleExportSpec })}
+    `,
+    right: "",
+  },
+]);
+const bubbleExportReport = createReport("Native bubble chart export fixture", bubbleExportPages);
+
+const lineStyleExportSpec = {
+  kind: "line",
+  title: "Scenario confidence keeps style semantics inside the native chart",
+  subtitle: "Native line style contract fixture",
+  insight: "Two observed paths should stay solid while the stretch case exports as a dashed editable series with chart XML styling.",
+  unit: "index",
+  categories: ["Q1", "Q2", "Q3", "Q4", "Q5"],
+  valueAxisMin: 40,
+  valueAxisMax: 100,
+  style: {
+    yAxis: {
+      lineColor: "#305c63",
+      lineWidthPt: 1.4,
+      gridColor: "#d8cfbc",
+      gridWidthPt: 0.8,
+      gridDash: "dash",
+      labelColor: "#536171",
+      labelFontSize: 8,
+    },
+    xAxis: {
+      lineColor: "#305c63",
+      lineWidthPt: 1.2,
+      labelColor: "#536171",
+      labelFontSize: 8,
+    },
+  },
+  series: [
+    {
+      id: "baseline-line",
+      label: "Baseline",
+      values: [54, 59, 63, 68, 72],
+      color: "#305c63",
+      role: "line",
+      axis: "primary",
+      style: { lineDash: "solid", lineWidthPt: 2.4, marker: "circle" },
+    },
+    {
+      id: "improved-line",
+      label: "Improved",
+      values: [57, 65, 72, 79, 86],
+      color: "#b55638",
+      role: "line",
+      axis: "primary",
+      style: { lineDash: "solid", lineWidthPt: 2.8, marker: "circle" },
+    },
+    {
+      id: "stretch-line",
+      label: "Stretch case",
+      values: [50, 61, 70, 84, 94],
+      color: "#7f9da1",
+      role: "line",
+      axis: "primary",
+      style: {
+        lineDash: "dash",
+        lineWidthPt: 2.6,
+        marker: "none",
+        shadow: { color: "#000000", opacity: 0.18, blurPt: 4, offsetPt: 1, angle: 45 },
+      },
+    },
+  ],
+};
+
+const lineStyleExportPages = createSectionPages([
+  {
+    title: "Line chart export should preserve native style contract",
+    eyebrow: "Export quality",
+    left: `
+      <h1>Line chart export should preserve dash, axis, grid, and shadow styling.</h1>
+      <p class="lede">This fixture forces per-series line styling and y-axis styling through the native PPTX chart XML path.</p>
+      ${chartSpecMarkup({ spec: lineStyleExportSpec })}
+    `,
+    right: "",
+  },
+]);
+const lineStyleExportReport = createReport("Native line style export fixture", lineStyleExportPages);
+
+const textListExportPages = createSectionPages([
+  {
+    title: "Text list export should preserve paragraph rhythm and bullet semantics",
+    eyebrow: "Export quality",
+    left: `
+      <h1>Text list export should preserve paragraph rhythm and bullet semantics.</h1>
+      <p data-html-block-id="export-spaced-copy" data-html-block-kind="text" style="margin:24px 0 18px;font-size:24px;line-height:1.48;color:#253647;max-width:1080px;">This paragraph uses an intentionally roomy line height so PPTX export can prove that editable text retains spacing metadata instead of collapsing into PowerPoint defaults.</p>
+      <ul data-html-block-id="export-bullet-list" data-html-block-kind="list" style="margin:18px 0 20px;padding-left:38px;font-size:19px;line-height:1.42;color:#253647;">
+        <li>Keep the operating claim editable after export.</li>
+        <li>Preserve readable spacing between evidence bullets.</li>
+        <li>Retain a PowerPoint bullet marker instead of flattened text.</li>
+      </ul>
+      <ol data-html-block-id="export-numbered-list" data-html-block-kind="list" style="margin:16px 0 0;padding-left:42px;font-size:18px;line-height:1.34;color:#253647;">
+        <li>Collect browser line-height.</li>
+        <li>Write paragraph spacing into PPTX XML.</li>
+        <li>Verify ordered list numbering in the package.</li>
+      </ol>
+    `,
+    right: "",
+  },
+]);
+const textListExportReport = createReport("Text list export fixture", textListExportPages);
+
+const gradientShapeExportPages = createSectionPages([
+  {
+    title: "Gradient visual export should preserve fill fidelity with a native boundary",
+    eyebrow: "Export quality",
+    left: `
+      <h1>Gradient visual export should preserve fill fidelity with a native boundary.</h1>
+      <p class="lede">This fixture uses a real CSS linear gradient on a rounded visual object so PPTX export can preserve the visible fill while keeping an editable PowerPoint shape outline.</p>
+      <div data-html-visual-id="gradient-shape-fixture" data-html-visual-kind="surface" data-html-fit-role="content" data-export-role="surface" data-export-fill="linear-gradient(to bottom right, rgba(32,211,255,0.78) 0%, rgba(208,143,115,0.84) 48%, rgba(93,127,157,0.94) 100%)" data-export-border="#2f5d84" data-export-border-width="2" data-export-radius="30" style="height:300px;margin-top:34px;border-radius:30px;border:2px solid #2f5d84;background:linear-gradient(to bottom right, rgba(32,211,255,0.78) 0%, rgba(208,143,115,0.84) 48%, rgba(93,127,157,0.94) 100%);box-shadow:0 22px 46px rgba(47,93,132,0.18);"></div>
+    `,
+    right: "",
+  },
+]);
+const gradientShapeExportReport = createReport("Gradient shape export fixture", gradientShapeExportPages);
+
+const visualFidelityExportPages = createSectionPages([
+  {
+    title: "Visual fidelity export should honor computed geometry color and type",
+    eyebrow: "Export quality",
+    left: `
+      <h1 style="font-size:40px;line-height:1.08;">Visual fidelity export should honor computed geometry, color, and type.</h1>
+      <p class="lede">This fixture intentionally supplies stale data-export values so PPTX export must prefer real computed styles for color, radius, and shape kind.</p>
+      <div style="display:flex;gap:28px;align-items:center;margin-top:42px;">
+        <div data-html-visual-id="fidelity-sharp-rect" data-html-visual-kind="surface" data-html-fit-role="content" data-export-role="surface" data-export-fill="#b55638" data-export-radius="28" style="width:220px;height:112px;background:#305c63;border:2px solid #b55638;border-radius:0;"></div>
+        <div data-html-visual-id="fidelity-round-rect" data-html-visual-kind="surface" data-html-fit-role="content" data-export-role="surface" data-export-fill="#ffffff" data-export-border="#305c63" data-export-border-width="2" data-export-radius="22" style="width:220px;height:112px;background:#fcfaf6;border:2px solid #305c63;border-radius:22px;"></div>
+        <div data-html-visual-id="fidelity-circle" data-html-visual-kind="surface" data-html-fit-role="content" data-export-role="surface" data-export-fill="#ffffff" data-export-radius="24" style="width:92px;height:92px;background:#d08f73;border-radius:50%;"></div>
+      </div>
+    `,
+    right: "",
+  },
+]);
+const visualFidelityExportReport = createReport("Visual fidelity export fixture", visualFidelityExportPages);
+
+const nativeShapeExportPages = createSectionPages([
+  {
+    title: "Native visual shape export should preserve dividers rails and badges",
+    eyebrow: "Export quality",
+    left: `
+      <h1>Native visual shape export should preserve dividers, rails, and badges.</h1>
+      <p class="lede">This fixture intentionally omits visual ids on the divider and badge so export has to rely on semantic visual-kind annotations instead of editor-only ids.</p>
+      <div data-html-visual-kind="divider" data-export-role="divider" data-export-fill="#2f5d84" style="height:3px;margin:34px 0 28px;background:#2f5d84;border-radius:999px;"></div>
+      <div style="position:relative;height:280px;margin-top:10px;">
+        <div data-html-visual-kind="rail" data-export-role="rail" data-export-fill="#20d3ff" style="position:absolute;left:24px;top:18px;width:4px;height:218px;background:#20d3ff;border-radius:999px;"></div>
+        <div data-html-visual-kind="badge" data-export-role="badge" data-export-fill="#ffffff" data-export-border="#2f5d84" data-export-border-width="1.5" data-export-radius="18" style="position:absolute;left:64px;top:22px;width:260px;height:54px;border:1.5px solid #2f5d84;border-radius:18px;background:#ffffff;"></div>
+      </div>
+    `,
+    right: "",
+  },
+]);
+const nativeShapeExportReport = createReport("Native visual shape export fixture", nativeShapeExportPages);
+
+const pressureComboSpec = {
+  kind: "combo",
+  title: "Pressure throughput and defect escape move on separate axes",
+  subtitle: "Native combo chart with DOM preview primitives underneath",
+  insight: "The visible chart must stay a PowerPoint chart while preview bars and lines are suppressed.",
+  unit: "tickets",
+  secondaryUnit: "%",
+  categories: ["T-3", "T-2", "T-1", "Launch"],
+  series: [
+    {
+      id: "pressure-volume",
+      label: "Queue volume",
+      values: [112, 94, 71, 49],
+      color: "#2f5d84",
+      role: "bar",
+      axis: "primary",
+    },
+    {
+      id: "pressure-quality",
+      label: "Quality gate pass",
+      values: [66, 72, 83, 91],
+      color: "#b55638",
+      role: "line",
+      axis: "secondary",
+    },
+  ],
+};
+
+const pressureWaterfallSpec = {
+  kind: "waterfall",
+  title: "Launch risk bridge isolates moving parts",
+  subtitle: "Native waterfall chart with absolute-positioned DOM bars",
+  insight: "The bridge should export as chart data, not a pile of rectangles.",
+  unit: "risk index",
+  categories: ["Start", "Demand", "Ops", "Fixes", "End"],
+  series: [
+    {
+      id: "pressure-risk",
+      label: "Risk movement",
+      values: [82, 21, 14, -29, 88],
+      color: "#b55638",
+      role: "bar",
+      axis: "primary",
+    },
+  ],
+};
+
+const pressureBubbleSpec = {
+  kind: "bubble",
+  title: "Prioritization bubbles keep editable point data",
+  subtitle: "Native bubble chart with absolute DOM bubbles suppressed",
+  insight: "Point labels remain text; circles should belong to the chart.",
+  xLabel: "Effort",
+  yLabel: "Impact",
+  sizeLabel: "Exposure",
+  points: [
+    { id: "p1", label: "A", x: 18, y: 82, size: 58, color: "#b55638" },
+    { id: "p2", label: "B", x: 41, y: 62, size: 38, color: "#2f5d84" },
+    { id: "p3", label: "C", x: 76, y: 42, size: 66, color: "#d08f73" },
+    { id: "p4", label: "D", x: 31, y: 28, size: 28, color: "#7f9da1" },
+  ],
+  style: {
+    bubbleScale: 70,
+    xAxis: { lineColor: "#a99d8e", gridColor: "#e7ded2", labelColor: "#6c6258", labelFontSize: 8 },
+    yAxis: { lineColor: "#a99d8e", gridColor: "#e7ded2", gridDash: "dash", labelColor: "#6c6258", labelFontSize: 8 },
+  },
+};
+
+const pressureMatrixSpec = {
+  kind: "matrix",
+  title: "Decision matrix must stay shape-native, not table-native",
+  subtitle: "Semantic matrix beside a real table",
+  insight: "Only the operating grid on the right is allowed to become a PowerPoint table.",
+  xLabel: "Implementation effort",
+  yLabel: "Strategic leverage",
+  xMinLabel: "Low effort",
+  xMaxLabel: "High effort",
+  yMinLabel: "Low leverage",
+  yMaxLabel: "High leverage",
+  plotBounds: { x: 0.08, y: 0.25, w: 0.68, h: 0.58 },
+  quadrants: [
+    { id: "q1", label: "Act", x: 0, y: 0, w: 0.5, h: 0.5, color: "#f3e2d9" },
+    { id: "q2", label: "Sequence", x: 0.5, y: 0, w: 0.5, h: 0.5, color: "#e4eef0" },
+    { id: "q3", label: "Observe", x: 0, y: 0.5, w: 0.5, h: 0.5, color: "#edf1e8" },
+    { id: "q4", label: "Defer", x: 0.5, y: 0.5, w: 0.5, h: 0.5, color: "#f6eee2" },
+  ],
+  items: [
+    { id: "m1", label: "Owner map", detail: "Fast lift", x: 0.1, y: 0.12, w: 0.3, h: 0.18, color: "#ffffff" },
+    { id: "m2", label: "Policy gate", detail: "Governance load", x: 0.56, y: 0.13, w: 0.34, h: 0.2, color: "#ffffff" },
+    { id: "m3", label: "Retry queue", detail: "Operational drag", x: 0.14, y: 0.62, w: 0.31, h: 0.18, color: "#ffffff" },
+    { id: "m4", label: "Legacy shim", detail: "Slow burn", x: 0.58, y: 0.64, w: 0.31, h: 0.18, color: "#ffffff" },
+  ],
+  callout: {
+    title: "Decision read",
+    body: "Ship owner mapping first; sequence policy gates behind evidence.",
+    x: 0.78,
+    y: 0.3,
+    w: 0.18,
+    h: 0.24,
+    color: "#fffaf3",
+    borderColor: "#d7c8b9",
+  },
+};
+
+function pressureSpecAttribute(spec) {
+  return escapeHtml(JSON.stringify(spec));
+}
+
+function pressureChartPreview(kind) {
+  if (kind === "waterfall") {
+    return `
+      <div style="position:relative;height:126px;border-bottom:2px solid #a99d8e;">
+        <div style="position:absolute;left:20px;bottom:0;width:46px;height:64px;background:#2f5d84;"></div>
+        <div style="position:absolute;left:92px;bottom:64px;width:46px;height:28px;background:#7f9da1;"></div>
+        <div style="position:absolute;left:164px;bottom:92px;width:46px;height:20px;background:#d08f73;"></div>
+        <div style="position:absolute;left:236px;bottom:56px;width:46px;height:36px;background:#b55638;"></div>
+        <div style="position:absolute;left:308px;bottom:0;width:46px;height:88px;background:#2f5d84;"></div>
+        <div style="position:absolute;left:67px;bottom:76px;width:24px;border-top:2px solid #9f9587;"></div>
+        <div style="position:absolute;left:139px;bottom:104px;width:24px;border-top:2px solid #9f9587;"></div>
+        <div style="position:absolute;left:211px;bottom:74px;width:24px;border-top:2px solid #9f9587;"></div>
+      </div>
+    `;
+  }
+  if (kind === "bubble") {
+    return `
+      <div style="position:relative;height:142px;border-left:2px solid #a99d8e;border-bottom:2px solid #a99d8e;background:linear-gradient(to right,transparent 49.5%,#e7ded2 49.5%,#e7ded2 50.5%,transparent 50.5%),linear-gradient(to bottom,transparent 49.5%,#e7ded2 49.5%,#e7ded2 50.5%,transparent 50.5%);">
+        <div style="position:absolute;left:42px;top:18px;width:50px;height:50px;border-radius:50%;background:rgba(181,86,56,0.86);display:grid;place-items:center;color:#fff;font-weight:700;">A</div>
+        <div style="position:absolute;left:146px;top:42px;width:36px;height:36px;border-radius:50%;background:rgba(47,93,132,0.84);display:grid;place-items:center;color:#fff;font-weight:700;">B</div>
+        <div style="position:absolute;left:258px;top:70px;width:58px;height:58px;border-radius:50%;background:rgba(208,143,115,0.84);display:grid;place-items:center;color:#fff;font-weight:700;">C</div>
+        <div style="position:absolute;left:96px;top:96px;width:30px;height:30px;border-radius:50%;background:rgba(127,157,161,0.9);display:grid;place-items:center;color:#fff;font-weight:700;">D</div>
+      </div>
+    `;
+  }
+  return `
+    <svg viewBox="0 0 560 150" style="display:block;width:100%;height:150px;overflow:visible;">
+      <line x1="24" y1="126" x2="536" y2="126" stroke="#d8cfbc" stroke-width="2" />
+      <rect x="54" y="42" width="54" height="84" rx="10" fill="#2f5d84" opacity="0.82" />
+      <rect x="178" y="58" width="54" height="68" rx="10" fill="#2f5d84" opacity="0.82" />
+      <rect x="302" y="74" width="54" height="52" rx="10" fill="#2f5d84" opacity="0.82" />
+      <rect x="426" y="92" width="54" height="34" rx="10" fill="#2f5d84" opacity="0.82" />
+      <path d="M81 84 L205 76 L329 55 L453 34" fill="none" stroke="#b55638" stroke-width="5" stroke-linecap="round" />
+      <circle cx="81" cy="84" r="7" fill="#b55638" />
+      <circle cx="205" cy="76" r="7" fill="#b55638" />
+      <circle cx="329" cy="55" r="7" fill="#b55638" />
+      <circle cx="453" cy="34" r="7" fill="#b55638" />
+    </svg>
+  `;
+}
+
+function pressureChartModule({ id, spec, left, top, width, height, layer = "content" }) {
+  return `
+    <div data-html-visual-id="${id}" data-html-visual-kind="chart-frame" data-html-module-kind="chart" data-html-module-label="Chart" data-html-fit-role="content" data-html-chart-spec="${pressureSpecAttribute(spec)}" data-html-canvas-layer="${layer}" style="position:absolute;left:${left}px;top:${top}px;width:${width}px;height:${height}px;background:#fcfaf6;border:1px solid #d8cfbc;border-radius:18px;padding:16px 18px;box-sizing:border-box;z-index:2;">
+      <div data-html-block-id="${id}-title" data-html-block-kind="heading" data-html-fit-role="content" style="font-size:18px;line-height:1.18;font-weight:750;color:#1d303a;">${escapeHtml(spec.title)}</div>
+      <div data-html-block-id="${id}-subtitle" data-html-block-kind="paragraph" data-html-fit-role="content" style="margin-top:5px;font-size:12px;line-height:1.35;color:#6c6258;">${escapeHtml(spec.subtitle)}</div>
+      <div data-html-visual-id="${id}-plot" data-html-visual-kind="surface" data-export-role="surface" data-export-fill="#ffffff" data-export-border="#d8cfbc" data-export-border-width="1" style="position:relative;margin-top:12px;height:${Math.max(118, height - 92)}px;background:#fffaf3;border:1px solid #e3d8ca;border-radius:12px;padding:10px;overflow:hidden;">
+        ${pressureChartPreview(spec.kind)}
+      </div>
+    </div>
+  `;
+}
+
+const pressureTableMarkup = tableMarkup({
+  columns: ["Gate", "Owner", "State", "Risk"],
+  rows: [
+    ["Chart XML parse", "Export", "Pass", "Low"],
+    ["Layer order", "Renderer", "Watch", "High"],
+    ["Matrix ownership", "Planner", "Pass", "Medium"],
+    ["Table promotion", "Collector", "Pass", "Low"],
+  ],
+});
+
+const pptxExportPressureReport = {
+  title: "PPTX export extreme pressure fixture",
+  html: buildReportDocument("PPTX export extreme pressure fixture", [
+    `
+      <section class="page" data-page-number="1" data-page-title="Native chart layer gauntlet" style="width:1600px;height:900px;position:relative;overflow:hidden;background:#f6f0e7;color:#1d303a;" data-page-bg="#f6f0e7" data-surface-fill="#fcfaf6" data-divider-color="#d8cfbc">
+        <div data-html-canvas-overlay-root="background" data-html-canvas-layer="background" style="position:absolute;inset:0;pointer-events:none;z-index:0;">
+          <div data-html-visual-id="pressure-p1-bg-slab" data-html-visual-kind="surface" data-export-role="surface" data-export-fill="#eadfce" style="position:absolute;left:56px;top:678px;width:1460px;height:44px;background:#eadfce;border-radius:22px;"></div>
+          <div data-html-visual-id="pressure-p1-bg-rule" data-html-visual-kind="divider" data-export-role="divider" data-export-fill="#b55638" style="position:absolute;left:0;top:0;width:1600px;height:12px;background:#b55638;"></div>
+        </div>
+        <div data-html-block-id="pressure-p1-kicker" data-html-block-kind="eyebrow" data-html-fit-role="content" style="position:absolute;left:72px;top:54px;font-size:14px;letter-spacing:1.4px;text-transform:uppercase;font-weight:800;color:#8a7967;">Extreme export pressure</div>
+        <div data-html-block-id="pressure-p1-title" data-html-block-kind="heading" data-html-fit-role="content" style="position:absolute;left:72px;top:82px;width:1180px;font-size:43px;line-height:1.08;font-weight:800;">Native charts must stay charts while DOM preview layers disappear</div>
+        <div data-html-block-id="pressure-p1-body" data-html-block-kind="paragraph" data-html-fit-role="content" style="position:absolute;left:72px;top:180px;width:1100px;font-size:18px;line-height:1.36;color:#52616b;">This page stacks combo, waterfall, and bubble chart contracts with visible preview geometry, background overlays, a hidden duplicate placeholder, and a foreground label.</div>
+        ${pressureChartModule({ id: "pressure-combo-chart", spec: pressureComboSpec, left: 72, top: 256, width: 860, height: 364 })}
+        ${pressureChartModule({ id: "pressure-waterfall-chart", spec: pressureWaterfallSpec, left: 968, top: 236, width: 540, height: 270 })}
+        ${pressureChartModule({ id: "pressure-bubble-chart", spec: pressureBubbleSpec, left: 968, top: 536, width: 540, height: 266 })}
+        <div data-html-canvas-placeholder="true" data-html-canvas-placeholder-for="pressure-combo-chart" data-html-chart-spec="${pressureSpecAttribute(pressureComboSpec)}" style="position:absolute;left:110px;top:314px;width:520px;height:180px;visibility:hidden;pointer-events:none;">Hidden duplicate chart should never create a fourth chart frame</div>
+        <div data-html-canvas-overlay-root="foreground" data-html-canvas-layer="foreground" style="position:absolute;inset:0;pointer-events:none;z-index:6;">
+          <div data-html-visual-id="pressure-p1-foreground-badge" data-html-visual-kind="badge" data-export-role="badge" data-export-fill="#1d303a" data-export-border="#b55638" data-export-border-width="2" data-export-radius="16" style="position:absolute;left:1126px;top:154px;width:300px;height:48px;background:#1d303a;border:2px solid #b55638;border-radius:16px;"></div>
+          <div data-html-block-id="pressure-p1-foreground-text" data-html-block-kind="heading" data-html-fit-role="content" style="position:absolute;left:1148px;top:168px;width:260px;font-size:15px;font-weight:800;color:#fffaf3;letter-spacing:.5px;">Escalation overlay stays on top</div>
+        </div>
+      </section>
+    `,
+    `
+      <section class="page" data-page-number="2" data-page-title="Matrix table and text ownership gauntlet" style="width:1600px;height:900px;position:relative;overflow:hidden;background:#f7f3eb;color:#1d303a;" data-page-bg="#f7f3eb" data-surface-fill="#fcfaf6" data-divider-color="#d8cfbc">
+        <div data-html-block-id="pressure-p2-title" data-html-block-kind="heading" data-html-fit-role="content" style="position:absolute;left:72px;top:58px;width:1180px;font-size:40px;line-height:1.1;font-weight:800;">Matrix, table, and filled containers all compete for ownership</div>
+        <div data-html-block-id="pressure-p2-subtitle" data-html-block-kind="paragraph" data-html-fit-role="content" style="position:absolute;left:72px;top:118px;width:1160px;font-size:18px;line-height:1.36;color:#52616b;">The matrix is a chart-owned shape system; the operating grid is the only native table; filled cards must not emit concatenated parent text.</div>
+        <div data-html-visual-id="pressure-matrix-module" data-html-visual-kind="chart-frame" data-html-module-kind="chart" data-html-module-label="Chart" data-html-fit-role="content" data-html-chart-spec="${pressureSpecAttribute(pressureMatrixSpec)}" style="position:absolute;left:72px;top:196px;width:840px;height:460px;background:#fcfaf6;border:1px solid #d8cfbc;border-radius:18px;padding:18px;box-sizing:border-box;">
+          <div data-html-block-id="pressure-matrix-decoy-label" data-html-block-kind="heading" data-html-fit-role="content" style="font-size:17px;font-weight:800;color:#1d303a;">Decision matrix visual preview below must not become a table</div>
+          <div style="position:relative;margin-top:18px;height:350px;background:linear-gradient(to right,transparent 49.5%,#e0d5c5 49.5%,#e0d5c5 50.5%,transparent 50.5%),linear-gradient(to bottom,transparent 49.5%,#e0d5c5 49.5%,#e0d5c5 50.5%,transparent 50.5%);border:1px solid #d8cfbc;border-radius:12px;">
+            <div style="position:absolute;left:44px;top:48px;width:170px;height:74px;background:#fff;border:1px solid #d8cfbc;border-radius:12px;padding:12px;">Owner map</div>
+            <div style="position:absolute;left:460px;top:56px;width:190px;height:78px;background:#fff;border:1px solid #d8cfbc;border-radius:12px;padding:12px;">Policy gate</div>
+            <div style="position:absolute;left:76px;top:236px;width:170px;height:74px;background:#fff;border:1px solid #d8cfbc;border-radius:12px;padding:12px;">Retry queue</div>
+            <div style="position:absolute;left:486px;top:242px;width:170px;height:74px;background:#fff;border:1px solid #d8cfbc;border-radius:12px;padding:12px;">Legacy shim</div>
+          </div>
+        </div>
+        <div style="position:absolute;left:960px;top:196px;width:520px;">
+          ${pressureTableMarkup}
+        </div>
+        <div data-html-visual-id="pressure-card-alpha" data-html-visual-kind="label-surface" data-export-role="label-surface" data-export-fill="#fcfaf6" data-export-border="#d8cfbc" data-export-border-width="1" data-export-radius="14" style="position:absolute;left:86px;top:700px;width:390px;height:118px;background:#fcfaf6;border:1px solid #d8cfbc;border-radius:14px;padding:18px;">
+          <div data-html-block-id="pressure-card-alpha-title" data-html-block-kind="heading" data-html-fit-role="content" style="font-size:23px;font-weight:800;">Alpha containment</div>
+          <div data-html-block-id="pressure-card-alpha-body" data-html-block-kind="paragraph" data-html-fit-role="content" style="margin-top:8px;font-size:15px;line-height:1.36;color:#52616b;">Parent fill exports as shape; child text remains single-source.</div>
+        </div>
+        <div data-html-visual-id="pressure-card-beta" data-html-visual-kind="label-surface" data-export-role="label-surface" data-export-fill="#1d303a" data-export-border="#b55638" data-export-border-width="1" data-export-radius="0" style="position:absolute;left:520px;top:700px;width:390px;height:118px;background:#1d303a;border:1px solid #b55638;padding:18px;color:#fffaf3;">
+          <div data-html-block-id="pressure-card-beta-title" data-html-block-kind="heading" data-html-fit-role="content" style="font-size:23px;font-weight:800;">Beta containment</div>
+          <div data-html-block-id="pressure-card-beta-body" data-html-block-kind="paragraph" data-html-fit-role="content" style="margin-top:8px;font-size:15px;line-height:1.36;color:#f1e7d7;">Dark parent must not cover its child text later in z-order.</div>
+        </div>
+        <div data-html-visual-id="pressure-card-gamma" data-html-visual-kind="label-surface" data-export-role="label-surface" data-export-fill="#d08f73" data-export-border="#9c5e45" data-export-border-width="1" data-export-radius="0" style="position:absolute;left:954px;top:700px;width:390px;height:118px;background:#d08f73;border:1px solid #9c5e45;padding:18px;color:#1d303a;">
+          <div data-html-block-id="pressure-card-gamma-title" data-html-block-kind="heading" data-html-fit-role="content" style="font-size:23px;font-weight:800;">Gamma containment</div>
+          <div data-html-block-id="pressure-card-gamma-body" data-html-block-kind="paragraph" data-html-fit-role="content" style="margin-top:8px;font-size:15px;line-height:1.36;">Filled parent text aggregation should be suppressed.</div>
+        </div>
+      </section>
+    `,
+    `
+      <section class="page" data-page-number="3" data-page-title="Layer ordering and hidden placeholder gauntlet" style="width:1600px;height:900px;position:relative;overflow:hidden;background:#f5efe4;color:#1d303a;" data-page-bg="#f5efe4" data-surface-fill="#fcfaf6" data-divider-color="#d8cfbc">
+        <div data-html-canvas-overlay-root="background" data-html-canvas-layer="background" data-html-canvas-layer-order="0" style="position:absolute;inset:0;pointer-events:none;z-index:0;">
+          <div data-html-visual-id="pressure-z-bg-slab" data-html-visual-kind="surface" data-export-role="surface" data-export-fill="#e3d5c0" style="position:absolute;left:62px;top:692px;width:1458px;height:38px;background:#e3d5c0;border-radius:19px;"></div>
+          <div data-html-visual-id="pressure-z-bg-panel" data-html-visual-kind="surface" data-export-role="surface" data-export-fill="#fffaf3" data-export-border="#d8cfbc" data-export-border-width="1" style="position:absolute;left:74px;top:214px;width:760px;height:390px;background:#fffaf3;border:1px solid #d8cfbc;border-radius:18px;"></div>
+        </div>
+        <div data-html-block-id="pressure-p3-title" data-html-block-kind="heading" data-html-fit-role="content" style="position:absolute;left:72px;top:58px;width:1080px;font-size:42px;line-height:1.1;font-weight:800;">Background layers, foreground badges, and hidden placeholders must not reorder the page</div>
+        <div data-html-block-id="pressure-p3-copy" data-html-block-kind="paragraph" data-html-fit-role="content" style="position:absolute;left:72px;top:156px;width:1180px;font-size:18px;line-height:1.4;color:#52616b;">The export plan should keep background shapes behind content, foreground audit stamps above content, and hidden placeholders out of text and shape collectors.</div>
+        <div data-html-visual-id="pressure-p3-primary-card" data-html-visual-kind="surface" data-export-role="surface" data-export-fill="#fcfaf6" data-export-border="#d8cfbc" data-export-border-width="1" style="position:absolute;left:106px;top:252px;width:680px;height:286px;background:#fcfaf6;border:1px solid #d8cfbc;border-radius:16px;padding:24px;">
+          <div data-html-block-id="pressure-p3-primary-title" data-html-block-kind="heading" data-html-fit-role="content" style="font-size:30px;line-height:1.1;font-weight:800;">Visible content remains above the background panel</div>
+          <div data-html-block-id="pressure-p3-primary-body" data-html-block-kind="paragraph" data-html-fit-role="content" style="margin-top:18px;font-size:18px;line-height:1.48;color:#52616b;">This copy intentionally sits inside a filled surface while a larger background panel is underneath. Export order should preserve the visible reading order.</div>
+        </div>
+        <div data-html-canvas-placeholder="true" data-html-canvas-placeholder-for="pressure-hidden-copy" style="position:absolute;left:128px;top:332px;width:420px;height:80px;visibility:hidden;pointer-events:none;">Hidden placeholder text must not leak into PowerPoint text runs.</div>
+        <div data-html-canvas-overlay-root="foreground" data-html-canvas-layer="foreground" data-html-canvas-layer-order="2" style="position:absolute;inset:0;pointer-events:none;z-index:7;">
+          <div data-html-visual-id="pressure-z-foreground-stamp" data-html-visual-kind="badge" data-export-role="badge" data-export-fill="#b55638" data-export-border="#1d303a" data-export-border-width="2" data-export-radius="18" style="position:absolute;left:1210px;top:118px;width:270px;height:58px;background:#b55638;border:2px solid #1d303a;border-radius:18px;"></div>
+          <div data-html-block-id="pressure-z-foreground-text" data-html-block-kind="heading" data-html-fit-role="content" style="position:absolute;left:1234px;top:136px;width:228px;font-size:16px;font-weight:900;color:#fffaf3;">Foreground audit stamp</div>
+        </div>
+      </section>
+    `,
+  ]),
+  pageCount: 3,
+  pageTitles: [
+    "Native chart layer gauntlet",
+    "Matrix table and text ownership gauntlet",
+    "Layer ordering and hidden placeholder gauntlet",
+  ],
+};
+
 function deepClone(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -1954,6 +2869,125 @@ const scenarioMap = {
     prompt:
       "Create a 10-page operating storyline deck with balanced evidence and appendix pages.",
     report: longformReport,
+    reviseReports: [],
+  },
+  "mckinsey-chart-target-1page": {
+    id: "mckinsey-chart-target-1page",
+    prompt:
+      "Create a 1-page McKinsey-style chart demonstration with line, waterfall, and bubble matrix charts.",
+    report: mckinseyChartTargetReport,
+    reviseReports: [],
+  },
+  "exported-mckinsey-chart-regression-1page": {
+    id: "exported-mckinsey-chart-regression-1page",
+    prompt:
+      "Load the exported one-page McKinsey chart regression fixture.",
+    report: exportedMckinseyChartRegressionReport,
+    reviseReports: [],
+  },
+  "observed-facts-q1-regression-3page": {
+    id: "observed-facts-q1-regression-3page",
+    prompt:
+      "Load the observed facts Q1 2026 regression fixture.",
+    report: observedFactsQ1RegressionReport,
+    reviseReports: [],
+  },
+  "text-ownership-regression-1page": {
+    id: "text-ownership-regression-1page",
+    prompt:
+      "Create a 1-page PPTX export regression fixture with filled card containers and child text blocks.",
+    report: textOwnershipRegressionReport,
+    reviseReports: [],
+  },
+  "table-export-1page": {
+    id: "table-export-1page",
+    prompt:
+      "Create a 1-page export-quality fixture with a structured operating comparison table.",
+    report: tableExportReport,
+    reviseReports: [],
+  },
+  "svg-line-export-1page": {
+    id: "svg-line-export-1page",
+    prompt:
+      "Create a 1-page export-quality fixture with an unstructured SVG line chart.",
+    report: svgLineExportReport,
+    reviseReports: [],
+  },
+  "div-waterfall-export-1page": {
+    id: "div-waterfall-export-1page",
+    prompt:
+      "Create a 1-page export-quality fixture with a div-built waterfall chart.",
+    report: divWaterfallExportReport,
+    reviseReports: [],
+  },
+  "bubble-matrix-export-1page": {
+    id: "bubble-matrix-export-1page",
+    prompt:
+      "Create a 1-page export-quality fixture with a small div-built bubble matrix chart.",
+    report: bubbleMatrixExportReport,
+    reviseReports: [],
+  },
+  "tesla-quadrant-export-1page": {
+    id: "tesla-quadrant-export-1page",
+    prompt:
+      "Create a 1-page export-quality fixture with a Tesla-style quadrant matrix and clipped overflow shapes.",
+    report: teslaQuadrantExportReport,
+    reviseReports: [],
+  },
+  "combo-export-1page": {
+    id: "combo-export-1page",
+    prompt:
+      "Create a 1-page export-quality fixture with a structured combo chart.",
+    report: comboExportReport,
+    reviseReports: [],
+  },
+  "bubble-export-1page": {
+    id: "bubble-export-1page",
+    prompt:
+      "Create a 1-page export-quality fixture with a structured bubble chart that exports natively.",
+    report: bubbleExportReport,
+    reviseReports: [],
+  },
+  "line-style-export-1page": {
+    id: "line-style-export-1page",
+    prompt:
+      "Create a 1-page export-quality fixture with a structured line chart that carries native chart style contract fields.",
+    report: lineStyleExportReport,
+    reviseReports: [],
+  },
+  "text-list-export-1page": {
+    id: "text-list-export-1page",
+    prompt:
+      "Create a 1-page export-quality fixture with spaced paragraphs, bullets, and numbered list text.",
+    report: textListExportReport,
+    reviseReports: [],
+  },
+  "gradient-shape-export-1page": {
+    id: "gradient-shape-export-1page",
+    prompt:
+      "Create a 1-page export-quality fixture with a rounded gradient visual surface.",
+    report: gradientShapeExportReport,
+    reviseReports: [],
+  },
+  "visual-fidelity-export-1page": {
+    id: "visual-fidelity-export-1page",
+    prompt:
+      "Create a 1-page export-quality fixture that intentionally uses stale export attributes and visible computed styles.",
+    report: visualFidelityExportReport,
+    reviseReports: [],
+  },
+  "native-shape-export-1page": {
+    id: "native-shape-export-1page",
+    prompt:
+      "Create a 1-page export-quality fixture with native divider rail and badge visual shapes.",
+    report: nativeShapeExportReport,
+    reviseReports: [],
+  },
+  "pptx-extreme-pressure-3page": {
+    id: "pptx-extreme-pressure-3page",
+    prompt:
+      "Load the 3-page PPTX export extreme pressure fixture with native charts, matrix, table, ownership, z-order, and hidden placeholder traps.",
+    report: pptxExportPressureReport,
     reviseReports: [],
   },
   "freeform-edit-export": {

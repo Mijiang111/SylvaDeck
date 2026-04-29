@@ -1097,7 +1097,7 @@ export type NeuralNetworkDiagramSpec = {
 
 export type ScientificDiagramSpec = NeuralNetworkDiagramSpec;
 
-export type HtmlChartKind = ModuleChartKind | "combo" | "bubble";
+export type HtmlChartKind = ModuleChartKind | "combo" | "bubble" | "matrix";
 export type HtmlChartSeriesRole = "bar" | "line";
 export type HtmlChartAxisRole = "primary" | "secondary";
 export type HtmlChartValueScale = "raw" | "thousand" | "million" | "billion";
@@ -1140,6 +1140,38 @@ export type HtmlChartPresentationSpec = {
   emphasis?: HtmlChartPresentationEmphasis[];
   annotations?: HtmlChartPresentationAnnotation[];
 };
+export type HtmlChartLineDash = "solid" | "dash" | "dot";
+export type HtmlChartShadowStyle = {
+  color?: string | null;
+  opacity?: number;
+  blurPt?: number;
+  offsetPt?: number;
+  angle?: number;
+};
+export type HtmlChartAxisStyle = {
+  lineColor?: string | null;
+  lineWidthPt?: number;
+  lineDash?: HtmlChartLineDash | "none";
+  gridColor?: string | null;
+  gridWidthPt?: number;
+  gridDash?: HtmlChartLineDash | "none";
+  labelColor?: string | null;
+  labelFontSize?: number;
+};
+export type HtmlChartNativeStyle = {
+  xAxis?: HtmlChartAxisStyle;
+  yAxis?: HtmlChartAxisStyle;
+  secondaryYAxis?: HtmlChartAxisStyle;
+  chartShadow?: HtmlChartShadowStyle | null;
+  plotShadow?: HtmlChartShadowStyle | null;
+  bubbleScale?: number;
+};
+export type HtmlChartSeriesStyle = {
+  lineDash?: HtmlChartLineDash;
+  lineWidthPt?: number;
+  marker?: "circle" | "none";
+  shadow?: HtmlChartShadowStyle | null;
+};
 export type HtmlChartSeries = {
   id: string;
   label: string;
@@ -1147,6 +1179,7 @@ export type HtmlChartSeries = {
   color?: string | null;
   role?: HtmlChartSeriesRole;
   axis?: HtmlChartAxisRole;
+  style?: HtmlChartSeriesStyle;
 };
 export type HtmlBubblePoint = {
   id: string;
@@ -1166,6 +1199,9 @@ export type HtmlBasicChartSpec = {
   categories: string[];
   series: HtmlChartSeries[];
   presentation?: HtmlChartPresentationSpec;
+  valueAxisMin?: number;
+  valueAxisMax?: number;
+  style?: HtmlChartNativeStyle;
 };
 export type HtmlComboChartSpec = {
   kind: "combo";
@@ -1177,6 +1213,9 @@ export type HtmlComboChartSpec = {
   categories: string[];
   series: HtmlChartSeries[];
   presentation?: HtmlChartPresentationSpec;
+  valueAxisMin?: number;
+  valueAxisMax?: number;
+  style?: HtmlChartNativeStyle;
 };
 export type HtmlBubbleChartSpec = {
   kind: "bubble";
@@ -1189,11 +1228,69 @@ export type HtmlBubbleChartSpec = {
   sizeLabel: string;
   points: HtmlBubblePoint[];
   presentation?: HtmlChartPresentationSpec;
+  style?: HtmlChartNativeStyle;
+};
+export type HtmlMatrixItem = {
+  id: string;
+  label: string;
+  detail: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  color?: string | null;
+  textColor?: string | null;
+};
+export type HtmlMatrixCallout = {
+  title: string;
+  body: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  color?: string | null;
+  textColor?: string | null;
+  borderColor?: string | null;
+};
+export type HtmlMatrixPlotBounds = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+};
+export type HtmlMatrixQuadrant = {
+  id: string;
+  label: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  color?: string | null;
+  textColor?: string | null;
+};
+export type HtmlMatrixChartSpec = {
+  kind: "matrix";
+  title: string;
+  subtitle: string;
+  insight: string;
+  xLabel: string;
+  yLabel: string;
+  xMinLabel?: string;
+  xMaxLabel?: string;
+  yMinLabel?: string;
+  yMaxLabel?: string;
+  plotBounds?: HtmlMatrixPlotBounds | null;
+  quadrants?: HtmlMatrixQuadrant[];
+  items: HtmlMatrixItem[];
+  callout?: HtmlMatrixCallout | null;
+  colors?: string[];
+  presentation?: HtmlChartPresentationSpec;
 };
 export type HtmlChartSpec =
   | HtmlBasicChartSpec
   | HtmlComboChartSpec
-  | HtmlBubbleChartSpec;
+  | HtmlBubbleChartSpec
+  | HtmlMatrixChartSpec;
 export type HtmlTableSpec = DataTableModel;
 
 export type HtmlVisualModuleKind = "scientific-diagram" | "chart" | "table";

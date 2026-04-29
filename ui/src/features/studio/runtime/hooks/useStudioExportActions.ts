@@ -184,9 +184,11 @@ export function useStudioExportActions(args: UseStudioExportActionsArgs) {
       recordPublish("pptx", publishUrl);
       await flushStudioSnapshot();
       setStatusLine(
-        result.warningCount
-          ? `Downloaded PPTX with ${result.warningCount} export notes.`
-          : "Downloaded editable PPTX.",
+        result.qualityReport.fatalCount
+          ? `Downloaded PPTX with ${result.qualityReport.fatalCount} export blockers noted.`
+          : result.warningCount
+            ? `Downloaded PPTX with ${result.warningCount} export notes, quality ${result.qualityReport.score}.`
+            : `Downloaded editable PPTX, quality ${result.qualityReport.score}.`,
       );
     } catch (error) {
       setStatusLine(

@@ -151,6 +151,35 @@ export function applyWorkingMemoryToComplexityProfile(args: {
   } satisfies StudioComplexityProfile;
 }
 
+export function applyLongFormBudgetToComplexityProfile(args: {
+  complexityProfile: StudioComplexityProfile;
+  requestedPageCount?: number | null;
+}) {
+  if ((args.requestedPageCount ?? 0) < 10) {
+    return args.complexityProfile;
+  }
+
+  const longFormPack = resolveTaskGrammarPackById("unstructured-synthesis");
+  const taskGrammarPacks =
+    longFormPack &&
+    !args.complexityProfile.taskGrammarPacks.some((pack) => pack.id === longFormPack.id)
+      ? [...args.complexityProfile.taskGrammarPacks, longFormPack]
+      : args.complexityProfile.taskGrammarPacks;
+
+  return {
+    ...args.complexityProfile,
+    workloadLane: "deep",
+    rigorLevel: "high-spec",
+    specializedArtifact:
+      args.complexityProfile.specializedArtifact ?? longFormPack?.artifactLabel ?? "long-form deck",
+    taskGrammarPacks,
+    reason:
+      args.complexityProfile.workloadLane === "deep"
+        ? `${args.complexityProfile.reason} Long-form page budget kept the deep workspace active.`
+        : `${args.complexityProfile.reason} Long-form page budget (${args.requestedPageCount} pages) promoted this request into the deep workspace.`,
+  } satisfies StudioComplexityProfile;
+}
+
 export function buildStudioEvalTraceMeta(evalOverrides?: StudioEvalOverrides | null) {
   if (!evalOverrides) {
     return {};
@@ -203,12 +232,15 @@ export function resolveStudioGenerationPreparation(args: {
   const complexityProfile = applyStudioEvalOverridesToComplexityProfile({
     brief: args.brief,
     inputs: segmentedInputs,
-    complexityProfile: applyWorkingMemoryToComplexityProfile({
-      complexityProfile: resolveStudioComplexityProfile({
-        brief: args.brief,
-        inputs: segmentedInputs,
+    complexityProfile: applyLongFormBudgetToComplexityProfile({
+      requestedPageCount: args.requestedPageCount,
+      complexityProfile: applyWorkingMemoryToComplexityProfile({
+        complexityProfile: resolveStudioComplexityProfile({
+          brief: args.brief,
+          inputs: segmentedInputs,
+        }),
+        workingMemory,
       }),
-      workingMemory,
     }),
     evalOverrides: mergedEvalOverrides,
   });

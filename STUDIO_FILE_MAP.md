@@ -47,6 +47,8 @@
 | `/server/src/lib/studio-engine/contracts.ts` | 源码层 | engine 共享类型、stream event、pressure/review budget、hero/chart 内部 contract | route 与 engine 调度 |
 | `/server/src/lib/studio-engine/brief-synthesis.ts` | 源码层 | brief 多源合成与摘要生成 | route 与 engine 调度 |
 | `/server/src/lib/studio-engine/agent.ts` | 源码层 | stage 执行、trace、timeout、stream writer、agent config glue | route 与 engine 调度 |
+| `/server/src/lib/studio-engine/run-session.ts` | 源码层 | 生成/修复 run session 持久化与最新 session 恢复，记录 stream event、stage trace、页面快照与最终报告 | route 与 engine 调度 |
+| `/server/src/lib/studio-engine/page-render-boundary.ts` | 源码层 | 页面 deterministic fallback/recovery、page result 收集排序、最终 report 组装边界 | core 编排调用 |
 | `/server/src/lib/studio-engine/schemas.ts` | 源码层 | studio generate/revise 请求与测量 schema 定义 | route 与 engine 调度 |
 | `/server/src/lib/studio-engine/core.ts` | 源码层 | 生成/修补主编排、evidence/planning/prompt/repair 总流程 | route 与 engine 调度 |
 | `/server/src/lib/studio-engine/brief.ts` | 源码层 | brief 归一化、压缩、标题/文本工具、基础证据文本辅助 | route 与 engine 调度 |
@@ -72,6 +74,8 @@
 | `/server/src/lib/studio-engine/workspace-eval.test.ts` | 测试层 | workspace 评估单元测试 | jest/vitest |
 | `/server/src/lib/studio-engine/render.test.ts` | 测试层 | render 层单元测试 | jest/vitest |
 | `/server/src/lib/studio-engine/working-memory.test.ts` | 测试层 | working memory 单元测试 | jest/vitest |
+| `/server/src/lib/studio-engine/run-session.test.ts` | 测试层 | run session 持久化记录单元测试 | node:test |
+| `/server/src/lib/studio-engine/page-render-boundary.test.ts` | 测试层 | 页面渲染边界、page result 收集与最终 report 组装单元测试 | node:test |
 
 ## Server Skills
 
@@ -143,6 +147,10 @@
 | `/ui/src/features/studio/runtime/StudioHomePage.tsx` | 源码层 | AI Chat / Library / Author 首页状态与新建项目入口 | 路由/App.tsx |
 | `/ui/src/features/studio/runtime/StudioShellPage.tsx` | 源码层 | 组合 shell 视图，拼装 runtime hooks、rail/canvas/inspector/transcript | 路由/App.tsx |
 | `/ui/src/features/studio/runtime/HtmlLayoutEditor.tsx` | 源码层 | 布局分区/zone 编辑 | Shell / runtime |
+| `/ui/src/features/studio/runtime/editor-selection-model.ts` | 源码层 | runtime editor selection object model，解析 page/text/visual/stale 编辑对象与能力 | Shell / inspector / canvas |
+| `/ui/src/features/studio/runtime/editor-commands.ts` | 源码层 | runtime editor command target/availability 与 visual insertion placement 解析 | Shell / inspector / canvas |
+| `/ui/src/features/studio/runtime/editor-mutations.ts` | 源码层 | runtime editor report mutation helpers，统一 text/visual canvas transform、layer、return-to-flow 写入 | Shell / inspector / canvas |
+| `/ui/src/features/studio/runtime/editor-inspector-schemas.ts` | 源码层 | runtime editor inspector schema builders，承接 text block 与 visual/module inspector 字段构造 | Shell / inspector |
 | `/ui/src/features/studio/runtime/editor-chrome-tokens.ts` | 源码层 | Editor/Shell 视觉 token | Shell / runtime |
 | `/ui/src/features/studio/runtime/HtmlVisualEditor.tsx` | 源码层 | 视觉节点编辑（样式、视觉内容） | Shell / runtime |
 | `/ui/src/features/studio/runtime/helpers.tsx` | 源码层 | 向后兼容导出 runtime 预览/视图模块 | Shell / runtime |
@@ -156,6 +164,7 @@
 | `/ui/src/features/studio/runtime/hooks/useStudioGenerationFlow.ts` | 源码层 | generate/regenerate/continue conversation 主编排 | Shell / runtime |
 | `/ui/src/features/studio/runtime/hooks/useStudioExportActions.ts` | 源码层 | HTML/PPTX export、bundle import/export notes | Shell / runtime |
 | `/ui/src/features/studio/runtime/hooks/deck-review-helpers.ts` | 源码层 | deck review 辅助函数与状态派生 | Shell / runtime |
+| `/ui/src/features/studio/runtime/hooks/useHtmlEditorCanvasMutations.ts` | 源码层 | editor canvas transform/layer/return-to-flow 的 React action adapter | Shell / canvas |
 | `/ui/src/features/studio/runtime/hooks/useStudioTranscriptState.ts` | 源码层 | streaming transcript、partial pages、status line、stream error | Shell / runtime |
 
 ## Studio Runtime View / Preview Modules
@@ -271,7 +280,11 @@
 
 | 文件 | 架构层 | 功能/职责 | 主要入口或调用关系 |
 |---|---|---|---|
-| `/ui/src/features/studio/pptx/export-pptx.ts` | 源码层 | slide/page/chart -> `.pptx` 的本地导出主实现 | generation/state/runtime |
+| `/ui/src/features/studio/pptx/export-pptx.ts` | 源码层 | PPTX 导出 facade：collect -> IR/report -> render 编排与兼容 API | generation/state/runtime |
+| `/ui/src/features/studio/pptx/export/collector.ts` | 源码层 | PPTX 导出真实 16:9 iframe/page frame 收集边界 | generation/state/runtime |
+| `/ui/src/features/studio/pptx/export/types.ts` | 源码层 | PPTX export IR、warning、quality report 与兼容 result 类型 | generation/state/runtime |
+| `/ui/src/features/studio/pptx/export/quality.ts` | 源码层 | PPTX export document 构建、验证与质量评分报告 | generation/state/runtime |
+| `/ui/src/features/studio/pptx/export/renderer.ts` | 源码层 | 从 PPTX export IR 渲染 PowerPoint 原生对象与 fallback | generation/state/runtime |
 
 ## Studio Authoring Subsystem
 
@@ -338,10 +351,21 @@
 | `/ui/src/features/studio/ai-settings.test.ts` | 测试层 | ai-settings 单元测试 | jest/vitest |
 | `/ui/src/features/studio/state.test.ts` | 测试层 | state 单元测试 | jest/vitest |
 | `/ui/src/features/studio/html-report-animation.test.ts` | 测试层 | html-report-animation 单元测试 | jest/vitest |
+| `/ui/src/features/studio/runtime/editor-selection-model.test.ts` | 测试层 | runtime editor selection object model 单元测试 | node:test |
+| `/ui/src/features/studio/runtime/editor-commands.test.ts` | 测试层 | runtime editor command target/availability 单元测试 | node:test |
+| `/ui/src/features/studio/runtime/editor-mutations.test.ts` | 测试层 | runtime editor report mutation helpers 单元测试 | node:test |
+| `/ui/src/features/studio/runtime/editor-inspector-schemas.test.ts` | 测试层 | runtime editor inspector schema builders 单元测试 | node:test |
 | `/ui/src/features/studio/runtime/runtime-report-view-math.test.ts` | 测试层 | report view math 单元测试 | jest/vitest |
 | `/ui/src/features/studio/runtime/hooks/deck-review-helpers.test.ts` | 测试层 | deck review helpers 单元测试 | jest/vitest |
 | `/ui/src/features/studio/authoring/helpers.test.ts` | 测试层 | authoring helpers 单元测试 | jest/vitest |
 | `/ui/src/features/studio/starter-packs/registry.test.ts` | 测试层 | starter packs registry 单元测试 | jest/vitest |
+
+## Root Tests
+
+| 文件 | 架构层 | 功能/职责 | 主要入口或调用关系 |
+|---|---|---|---|
+| `/tests/golden-set/scenarios.json` | 测试层 | golden set 固定质量样本与期望 | `pnpm test:golden` |
+| `/tests/golden-set/run.ts` | 测试层 | 离线 golden set 评分入口，输出 summary artifacts | `pnpm test:golden` |
 
 ## Audit
 
@@ -366,7 +390,7 @@
 | `Studio Core Config / Registry` | 2,126 |
 | `Studio Generation / Report Modeling` | 9,589 |
 | `Studio Editing / Runtime Actions / Render` | 11,002 |
-| `Studio PPTX Export` | 2,032 |
+| `Studio PPTX Export` | 3,665 |
 | `Studio Authoring Subsystem` | 13,084 |
 | `Studio Templates` | 101 |
 | `Studio Starter Packs` | 1,445 |

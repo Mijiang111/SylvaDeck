@@ -1315,6 +1315,7 @@ function HtmlReportPreviewFrame({
         title={`${htmlReportTitle} - page ${pagePreview.pageNumber}`}
         srcDoc={pagePreview.srcDoc}
         sandbox="allow-scripts"
+        data-ppt-export-page-frame={pagePreview.pageNumber}
         data-testid={`report-page-frame-${pagePreview.pageNumber}`}
         onLoad={() => {
           previewBridgeTargetRef.current = null;

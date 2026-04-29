@@ -133,6 +133,21 @@ test("inferRequestedHtmlPageCount keeps explicit English deck counts over one-pa
   );
 });
 
+test("inferRequestedHtmlPageCount ignores PPT aspect ratio tokens", () => {
+  assert.equal(
+    inferRequestedHtmlPageCount("Create exactly 1 slide. Build a full-width 16:9 PPT slide with a flowchart."),
+    1,
+  );
+  assert.equal(
+    inferRequestedHtmlPageCount("Build a full-width 16:9 PPT slide with a flowchart."),
+    undefined,
+  );
+  assert.equal(
+    inferRequestedHtmlPageCount("Create a 9-page PPT with 16:9 slides."),
+    9,
+  );
+});
+
 test("inferRequestedHtmlPageCount infers page count from contiguous Chinese page references", () => {
   assert.equal(
     inferRequestedHtmlPageCount("请做英文PPT。第 1 页讲背景。第 2 页讲架构。第 3 页讲风险。"),

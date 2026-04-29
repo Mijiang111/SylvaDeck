@@ -70,6 +70,18 @@ Shape prompts around these seven pieces:
 - `Anti-patterns`
 - `Source constraint`
 
+For source-to-deck work, `Page plan` must be a **page-by-page blueprint**, not a loose topic list. Before launching Studio, specify for every page:
+
+- exact page title or title direction
+- one-sentence story claim
+- required evidence / numbers / source facts
+- required layout pattern
+- primary visual object
+- required on-slide text or labels when precision matters
+- what the page must not become
+
+Use this stricter page blueprint whenever the user asks to turn a PDF, URL, research note, memo, financial analysis, consulting material, or other source document into a PPT. A weak plan like “page 1 thesis, page 2 drivers, page 3 risks” is not enough; make the model’s page-level decisions before opening Studio.
+
 Read `references/prompt-shaping.md` when you need the detailed rules for what helps the engine and what only adds noise.
 
 ## Visual quality rule
@@ -108,14 +120,30 @@ Avoid:
 
 Read `references/visual-briefing.md` when you need the visual prompting rules, `references/data-story-patterns.md` when you need to map source material to an archetype, `references/premium-visual-cues.md` for effective visual language, and `references/preflight-aware-visual-budget.md` when you need to keep ambition inside the engine's fit limits.
 
+## Structured flowchart and swimlane rule
+
+When the user asks for a process flow, swimlane, consulting workflow, project plan with many steps, or a reference image that is visibly a flowchart:
+
+- Think in a 2D diagram model before writing the Studio prompt.
+- Treat the x-axis as lanes, owners, or workstreams such as `客户`, `项目小组`, `专家委员会`, `埃森克咨询`.
+- Treat the y-axis as phases or stage bands such as `现状诊断`, `方案设计`, `辅导实施`, `长期服务`.
+- Assign every node to an x-axis lane and y-axis phase before describing connectors.
+- Preserve the user's labels verbatim; do not invent missing process content.
+- Use explicit structure cues: `swimlane flowchart`, `process diagram`, `流程图`, `泳道`, `lane headers`, `phase bands`, `numbered nodes`, `decision diamonds`, `orthogonal connectors`.
+- Include lane headers, phase bands, all numbered nodes, decision-node labels, and any known arrow chains in the prompt.
+- Avoid vague `roadmap` wording unless the target is truly a Gantt/timeline with time buckets.
+
+Visual thesis: the page should read like a role-by-stage operating map, not a hero page, card wall, or prose summary.
+
 ## Meaningful prompt inputs
 
 The current engine responds well to:
 
 - explicit page count
+- per-page storylines with exact page roles, claims, evidence, layout, and primary visual
 - each page having a clear role
 - one main claim per page
-- structure cues like `chart`, `matrix`, `quadrant`, `figure`, `timeline`
+- structure cues like `chart`, `matrix`, `quadrant`, `figure`, `timeline`, `swimlane flowchart`, `phase bands`, `lane headers`
 - one visual thesis per page
 - language and density posture
 - a clear instruction to stay inside the observed source facts
@@ -124,6 +152,7 @@ The current engine responds well to:
 The current engine does **not** benefit much from:
 
 - pasting the full article or PDF
+- vague page plans that leave the model to invent each page's story, chart, and layout
 - repeating that the result should be editable
 - repeating iframe/export/tooling details
 - vague quality adjectives like `premium`, `top-tier`, `more advanced`

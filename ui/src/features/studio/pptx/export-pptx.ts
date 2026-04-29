@@ -2,6 +2,8 @@ import { extractHtmlPageVisualStyle } from "@/features/studio/html-report-visual
 import {
   HTML_CHART_SPEC_ATTRIBUTE,
   HTML_TABLE_SPEC_ATTRIBUTE,
+  TABLE_MODULE_KIND,
+  canonicalizeDataBackedModulesOnPage,
   parseHtmlChartSpec,
   parseHtmlTableSpec,
 } from "@/features/studio/html-report-data-modules";
@@ -10,10 +12,6 @@ import {
   HTML_REPORT_PAGE_HEIGHT,
   HTML_REPORT_PAGE_WIDTH,
 } from "@/features/studio/runtime/runtime-export-annotations";
-import {
-  SCIENTIFIC_DIAGRAM_MODULE_KIND,
-  SCIENTIFIC_DIAGRAM_SPEC_ATTRIBUTE,
-} from "@/features/studio/scientific-diagram";
 import {
   measureListBlock,
   measureTextBlock,
@@ -25,7 +23,9 @@ import type {
   GeneratedHtmlReport,
   GeneratedHtmlReportStyleProfile,
   HtmlChartSpec,
+  HtmlChartKind,
   HtmlPageVisualStyle,
+  HtmlTableSpec,
   ModuleChartKind,
   SlideScene,
   SlideSceneChartData,
@@ -33,183 +33,95 @@ import type {
   WorkbenchDraft,
   WorkbenchProject,
 } from "@/features/studio/types";
+import {
+  collectRenderedExportPageFrames,
+  type ExportPageFrame,
+} from "./export/collector";
+import {
+  findChartContractElement,
+  findChartPlotElement,
+  hasStructuredChartContract,
+  hasUnstructuredChartPrimitives,
+} from "./export/recognition/chart";
+import {
+  buildPptxExportDocument,
+  buildPptxExportQualityReport,
+  filterPptxWarnings,
+  normalizePptxDiagnostics,
+} from "./export/quality";
+import { renderExportDocumentToPptx } from "./export/renderer";
+import { layerZOrder, numericZIndex, readExportCanvasLayer, type ExportCanvasLayer } from "./export/layers";
+import {
+  claimExportOwnership,
+  dedupeOwners,
+  recordForElement,
+  resolveOwnerForElement,
+  type ExportElementRecord,
+  type ExportElementRegistry,
+  type ExportOwner,
+  type ExportPagePlan,
+  type RectPx,
+} from "./export/ownership";
+import { patchPptxPackageXml, validatePptxPackageBlob } from "./export/package-patch";
+import {
+  DEFAULT_ACCENT,
+  DEFAULT_BACKGROUND,
+  DEFAULT_BODY,
+  DEFAULT_DIVIDER,
+  DEFAULT_SURFACE_FILL,
+  DEFAULT_TEXT,
+  alphaIsVisible,
+  clamp,
+  createLinearGradientSvg,
+  nonePaint,
+  normalizeChartNativeStyle,
+  normalizeChartSeriesStyle,
+  paintFromCssPaint,
+  parseCssColor,
+  parseCssPaint,
+  parseNumericValue,
+  primaryFontFamily,
+  readElementFillPaint,
+  resolveBorderRadiusPx,
+  resolveBoxShadow,
+  resolveComputedBorderPaint,
+  resolveLineDash,
+  splitCssTopLevelList,
+  toTransparency,
+  type ParsedCssPaint,
+  type ParsedSolidPaint,
+} from "./export/style";
+import {
+  PPT_LAYOUT,
+  PX_PER_INCH,
+  type PptExportBubblePoint,
+  type PptExportChartModel,
+  type PptExportChartNativeStyle,
+  type PptExportChartSeries,
+  type PptExportChartThemeTokens,
+  type PptExportMatrixCallout,
+  type PptExportMatrixItem,
+  type PptExportMatrixQuadrant,
+  type PptExportLayerRole,
+  type PptExportOwnerKind,
+  type PptExportSemanticChartSpec,
+  type PptExportSlideModel,
+  type PptExportTableModel,
+  type PptExportTextNode,
+  type PptExportThemeSnapshot,
+  type PptExportVisualNode,
+  type PptExportWarning,
+  type PptExportResult,
+} from "./export/types";
 
-const PPT_LAYOUT = {
-  widthInches: 13.333,
-  heightInches: 7.5,
-  pageWidthPx: 1600,
-  pageHeightPx: 900,
-};
-
-const PX_PER_INCH = PPT_LAYOUT.pageWidthPx / PPT_LAYOUT.widthInches;
-const DEFAULT_BACKGROUND = "FBF8F2";
-const DEFAULT_SURFACE_FILL = "FFFFFF";
-const DEFAULT_DIVIDER = "D8D0C2";
-const DEFAULT_TEXT = "102838";
-const DEFAULT_BODY = "5B6B77";
-const DEFAULT_ACCENT = "C6994A";
-
-type PptExportSupportedChartKind = "bar" | "stacked" | "line" | "waterfall" | "combo";
-
-export type PptExportWarning = {
-  code:
-    | "html-report-missing"
-    | "frame-missing"
-    | "page-missing"
-    | "block-missing"
-    | "visual-missing"
-    | "color-fallback"
-    | "gradient-flattened"
-    | "native-chart-exported"
-    | "hybrid-chart-exported"
-    | "chart-native-unsupported"
-    | "chart-image-fallback";
-  message: string;
-  pageNumber?: number;
-};
-
-type PptExportTextNode = {
-  kind: "text";
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  text: string;
-  items?: string[];
-  runs?: PptExportTextRun[];
-  fontSize: number;
-  fontFamily?: string;
-  color: string;
-  bold?: boolean;
-  italic?: boolean;
-  align?: "left" | "center" | "right";
-  fillColor?: string | null;
-  rotation?: number;
-};
-
-type PptExportTextRun = {
-  text: string;
-  fontFamily?: string;
-  fontSize?: number;
-  color?: string;
-  bold?: boolean;
-  italic?: boolean;
-};
-
-export type PptExportVisualNode = {
-  kind: "shape";
-  role: string;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  shape: "rect" | "roundRect";
-  fillColor?: string | null;
-  fillTransparency?: number;
-  lineColor?: string | null;
-  lineTransparency?: number;
-  lineWidthPt?: number;
-};
-
-export type PptExportFallbackAsset = {
-  kind: "svg";
-  data: string;
-  reason: "gradient-flattened" | "chart-image-fallback";
-};
-
-type PptExportChartLayoutRole =
-  | "chart-panel"
-  | "annotation-rail"
-  | "metric-strip"
-  | "decision-footer";
-
-type PptExportChartThemeTokens = {
-  textPrimary: string;
-  textMuted: string;
-  accent: string;
-  dividerColor: string;
-  surfaceFill: string;
-  surfaceSecondary: string;
-  chartPalette: string[];
-};
-
-type PptExportChartSeries = {
-  name: string;
-  values: number[];
-  color?: string;
-  role?: "bar" | "line";
-  axis?: "primary" | "secondary";
-};
-
-export type PptExportChartModel = {
-  kind: "chart";
-  renderMode: "native" | "hybrid" | "image";
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  title?: string;
-  subtitle?: string;
-  insight?: string;
-  layoutRole: PptExportChartLayoutRole;
-  fallbackMode?: "native-chart" | "hybrid-waterfall" | "chart-image";
-  chartKind?: PptExportSupportedChartKind;
-  labels: string[];
-  series: PptExportChartSeries[];
-  xAxisTitle?: string;
-  yAxisTitle?: string;
-  colors: string[];
-  themeTokens: PptExportChartThemeTokens;
-  fallbackAsset?: PptExportFallbackAsset;
-};
-
-export type PptExportTableModel = {
-  kind: "table";
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  columns: string[];
-  rows: string[][];
-  themeTokens: PptExportChartThemeTokens;
-};
-
-export type PptExportThemeSnapshot = {
-  backgroundColor: string;
-  surfaceFill: string;
-  surfaceSecondary: string;
-  dividerColor: string;
-  accent: string;
-  textPrimary: string;
-  textMuted: string;
-  chartPalette: string[];
-  backgroundImageData?: string;
-};
-
-export type PptExportSlideModel = {
-  pageNumber: number;
-  title: string;
-  backgroundColor: string;
-  theme: PptExportThemeSnapshot;
-  textNodes: PptExportTextNode[];
-  shapeNodes: PptExportVisualNode[];
-  chartNodes: PptExportChartModel[];
-  tableNodes: PptExportTableModel[];
-};
-
-export type PptExportResult = {
-  fileName: string;
-  slideCount: number;
-  warningCount: number;
-  warnings: PptExportWarning[];
-  slides: PptExportSlideModel[];
-};
-
-type ExportPageFrame = {
-  iframe: HTMLIFrameElement;
-  document: Document;
-  pageElement: HTMLElement;
-};
+export type {
+  PptExportChartModel,
+  PptExportResult,
+  PptExportSlideModel,
+  PptExportVisualNode,
+  PptExportWarning,
+  PptxExportQualityReport,
+} from "./export/types";
 
 type ChartFrameCandidate = {
   visualId: string;
@@ -225,16 +137,21 @@ type ChartFrameCandidate = {
 type ChartCollectionResult = {
   chartNodes: PptExportChartModel[];
   skipVisualIds: Set<string>;
-  supportTextNodes: PptExportTextNode[];
+  skipTextElements: HTMLElement[];
+  skipPrimitiveWithinElements: HTMLElement[];
+  owners: ExportOwner[];
 };
 
 type TableCollectionResult = {
   tableNodes: PptExportTableModel[];
   skipVisualIds: Set<string>;
+  skipTextElements: HTMLElement[];
+  skipPrimitiveWithinElements: HTMLElement[];
+  owners: ExportOwner[];
 };
 
 type ParsedExportChartData = {
-  kind?: PptExportSupportedChartKind;
+  kind?: ModuleChartKind;
   categories?: string[];
   series?: Array<{
     name?: string;
@@ -242,20 +159,26 @@ type ParsedExportChartData = {
     value?: number;
     color?: string;
     label?: string;
-    role?: "bar" | "line";
-    axis?: "primary" | "secondary";
+    style?: unknown;
   }>;
   title?: string;
   subtitle?: string;
   insight?: string;
   unit?: string;
-  secondaryUnit?: string;
   xAxisTitle?: string;
   yAxisTitle?: string;
+  valueAxisMin?: number;
+  valueAxisMax?: number;
+  style?: unknown;
 };
 
+type SupportedNativeChartKind = Extract<
+  HtmlChartKind,
+  "bar" | "stacked" | "line" | "waterfall" | "combo" | "bubble" | "matrix"
+>;
+
 type NormalizedChartContract = {
-  chartKind: PptExportSupportedChartKind;
+  chartKind: SupportedNativeChartKind;
   labels: string[];
   series: PptExportChartSeries[];
   title?: string;
@@ -263,24 +186,24 @@ type NormalizedChartContract = {
   insight?: string;
   xAxisTitle?: string;
   yAxisTitle?: string;
+  secondaryYAxisTitle?: string;
+  sizeAxisTitle?: string;
+  valueAxisMin?: number;
+  valueAxisMax?: number;
   colors: string[];
+  style?: PptExportChartNativeStyle;
+  showInlineHeading?: boolean;
+  bubblePoints?: PptExportBubblePoint[];
   renderMode: "native" | "hybrid";
-  fallbackMode?: "native-chart" | "hybrid-waterfall";
+  fallbackMode?:
+    | "native-chart"
+    | "native-combo-chart"
+    | "native-bubble-chart"
+    | "native-waterfall-chart"
+    | "native-matrix-shapes"
+    | "hybrid-waterfall";
+  semanticSpec?: PptExportSemanticChartSpec;
 };
-
-type ParsedSolidPaint = {
-  type: "solid";
-  hex: string;
-  alpha: number;
-};
-
-type ParsedGradientPaint = {
-  type: "linear-gradient";
-  angle: number;
-  stops: ParsedSolidPaint[];
-};
-
-type ParsedCssPaint = ParsedSolidPaint | ParsedGradientPaint;
 
 type CollectExportAnnotationsResult = {
   theme: PptExportThemeSnapshot;
@@ -323,19 +246,21 @@ function pxToInches(value: number) {
   return Number((value / PX_PER_INCH).toFixed(3));
 }
 
+function pxRectToInches(rect: RectPx) {
+  return {
+    x: pxToInches(rect.x),
+    y: pxToInches(rect.y),
+    w: pxToInches(rect.w),
+    h: pxToInches(rect.h),
+  };
+}
+
 function pxFontToPoints(value: number) {
-  // PowerPoint renders these browser-derived text boxes a little larger and
-  // tighter than the HTML preview, so a slightly reduced px->pt conversion
-  // keeps headings and dense card copy from wrapping too aggressively.
-  return Number((value * 0.7).toFixed(1));
+  return pxLineToPoints(value);
 }
 
 function pxLineToPoints(value: number) {
-  return Number(Math.max(0.5, value * 0.75).toFixed(1));
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
+  return Number(Math.max(0.5, (value / PX_PER_INCH) * 72).toFixed(1));
 }
 
 function normalizeText(value: string) {
@@ -350,36 +275,12 @@ function normalizeMultilineText(value: string) {
     .join("\n");
 }
 
-function stripQuotes(value: string) {
-  return value.replace(/^['"]+|['"]+$/g, "").trim();
-}
-
-function primaryFontFamily(fontFamily?: string | null) {
-  if (!fontFamily) {
-    return undefined;
-  }
-
-  const family = fontFamily
-    .split(",")
-    .map((item) => stripQuotes(item))
-    .find(Boolean);
-  return family || undefined;
-}
-
 function selectorEscape(value: string) {
   if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
     return CSS.escape(value);
   }
 
   return value.replace(/["\\]/g, "\\$&");
-}
-
-function toTransparency(alpha?: number | null) {
-  if (alpha === null || alpha === undefined) {
-    return undefined;
-  }
-
-  return clamp(Math.round((1 - alpha) * 100), 0, 100);
 }
 
 function normalizeAlign(value?: string | null) {
@@ -389,54 +290,128 @@ function normalizeAlign(value?: string | null) {
   return "left";
 }
 
-function normalizeRotation(value: number) {
-  const normalized = ((value % 360) + 360) % 360;
-  return normalized > 180 ? normalized - 360 : normalized;
+function normalizeVerticalAlign(computed: CSSStyleDeclaration) {
+  if (
+    computed.display.includes("flex") &&
+    computed.alignItems === "center" &&
+    computed.justifyContent === "center"
+  ) {
+    return "mid" as const;
+  }
+
+  return "top" as const;
 }
 
-function parseCssRotation(transform?: string | null) {
-  if (!transform || transform === "none") {
+function resolveElementRotationDegrees(element: HTMLElement) {
+  const inlineTransform = element.style.transform || "";
+  const rotateMatch = inlineTransform.match(/rotate\((-?\d+(?:\.\d+)?)deg\)/i);
+  if (rotateMatch?.[1]) {
+    return Number(rotateMatch[1]);
+  }
+
+  const computedTransform =
+    element.ownerDocument.defaultView?.getComputedStyle(element).transform ?? "";
+  const matrixMatch = computedTransform.match(/^matrix\(([^,]+),\s*([^,]+),/i);
+  if (!matrixMatch?.[1] || !matrixMatch[2]) {
     return undefined;
   }
 
-  const rotateMatch = transform.match(/rotate\((-?[0-9.]+)deg\)/i);
-  if (rotateMatch) {
-    const parsed = Number.parseFloat(rotateMatch[1] ?? "");
-    return Number.isFinite(parsed) ? normalizeRotation(parsed) : undefined;
-  }
-
-  const matrixMatch = transform.match(/matrix\(([^)]+)\)/i);
-  if (!matrixMatch) {
-    return undefined;
-  }
-
-  const values = matrixMatch[1]
-    ?.split(",")
-    .map((value) => Number.parseFloat(value.trim())) ?? [];
-  const [a, b] = values;
+  const a = Number(matrixMatch[1]);
+  const b = Number(matrixMatch[2]);
   if (!Number.isFinite(a) || !Number.isFinite(b)) {
     return undefined;
   }
 
-  return normalizeRotation((Math.atan2(b, a) * 180) / Math.PI);
+  const degrees = Math.round((Math.atan2(b, a) * 180) / Math.PI);
+  return degrees === 0 ? undefined : degrees;
 }
 
-function isElementHiddenForExport(element: HTMLElement, view: Window) {
-  if (element.getAttribute("data-html-canvas-placeholder") === "true") {
-    return true;
+function resolvePptTextBoxWidthPx(args: {
+  rect: { w: number; h: number };
+  measurement: ReturnType<typeof measurePptTextLayout>;
+  lineHeightPx: number;
+  fontSizePx: number;
+  text?: string;
+  rotate?: number;
+}) {
+  const compactText = normalizeText(args.text ?? "");
+  const singleLineSafetyWidth =
+    compactText && !compactText.includes(" ")
+      ? Math.min(320, compactText.length * args.fontSizePx * 0.72 + 18)
+      : 0;
+  const normalizedRotation = Math.abs(args.rotate ?? 0) % 180;
+  if (normalizedRotation > 1) {
+    return Math.max(
+      args.rect.w,
+      args.rect.h + 12,
+      args.measurement.maxLineWidth + 16,
+      singleLineSafetyWidth,
+    );
   }
-  const computed = view.getComputedStyle(element);
-  return (
-    computed.display === "none" ||
-    computed.visibility === "hidden" ||
-    Number.parseFloat(computed.opacity || "1") <= 0.02
-  );
+
+  const singleLineBox = args.measurement.lineCount <= 1 || args.rect.h <= args.lineHeightPx * 1.45;
+  if (!singleLineBox) {
+    return args.rect.w;
+  }
+
+  return Math.max(args.rect.w, args.measurement.maxLineWidth + 10, singleLineSafetyWidth);
 }
 
-function parseNumericValue(value: string) {
-  const normalized = value.replace(/[^0-9.\-]/g, "");
-  const parsed = Number.parseFloat(normalized);
-  return Number.isFinite(parsed) ? parsed : 0;
+function resolveComputedLineHeightPx(computed: CSSStyleDeclaration, fontSizePx: number) {
+  const computedLineHeight = parseNumericValue(computed.lineHeight || "");
+  return Number.isFinite(computedLineHeight) && computedLineHeight > 0
+    ? computedLineHeight
+    : fontSizePx * 1.2;
+}
+
+function toLineSpacingMultiple(lineHeightPx: number, fontSizePx: number) {
+  return Number(clamp(lineHeightPx / Math.max(fontSizePx, 1), 0.8, 2.5).toFixed(2));
+}
+
+function resolveParagraphSpacingAfterPt(args: {
+  computed: CSSStyleDeclaration;
+  lineHeightPx: number;
+  isList: boolean;
+}) {
+  if (args.isList) {
+    return pxLineToPoints(Math.max(4, args.lineHeightPx * 0.28));
+  }
+
+  const marginBottomPx = parseNumericValue(args.computed.marginBottom || "");
+  return marginBottomPx > 0 ? pxLineToPoints(marginBottomPx) : undefined;
+}
+
+function resolveParagraphSpacingBeforePt(computed: CSSStyleDeclaration) {
+  const marginTopPx = parseNumericValue(computed.marginTop || "");
+  return marginTopPx > 0 ? pxLineToPoints(marginTopPx) : undefined;
+}
+
+function resolveListStyle(args: {
+  element: HTMLElement;
+  computed: CSSStyleDeclaration;
+  fontSizePx: number;
+}) {
+  const listElement = args.element.matches("ul,ol")
+    ? args.element
+    : args.element.querySelector<HTMLElement>("ul,ol");
+  if (!listElement) {
+    return undefined;
+  }
+
+  const listComputed =
+    listElement === args.element
+      ? args.computed
+      : listElement.ownerDocument.defaultView?.getComputedStyle(listElement) ?? args.computed;
+  const paddingLeftPx = parseNumericValue(listComputed.paddingLeft || "");
+  const indentPt = pxLineToPoints(
+    clamp(paddingLeftPx > 0 ? paddingLeftPx : args.fontSizePx * 1.4, 16, 64),
+  );
+
+  return {
+    kind: listElement.tagName.toLowerCase() === "ol" ? "number" : "bullet",
+    indentPt,
+    numberStartAt: listElement.tagName.toLowerCase() === "ol" ? 1 : undefined,
+  } satisfies NonNullable<PptExportTextNode["listStyle"]>;
 }
 
 function measurePptTextLayout(args: {
@@ -477,121 +452,6 @@ function measurePptTextLayout(args: {
   });
 }
 
-function parseAlphaChannel(value?: string) {
-  if (value === undefined) {
-    return 1;
-  }
-
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return 1;
-  }
-
-  if (trimmed.endsWith("%")) {
-    const percent = Number.parseFloat(trimmed.slice(0, -1));
-    return clamp(Number.isFinite(percent) ? percent / 100 : 1, 0, 1);
-  }
-
-  const parsed = Number.parseFloat(trimmed);
-  return clamp(Number.isFinite(parsed) ? parsed : 1, 0, 1);
-}
-
-function parseCssColor(value?: string | null) {
-  if (!value) {
-    return null;
-  }
-
-  const next = value.trim();
-  if (!next || next === "transparent" || next === "inherit" || next === "currentColor") {
-    return null;
-  }
-
-  const hexMatch = next.match(/^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i);
-  if (hexMatch) {
-    const raw = hexMatch[1];
-    const expanded =
-      raw.length === 3 || raw.length === 4
-        ? raw
-            .split("")
-            .map((char) => char + char)
-            .join("")
-        : raw;
-    const hex = expanded.slice(0, 6);
-    const alpha =
-      expanded.length === 8
-        ? clamp(Number.parseInt(expanded.slice(6, 8), 16) / 255, 0, 1)
-        : 1;
-    return {
-      type: "solid",
-      hex: hex.toUpperCase(),
-      alpha,
-    } satisfies ParsedSolidPaint;
-  }
-
-  const rgbMatch = next.match(
-    /^rgba?\(\s*([0-9.]+%?)[,\s]+([0-9.]+%?)[,\s]+([0-9.]+%?)(?:[\/,\s]+([0-9.]+%?))?\s*\)$/i,
-  );
-  if (!rgbMatch) {
-    return null;
-  }
-
-  const parseRgbChannel = (channel: string | undefined) => {
-    const raw = channel ?? "0";
-    if (raw.endsWith("%")) {
-      const percent = Number.parseFloat(raw.slice(0, -1));
-      return clamp(Number.isFinite(percent) ? (percent / 100) * 255 : 0, 0, 255);
-    }
-    return clamp(Number.parseFloat(raw), 0, 255);
-  };
-
-  const red = parseRgbChannel(rgbMatch[1]);
-  const green = parseRgbChannel(rgbMatch[2]);
-  const blue = parseRgbChannel(rgbMatch[3]);
-  const alpha = parseAlphaChannel(rgbMatch[4]);
-
-  const hex = [red, green, blue]
-    .map((channel) => Math.round(channel).toString(16).padStart(2, "0").toUpperCase())
-    .join("");
-
-  return { type: "solid", hex, alpha } satisfies ParsedSolidPaint;
-}
-
-function parseLinearGradient(value?: string | null): ParsedGradientPaint | null {
-  if (!value) {
-    return null;
-  }
-
-  const next = value.trim();
-  if (!next.startsWith("linear-gradient(")) {
-    return null;
-  }
-
-  const colorMatches = next.match(/#[0-9a-f]{3,8}|rgba?\([^)]*\)/gi) ?? [];
-  const stops = colorMatches
-    .map((color) => parseCssColor(color))
-    .filter((color): color is ParsedSolidPaint => Boolean(color))
-    .slice(0, 2);
-
-  if (stops.length < 2) {
-    return null;
-  }
-
-  const angleMatch = next.match(/linear-gradient\(\s*(-?[0-9.]+)deg/i);
-  const angle = Number.isFinite(Number.parseFloat(angleMatch?.[1] ?? ""))
-    ? Number.parseFloat(angleMatch?.[1] ?? "180")
-    : 180;
-
-  return {
-    type: "linear-gradient",
-    angle,
-    stops,
-  };
-}
-
-function parseCssPaint(value?: string | null): ParsedCssPaint | null {
-  return parseLinearGradient(value) ?? parseCssColor(value);
-}
-
 function readAttribute(element: Element, ...names: string[]) {
   for (const name of names) {
     const value = element.getAttribute(name)?.trim();
@@ -612,288 +472,346 @@ function readNumericAttribute(element: Element, ...names: string[]) {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-function encodeBase64Utf8(value: string) {
-  const bytes = new TextEncoder().encode(value);
-  let binary = "";
-  bytes.forEach((byte) => {
-    binary += String.fromCharCode(byte);
-  });
-  return btoa(binary);
+function rectsDiffer(left: RectPx, right: RectPx) {
+  return (
+    Math.abs(left.x - right.x) > 0.5 ||
+    Math.abs(left.y - right.y) > 0.5 ||
+    Math.abs(left.w - right.w) > 0.5 ||
+    Math.abs(left.h - right.h) > 0.5
+  );
 }
 
-function createSvgDataUri(svg: string) {
-  return `data:image/svg+xml;base64,${encodeBase64Utf8(svg)}`;
+function intersectRects(left: RectPx, right: RectPx): RectPx {
+  const x1 = Math.max(left.x, right.x);
+  const y1 = Math.max(left.y, right.y);
+  const x2 = Math.min(left.x + left.w, right.x + right.w);
+  const y2 = Math.min(left.y + left.h, right.y + right.h);
+  return {
+    x: x1,
+    y: y1,
+    w: Math.max(0, x2 - x1),
+    h: Math.max(0, y2 - y1),
+  };
 }
 
-function collectDocumentStyles(sourceDocument: Document) {
-  return Array.from(sourceDocument.querySelectorAll("style"))
-    .map((style) => style.textContent ?? "")
-    .filter(Boolean)
-    .join("\n");
+function pageClipBounds(pageElement: HTMLElement): RectPx {
+  const pageRect = pageElement.getBoundingClientRect();
+  return {
+    x: 0,
+    y: 0,
+    w: pageRect.width,
+    h: pageRect.height,
+  };
 }
 
-function createLinearGradientSvg(args: {
-  width: number;
-  height: number;
-  gradient: ParsedGradientPaint;
-}) {
-  const { width, height, gradient } = args;
-  const svgAngle = ((450 - gradient.angle) % 360 + 360) % 360;
-  const radians = (svgAngle * Math.PI) / 180;
-  const x1 = 50 - Math.cos(radians) * 50;
-  const y1 = 50 + Math.sin(radians) * 50;
-  const x2 = 50 + Math.cos(radians) * 50;
-  const y2 = 50 - Math.sin(radians) * 50;
-
-  return createSvgDataUri(`
-    <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
-      <defs>
-        <linearGradient id="g" x1="${x1}%" y1="${y1}%" x2="${x2}%" y2="${y2}%">
-          <stop offset="0%" stop-color="#${gradient.stops[0].hex}" stop-opacity="${gradient.stops[0].alpha}" />
-          <stop offset="100%" stop-color="#${gradient.stops[1].hex}" stop-opacity="${gradient.stops[1].alpha}" />
-        </linearGradient>
-      </defs>
-      <rect width="${width}" height="${height}" fill="url(#g)" />
-    </svg>
-  `);
-}
-
-function createElementSvgFallback(args: {
-  sourceDocument: Document;
-  element: HTMLElement;
-  width: number;
-  height: number;
-}) {
-  const styles = collectDocumentStyles(args.sourceDocument);
-  const html = `
-    <div xmlns="http://www.w3.org/1999/xhtml" style="width:${args.width}px;height:${args.height}px;overflow:hidden;">
-      <style>
-        html, body { margin: 0; padding: 0; }
-        * { box-sizing: border-box; }
-        ${styles}
-      </style>
-      <div style="width:${args.width}px;height:${args.height}px;overflow:hidden;">
-        ${args.element.outerHTML}
-      </div>
-    </div>
-  `;
-
-  return createSvgDataUri(`
-    <svg xmlns="http://www.w3.org/2000/svg" width="${args.width}" height="${args.height}" viewBox="0 0 ${args.width} ${args.height}">
-      <foreignObject width="100%" height="100%">
-        ${html}
-      </foreignObject>
-    </svg>
-  `);
-}
-
-function measureElementRect(pageElement: HTMLElement, element: Element) {
+function elementBoundsInPage(pageElement: HTMLElement, element: Element): RectPx {
   const pageRect = pageElement.getBoundingClientRect();
   const targetRect = element.getBoundingClientRect();
-  const left = clamp(targetRect.left - pageRect.left, 0, pageRect.width);
-  const top = clamp(targetRect.top - pageRect.top, 0, pageRect.height);
-  const right = clamp(targetRect.right - pageRect.left, 0, pageRect.width);
-  const bottom = clamp(targetRect.bottom - pageRect.top, 0, pageRect.height);
-
   return {
-    x: left,
-    y: top,
-    w: Math.max(0, right - left),
-    h: Math.max(0, bottom - top),
+    x: targetRect.left - pageRect.left,
+    y: targetRect.top - pageRect.top,
+    w: targetRect.width,
+    h: targetRect.height,
   };
 }
 
-function parseComputedPx(value?: string | null) {
-  if (!value) {
-    return 0;
-  }
-
-  const parsed = Number.parseFloat(value);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function resolveElementInsets(computed: CSSStyleDeclaration) {
+function measureElementRect(pageElement: HTMLElement, element: Element, clipBounds?: RectPx) {
+  const sourceBounds = elementBoundsInPage(pageElement, element);
+  const resolvedClipBounds = clipBounds ?? pageClipBounds(pageElement);
+  const clippedBounds = intersectRects(sourceBounds, resolvedClipBounds);
   return {
-    top: parseComputedPx(computed.paddingTop),
-    right: parseComputedPx(computed.paddingRight),
-    bottom: parseComputedPx(computed.paddingBottom),
-    left: parseComputedPx(computed.paddingLeft),
+    ...clippedBounds,
+    sourceBounds,
+    clipBounds: resolvedClipBounds,
+    clipped: rectsDiffer(sourceBounds, clippedBounds),
   };
 }
 
-function resolveVisibleTextBox(args: {
-  rect: { w: number; h: number };
-  insets: ReturnType<typeof resolveElementInsets>;
-  lineHeightPx: number;
-}) {
-  const widthPx = Math.max(24, args.rect.w - args.insets.left - args.insets.right);
-  const heightPx = Math.max(args.lineHeightPx, args.rect.h - args.insets.top - args.insets.bottom);
-  return { widthPx, heightPx };
-}
-
-function fitPptTextLayout(args: {
-  widthPx: number;
-  targetHeightPx: number;
-  fontSizePx: number;
-  fontFamily: string;
-  fontWeight: string;
-  fontStyle: string;
-  lineHeightPx: number;
-  text?: string;
-  items?: string[];
-  whiteSpace?: "normal" | "pre-wrap";
-}) {
-  const minFontSizePx = Math.max(8, args.fontSizePx * 0.62);
-  const lineHeightRatio = args.lineHeightPx / Math.max(args.fontSizePx, 1);
-  const measureAt = (fontSizePx: number) => {
-    const lineHeightPx = Math.max(fontSizePx * 1.05, fontSizePx * lineHeightRatio);
-    return {
-      fontSizePx,
-      lineHeightPx,
-      measurement: measurePptTextLayout({
-        widthPx: args.widthPx,
-        fontSizePx,
-        fontFamily: args.fontFamily,
-        fontWeight: args.fontWeight,
-        fontStyle: args.fontStyle,
-        lineHeightPx,
-        text: args.text,
-        items: args.items,
-        whiteSpace: args.whiteSpace,
-      }),
-    };
-  };
-
-  const base = measureAt(args.fontSizePx);
-  if (base.measurement.height <= args.targetHeightPx * 1.04) {
-    return base;
+function elementPathWithinPage(pageElement: HTMLElement, element: Element) {
+  const parts: string[] = [];
+  let current: Element | null = element;
+  while (current && current !== pageElement) {
+    const parent: HTMLElement | null = current.parentElement;
+    if (!parent) {
+      break;
+    }
+    const index = Array.from(parent.children).indexOf(current);
+    parts.push(`${current.tagName.toLowerCase()}-${Math.max(0, index)}`);
+    current = parent;
   }
+  return parts.reverse().join("/");
+}
 
-  let low = minFontSizePx;
-  let high = args.fontSizePx;
-  let best = measureAt(low);
-  for (let index = 0; index < 8; index += 1) {
-    const mid = (low + high) / 2;
-    const candidate = measureAt(mid);
-    if (candidate.measurement.height <= args.targetHeightPx * 1.02) {
-      best = candidate;
-      low = mid;
-    } else {
-      high = mid;
+function sourceElementIdForElement(pageElement: HTMLElement, element: Element, fallbackPrefix = "dom") {
+  if (isHtmlElementNode(element)) {
+    const explicit =
+      element.getAttribute("data-html-block-id") ??
+      element.getAttribute("data-html-visual-id") ??
+      element.getAttribute("data-html-layout-id") ??
+      element.getAttribute("data-html-module-label") ??
+      element.id;
+    if (explicit) {
+      return explicit;
     }
   }
 
-  return best;
+  return `${fallbackPrefix}:${elementPathWithinPage(pageElement, element)}`;
 }
 
-function resolvePptTextNodeHeightPx(args: {
-  rect: { y: number; h: number };
-  insets: ReturnType<typeof resolveElementInsets>;
-  measuredHeightPx: number;
-}) {
-  const desiredHeight = Math.max(args.rect.h, args.measuredHeightPx + args.insets.top + args.insets.bottom + 6);
-  const remainingPageHeight = PPT_LAYOUT.pageHeightPx - args.rect.y;
-  return clamp(desiredHeight, 8, Math.max(8, remainingPageHeight));
+function createDomOrderResolver(pageElement: HTMLElement) {
+  const order = new Map<Element, number>();
+  Array.from(pageElement.querySelectorAll("*")).forEach((element, index) => {
+    order.set(element, index + 1);
+  });
+  return (element: Element) => order.get(element) ?? 0;
 }
 
-function appendTextRun(runs: PptExportTextRun[], run: PptExportTextRun) {
-  if (!run.text) {
-    return;
+function closestExportPlaceholder(element: Element, pageElement: HTMLElement) {
+  let current: Element | null = element;
+  while (current && current !== pageElement.parentElement) {
+    if (current.getAttribute("data-html-canvas-placeholder") === "true") {
+      return current;
+    }
+    if (current === pageElement) {
+      break;
+    }
+    current = current.parentElement;
   }
-
-  const previous = runs.at(-1);
-  if (
-    previous &&
-    previous.fontFamily === run.fontFamily &&
-    previous.fontSize === run.fontSize &&
-    previous.color === run.color &&
-    previous.bold === run.bold &&
-    previous.italic === run.italic
-  ) {
-    previous.text += run.text;
-    return;
-  }
-
-  runs.push(run);
+  return null;
 }
 
-function collectInlineTextRuns(args: {
-  element: HTMLElement;
+function isHiddenForExport(args: {
+  element: Element;
+  pageElement: HTMLElement;
   view: Window;
-  baseText: string;
-  baseFontSizePx: number;
 }) {
-  const runs: PptExportTextRun[] = [];
-  let pendingSpace = false;
-
-  const appendRawText = (raw: string, sourceElement: HTMLElement) => {
-    const collapsed = raw.replace(/\s+/g, " ");
-    if (!collapsed.trim()) {
-      pendingSpace = runs.length > 0 || pendingSpace;
-      return;
+  let current: Element | null = args.element;
+  while (current && current !== args.pageElement.parentElement) {
+    const computed = args.view.getComputedStyle(current);
+    if (current.getAttribute("data-html-canvas-placeholder") === "true") {
+      return { hidden: true, placeholder: current };
     }
+    if (
+      computed.display === "none" ||
+      computed.visibility === "hidden" ||
+      Number.parseFloat(computed.opacity || "1") <= 0
+    ) {
+      return { hidden: true, placeholder: null };
+    }
+    if (current === args.pageElement) {
+      break;
+    }
+    current = current.parentElement;
+  }
+  return { hidden: false, placeholder: null };
+}
 
-    const computed = args.view.getComputedStyle(sourceElement);
-    const text = `${pendingSpace && runs.length ? " " : ""}${collapsed.trim()}`;
-    pendingSpace = /\s$/.test(collapsed);
-    appendTextRun(runs, {
-      text,
-      fontFamily: primaryFontFamily(computed.fontFamily),
-      fontSize:
-        Math.abs(parseComputedPx(computed.fontSize) - args.baseFontSizePx) > 0.5
-          ? pxFontToPoints(parseComputedPx(computed.fontSize))
-          : undefined,
-      color: parseCssColor(computed.color)?.hex,
-      bold: Number.parseInt(computed.fontWeight || "400", 10) >= 600,
-      italic: computed.fontStyle === "italic",
+function buildExportElementRegistry(args: {
+  pageElement: HTMLElement;
+  pageNumber: number;
+  warnings: PptExportWarning[];
+}): ExportElementRegistry | null {
+  const view = args.pageElement.ownerDocument.defaultView;
+  if (!view) {
+    return null;
+  }
+
+  const byElement = new Map<HTMLElement, ExportElementRecord>();
+  const records = Array.from(args.pageElement.querySelectorAll<HTMLElement>("*")).map((element, index) => {
+    const hidden = isHiddenForExport({
+      element,
+      pageElement: args.pageElement,
+      view,
     });
+    const bounds = measureElementRect(args.pageElement, element);
+    const canvasLayer = readExportCanvasLayer(element, args.pageElement);
+    const record: ExportElementRecord = {
+      element,
+      elementId: sourceElementIdForElement(args.pageElement, element),
+      bounds,
+      sourceOrder: index + 1,
+      zIndex: numericZIndex(view, element, args.pageElement),
+      canvasLayer: canvasLayer.canvasLayer,
+      canvasLayerOrder: canvasLayer.canvasLayerOrder,
+      visible: !hidden.hidden,
+      hiddenByPlaceholder: Boolean(hidden.placeholder),
+      text: normalizeMultilineText(element.innerText || element.textContent || ""),
+      visualId: element.getAttribute("data-html-visual-id") ?? undefined,
+      visualKind: element.getAttribute("data-html-visual-kind") ?? undefined,
+      exportRole: readAttribute(element, "data-export-role") ?? undefined,
+      blockId: element.getAttribute("data-html-block-id") ?? undefined,
+      blockKind: element.getAttribute("data-html-block-kind") ?? undefined,
+    };
+    byElement.set(element, record);
+    return record;
+  });
+
+  return {
+    pageElement: args.pageElement,
+    view,
+    records,
+    byElement,
+    placeholderWarnings: new Set(),
   };
+}
 
-  const walk = (node: Node, sourceElement: HTMLElement) => {
-    if (node.nodeType === 3) {
-      appendRawText(node.textContent ?? "", sourceElement);
-      return;
-    }
+function createExportPagePlan(args: {
+  pageElement: HTMLElement;
+  pageNumber: number;
+  warnings: PptExportWarning[];
+}): ExportPagePlan | null {
+  const registry = buildExportElementRegistry(args);
+  return registry
+    ? {
+        registry,
+        pageNumber: args.pageNumber,
+        warnings: args.warnings,
+        owners: [],
+      }
+    : null;
+}
 
-    if (!isHtmlElementNode(node)) {
-      return;
-    }
-
-    const tagName = node.tagName.toLowerCase();
-    if (tagName === "script" || tagName === "style" || tagName === "svg") {
-      return;
-    }
-
-    const display = args.view.getComputedStyle(node).display;
-    const startsBlock = runs.length > 0 && /^(block|flex|grid|list-item|table)/.test(display);
-    if (startsBlock) {
-      pendingSpace = true;
-    }
-
-    for (const child of Array.from(node.childNodes)) {
-      walk(child, node);
-    }
-  };
-
-  for (const child of Array.from(args.element.childNodes)) {
-    walk(child, args.element);
+function warnHiddenPlaceholder(plan: ExportPagePlan, element: HTMLElement) {
+  const placeholder = closestExportPlaceholder(element, plan.registry.pageElement);
+  if (!placeholder || plan.registry.placeholderWarnings.has(placeholder)) {
+    return;
   }
+  plan.registry.placeholderWarnings.add(placeholder);
+  plan.warnings.push({
+    code: "hidden-placeholder-skipped",
+    severity: "info",
+    countsAgainstQuality: false,
+    pageNumber: plan.pageNumber,
+    sourceId: sourceElementIdForElement(plan.registry.pageElement, placeholder, "placeholder"),
+    sourceKind: "visual",
+    message: `Hidden canvas placeholder on page ${plan.pageNumber} was skipped by the PPTX ownership planner.`,
+  });
+}
 
-  const normalizedRunsText = normalizeText(runs.map((run) => run.text).join(""));
-  if (runs.length < 2 || normalizedRunsText !== args.baseText) {
-    return undefined;
-  }
-
-  const hasMeaningfulStyleChange = runs.some(
-    (run) =>
-      run.fontFamily ||
-      run.fontSize !== undefined ||
-      (run.color && run.color !== parseCssColor(args.view.getComputedStyle(args.element).color)?.hex) ||
-      run.bold !== (Number.parseInt(args.view.getComputedStyle(args.element).fontWeight || "400", 10) >= 600) ||
-      run.italic !== (args.view.getComputedStyle(args.element).fontStyle === "italic"),
+function isVisualContainerElement(element: HTMLElement) {
+  const role = readAttribute(element, "data-export-role", "data-html-visual-kind");
+  return Boolean(
+    role ||
+      element.getAttribute("data-html-visual-id") ||
+      element.getAttribute("data-html-module-kind") ||
+      element.classList.contains("surface-card"),
   );
+}
 
-  return hasMeaningfulStyleChange ? runs : undefined;
+function isExplicitTextElement(element: HTMLElement) {
+  return Boolean(element.getAttribute("data-html-block-id") || element.matches("ul,ol"));
+}
+
+function suppressContainerTextIfNeeded(plan: ExportPagePlan | null | undefined, element: HTMLElement) {
+  if (!plan || !isVisualContainerElement(element)) {
+    return false;
+  }
+  if (!hasMultipleReadableTextChildren(element) && !hasReadableStructuralTextChild(element)) {
+    return false;
+  }
+  claimExportOwnership({
+    plan,
+    element,
+    ownership: recordForElement(plan, element)?.ownership ?? "visual-shape",
+    reason: "container-text",
+  });
+  const record = recordForElement(plan, element);
+  if (record?.suppressedTextReason !== "container-text-warned") {
+    if (record) {
+      record.suppressedTextReason = "container-text-warned";
+    }
+    plan.warnings.push({
+      code: "container-text-suppressed",
+      severity: "info",
+      countsAgainstQuality: false,
+      pageNumber: plan.pageNumber,
+      sourceId: sourceElementIdForElement(plan.registry.pageElement, element, "container"),
+      sourceKind: "visual",
+      message: `Container text on page ${plan.pageNumber} was suppressed so child text remains the single editable source.`,
+    });
+  }
+  return true;
+}
+
+function textElementBelongsToOtherOwner(args: {
+  element: HTMLElement;
+  owner?: ExportOwner;
+  owners?: ExportOwner[];
+}) {
+  const owner = resolveOwnerForElement(args.element, args.owners);
+  if (!owner) {
+    return false;
+  }
+  return args.owner?.id !== owner.id;
+}
+
+function canEmitTextElement(args: {
+  plan?: ExportPagePlan | null;
+  element: HTMLElement;
+  owner?: ExportOwner;
+  owners?: ExportOwner[];
+}) {
+  const record = recordForElement(args.plan, args.element);
+  if (record && !record.visible) {
+    if (record.hiddenByPlaceholder && args.plan) {
+      warnHiddenPlaceholder(args.plan, args.element);
+    }
+    return false;
+  }
+  if (
+    textElementBelongsToOtherOwner({
+      element: args.element,
+      owner: args.owner,
+      owners: args.owners ?? args.plan?.owners,
+    })
+  ) {
+    return false;
+  }
+  if (suppressContainerTextIfNeeded(args.plan, args.element)) {
+    return false;
+  }
+  if (isExplicitTextElement(args.element)) {
+    return true;
+  }
+  return !hasReadableStructuralTextChild(args.element);
+}
+
+function allowTextFillForElement(args: {
+  plan?: ExportPagePlan | null;
+  element: HTMLElement;
+}) {
+  if (hasReadableStructuralTextChild(args.element) || hasReadableTextChild(args.element)) {
+    return false;
+  }
+  const role = readAttribute(args.element, "data-export-role", "data-html-visual-kind") ?? "";
+  return role === "badge" || role === "label-surface";
+}
+
+function nodeOrderingForElement(args: {
+  plan?: ExportPagePlan | null;
+  element: HTMLElement;
+  layerRole: PptExportLayerRole;
+  offset?: number;
+}) {
+  const record = recordForElement(args.plan, args.element);
+  const sourceOrder =
+    record?.sourceOrder ?? createDomOrderResolver(args.plan?.registry.pageElement ?? args.element)(args.element);
+  const zIndex = record?.zIndex ?? 0;
+  const canvasLayer = record?.canvasLayer ?? "content";
+  const canvasLayerOrder = record?.canvasLayerOrder ?? 0;
+  return {
+    sourceOrder,
+    zIndex,
+    layerRole: args.layerRole,
+    zOrder: layerZOrder({
+      layerRole: args.layerRole,
+      sourceOrder,
+      zIndex,
+      canvasLayer,
+      canvasLayerOrder,
+      offset: args.offset,
+    }),
+  };
 }
 
 function dedupeTextNodes(nodes: PptExportTextNode[]) {
@@ -901,15 +819,27 @@ function dedupeTextNodes(nodes: PptExportTextNode[]) {
   const deduped: PptExportTextNode[] = [];
 
   for (const node of nodes) {
-    const runKey =
-      node.runs
-        ?.map((run) => `${run.text}:${run.color ?? ""}:${run.bold ?? ""}:${run.italic ?? ""}`)
-        .join("|") ?? "";
-    const key = `${node.x}:${node.y}:${node.w}:${node.h}:${node.text}:${node.items?.join("|") ?? ""}:${runKey}`;
-    if (seen.has(key)) {
+    const normalizedText = normalizeMultilineText(node.items?.join("\n") ?? node.text);
+    const sourceKey = node.sourceElementId
+      ? `source:${node.sourceElementId}:${normalizedText}`
+      : "";
+    const geometryKey = [
+      "geom",
+      node.ownerId ?? "",
+      node.ownerKind ?? "",
+      Math.round(node.x * 1000),
+      Math.round(node.y * 1000),
+      Math.round(node.w * 1000),
+      Math.round(node.h * 1000),
+      normalizedText,
+    ].join(":");
+    if ((sourceKey && seen.has(sourceKey)) || seen.has(geometryKey)) {
       continue;
     }
-    seen.add(key);
+    if (sourceKey) {
+      seen.add(sourceKey);
+    }
+    seen.add(geometryKey);
     deduped.push(node);
   }
 
@@ -929,12 +859,6 @@ function buildChartThemeTokens(theme: PptExportThemeSnapshot): PptExportChartThe
 }
 
 function parseExportChartData(element: HTMLElement): ParsedExportChartData | null {
-  const chartSpec = parseHtmlChartSpec(element.getAttribute(HTML_CHART_SPEC_ATTRIBUTE));
-  const parsedSpec = chartSpec ? parsedExportChartDataFromHtmlSpec(chartSpec) : null;
-  if (parsedSpec) {
-    return parsedSpec;
-  }
-
   const raw = element.getAttribute("data-export-chart");
   if (!raw) {
     return null;
@@ -948,29 +872,6 @@ function parseExportChartData(element: HTMLElement): ParsedExportChartData | nul
   }
 }
 
-function parsedExportChartDataFromHtmlSpec(spec: HtmlChartSpec): ParsedExportChartData | null {
-  if (spec.kind === "bubble") {
-    return null;
-  }
-  return {
-    kind: spec.kind,
-    categories: spec.categories,
-    series: spec.series.map((series) => ({
-      name: series.label,
-      label: series.label,
-      values: series.values,
-      color: series.color ?? undefined,
-      role: series.role,
-      axis: series.axis,
-    })),
-    title: spec.title,
-    subtitle: spec.subtitle,
-    insight: spec.insight,
-    unit: spec.unit,
-    secondaryUnit: spec.kind === "combo" ? spec.secondaryUnit : undefined,
-  };
-}
-
 function normalizeChartContractFromParsed(args: {
   parsed: ParsedExportChartData;
   pageNumber: number;
@@ -980,7 +881,14 @@ function normalizeChartContractFromParsed(args: {
   fallbackInsight?: string;
 }): NormalizedChartContract | null {
   const kind = args.parsed.kind;
-  if (kind !== "bar" && kind !== "stacked" && kind !== "line" && kind !== "waterfall" && kind !== "combo") {
+  if (kind !== "bar" && kind !== "stacked" && kind !== "line" && kind !== "waterfall") {
+    if (kind) {
+      args.warnings.push({
+        code: "chart-native-unsupported",
+        pageNumber: args.pageNumber,
+        message: `${kind} chart on page ${args.pageNumber} is not yet supported as a native PowerPoint chart.`,
+      });
+    }
     return null;
   }
 
@@ -996,8 +904,7 @@ function normalizeChartContractFromParsed(args: {
         name: normalizeText(item.name ?? item.label ?? `Series ${index + 1}`) || `Series ${index + 1}`,
         values,
         color: parseCssColor(item.color)?.hex,
-        role: item.role ?? (kind === "combo" && index > 0 ? "line" : kind === "line" ? "line" : "bar"),
-        axis: item.axis ?? (kind === "combo" && index > 0 ? "secondary" : "primary"),
+        style: normalizeChartSeriesStyle(item.style),
       } satisfies PptExportChartSeries;
     })
     .filter((item) => item.values.length > 0);
@@ -1034,10 +941,266 @@ function normalizeChartContractFromParsed(args: {
     insight: normalizeText(args.parsed.insight ?? args.fallbackInsight ?? "") || undefined,
     xAxisTitle: args.parsed.xAxisTitle,
     yAxisTitle: args.parsed.yAxisTitle,
+    valueAxisMin: args.parsed.valueAxisMin,
+    valueAxisMax: args.parsed.valueAxisMax,
     colors: clippedSeries.map((item) => item.color).filter((item): item is string => Boolean(item)),
-    renderMode: kind === "waterfall" || kind === "combo" ? "hybrid" : "native",
-    fallbackMode: kind === "waterfall" ? "hybrid-waterfall" : kind === "combo" ? undefined : "native-chart",
+    style: normalizeChartNativeStyle(args.parsed.style),
+    renderMode: "native",
+    fallbackMode: kind === "waterfall" ? "native-waterfall-chart" : "native-chart",
   } satisfies NormalizedChartContract;
+}
+
+function normalizeMatrixItemColor(value: string | null | undefined, fallback: string) {
+  return parseCssColor(value)?.hex ?? fallback;
+}
+
+function semanticSpecFromNormalizedChart(
+  contract: Pick<
+    NormalizedChartContract,
+    | "chartKind"
+    | "labels"
+    | "series"
+    | "bubblePoints"
+    | "xAxisTitle"
+    | "yAxisTitle"
+    | "sizeAxisTitle"
+    | "valueAxisMin"
+    | "valueAxisMax"
+    | "colors"
+    | "semanticSpec"
+  >,
+): PptExportSemanticChartSpec | undefined {
+  if (contract.semanticSpec) {
+    return contract.semanticSpec;
+  }
+  if (contract.chartKind === "line") {
+    return {
+      kind: "line",
+      labels: contract.labels,
+      series: contract.series,
+      valueAxisMin: contract.valueAxisMin,
+      valueAxisMax: contract.valueAxisMax,
+      xAxisTitle: contract.xAxisTitle,
+      yAxisTitle: contract.yAxisTitle,
+    };
+  }
+  if (contract.chartKind === "waterfall") {
+    return {
+      kind: "waterfall",
+      labels: contract.labels,
+      values: contract.series[0]?.values ?? [],
+      colors: contract.colors,
+      yAxisTitle: contract.yAxisTitle,
+    };
+  }
+  if (contract.chartKind === "bubble") {
+    return {
+      kind: "bubble",
+      points: contract.bubblePoints ?? [],
+      xAxisTitle: contract.xAxisTitle,
+      yAxisTitle: contract.yAxisTitle,
+      sizeAxisTitle: contract.sizeAxisTitle,
+    };
+  }
+  return undefined;
+}
+
+function normalizeChartContractFromSpec(args: {
+  spec: HtmlChartSpec;
+  pageNumber: number;
+  warnings: PptExportWarning[];
+}): NormalizedChartContract | null {
+  if (args.spec.kind === "bubble") {
+    const points = args.spec.points
+      .map((point, index) => ({
+        label: normalizeText(point.label || `Point ${index + 1}`) || `Point ${index + 1}`,
+        x: Number(point.x) || 0,
+        y: Number(point.y) || 0,
+        size: Math.max(1, Number(point.size) || 1),
+        color: parseCssColor(point.color)?.hex,
+        group: normalizeText(point.group ?? "") || null,
+      }))
+      .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y) && Number.isFinite(point.size));
+
+    if (!points.length) {
+      args.warnings.push({
+        code: "chart-native-unsupported",
+        pageNumber: args.pageNumber,
+        message: `Bubble chart on page ${args.pageNumber} did not expose enough structured point data for editable PPTX export.`,
+      });
+      return null;
+    }
+
+    return {
+      chartKind: "bubble",
+      labels: points.map((point) => point.label),
+      series: [],
+      bubblePoints: points,
+      title: normalizeText(args.spec.title) || undefined,
+      subtitle: normalizeText(args.spec.subtitle) || undefined,
+      insight: normalizeText(args.spec.insight) || undefined,
+      xAxisTitle: normalizeText(args.spec.xLabel) || undefined,
+      yAxisTitle: normalizeText(args.spec.yLabel) || undefined,
+      sizeAxisTitle: normalizeText(args.spec.sizeLabel) || undefined,
+      colors: points.map((point) => point.color).filter((item): item is string => Boolean(item)),
+      style: normalizeChartNativeStyle(args.spec.style),
+      renderMode: "native",
+      fallbackMode: "native-bubble-chart",
+    } satisfies NormalizedChartContract;
+  }
+
+  if (args.spec.kind === "matrix") {
+    const fallbackColors = args.spec.colors?.length ? args.spec.colors : ["#F8F3EC", "#EAF3F5", "#F5E7DF", "#EFF2EC"];
+    const items: PptExportMatrixItem[] = args.spec.items
+      .map((item, index) => ({
+        label: normalizeText(item.label || `Item ${index + 1}`) || `Item ${index + 1}`,
+        detail: normalizeText(item.detail),
+        x: clamp(Number(item.x) || 0, 0, 1),
+        y: clamp(Number(item.y) || 0, 0, 1),
+        w: clamp(Number(item.w) || 0.28, 0.04, 1),
+        h: clamp(Number(item.h) || 0.18, 0.04, 1),
+        color: normalizeMatrixItemColor(item.color, fallbackColors[index % fallbackColors.length] ?? "#FFFFFF"),
+        textColor: parseCssColor(item.textColor)?.hex ?? null,
+      }))
+      .filter((item) => item.label);
+    if (!items.length) {
+      args.warnings.push({
+        code: "chart-native-unsupported",
+        pageNumber: args.pageNumber,
+        message: `Matrix chart on page ${args.pageNumber} did not expose enough structured item data for editable PPTX export.`,
+      });
+      return null;
+    }
+    const quadrants: PptExportMatrixQuadrant[] | undefined = args.spec.quadrants?.map((quadrant, index) => ({
+      label: normalizeText(quadrant.label),
+      x: clamp(Number(quadrant.x) || 0, 0, 1),
+      y: clamp(Number(quadrant.y) || 0, 0, 1),
+      w: clamp(Number(quadrant.w) || 0.5, 0, 1),
+      h: clamp(Number(quadrant.h) || 0.5, 0, 1),
+      color: normalizeMatrixItemColor(quadrant.color, fallbackColors[index % fallbackColors.length] ?? "#FFFFFF"),
+      textColor: parseCssColor(quadrant.textColor)?.hex ?? null,
+    }));
+    const callout: PptExportMatrixCallout | null = args.spec.callout
+      ? {
+          title: normalizeText(args.spec.callout.title),
+          body: normalizeText(args.spec.callout.body),
+          x: clamp(Number(args.spec.callout.x) || 0.68, 0, 1),
+          y: clamp(Number(args.spec.callout.y) || 0.12, 0, 1),
+          w: clamp(Number(args.spec.callout.w) || 0.24, 0.04, 1),
+          h: clamp(Number(args.spec.callout.h) || 0.2, 0.04, 1),
+          color: normalizeMatrixItemColor(args.spec.callout.color, "#FFFFFF"),
+          textColor: parseCssColor(args.spec.callout.textColor)?.hex ?? null,
+          borderColor: parseCssColor(args.spec.callout.borderColor)?.hex ?? null,
+        }
+      : null;
+    return {
+      chartKind: "matrix",
+      labels: [],
+      series: [],
+      title: normalizeText(args.spec.title) || undefined,
+      subtitle: normalizeText(args.spec.subtitle) || undefined,
+      insight: normalizeText(args.spec.insight) || undefined,
+      xAxisTitle: normalizeText(args.spec.xLabel) || undefined,
+      yAxisTitle: normalizeText(args.spec.yLabel) || undefined,
+      colors: items.map((item) => item.color).filter((item): item is string => Boolean(item)),
+      renderMode: "native",
+      fallbackMode: "native-matrix-shapes",
+      semanticSpec: {
+        kind: "matrix",
+        xLabel: normalizeText(args.spec.xLabel) || "X axis",
+        yLabel: normalizeText(args.spec.yLabel) || "Y axis",
+        xMinLabel: normalizeText(args.spec.xMinLabel ?? ""),
+        xMaxLabel: normalizeText(args.spec.xMaxLabel ?? ""),
+        yMinLabel: normalizeText(args.spec.yMinLabel ?? ""),
+        yMaxLabel: normalizeText(args.spec.yMaxLabel ?? ""),
+        plotBounds: args.spec.plotBounds
+          ? {
+              x: clamp(Number(args.spec.plotBounds.x) || 0, 0, 1),
+              y: clamp(Number(args.spec.plotBounds.y) || 0, 0, 1),
+              w: clamp(Number(args.spec.plotBounds.w) || 1, 0, 1),
+              h: clamp(Number(args.spec.plotBounds.h) || 1, 0, 1),
+            }
+          : null,
+        quadrants,
+        items,
+        callout,
+        colors: items.map((item) => item.color).filter((item): item is string => Boolean(item)),
+      },
+    } satisfies NormalizedChartContract;
+  }
+
+  const labels = args.spec.categories.map((label) => normalizeText(label)).filter(Boolean);
+  const series = args.spec.series
+    .map((item, index) => {
+      const role =
+        args.spec.kind === "combo"
+          ? item.role ?? (index === 0 ? "bar" : "line")
+          : args.spec.kind === "line"
+            ? "line"
+            : "bar";
+      const axis =
+        args.spec.kind === "combo"
+          ? item.axis ?? (index > 0 ? "secondary" : "primary")
+          : "primary";
+      return {
+        name: normalizeText(item.label || `Series ${index + 1}`) || `Series ${index + 1}`,
+        values: item.values.slice(0, labels.length).map((value) => Number(value) || 0),
+        color: parseCssColor(item.color)?.hex,
+        role,
+        axis,
+        style: normalizeChartSeriesStyle(item.style),
+      };
+    })
+    .filter((item) => item.values.length > 0);
+
+  if (!labels.length || !series.length) {
+    args.warnings.push({
+      code: "chart-native-unsupported",
+      pageNumber: args.pageNumber,
+      message: `Chart on page ${args.pageNumber} did not expose enough structured data for editable PPTX export.`,
+    });
+    return null;
+  }
+
+  return {
+    chartKind: args.spec.kind,
+    labels,
+    series,
+    title: normalizeText(args.spec.title) || undefined,
+    subtitle: normalizeText(args.spec.subtitle) || undefined,
+    insight: normalizeText(args.spec.insight) || undefined,
+    yAxisTitle: args.spec.unit || undefined,
+    secondaryYAxisTitle:
+      args.spec.kind === "combo" ? args.spec.secondaryUnit || undefined : undefined,
+    valueAxisMin: args.spec.valueAxisMin,
+    valueAxisMax: args.spec.valueAxisMax,
+    colors: series.map((item) => item.color).filter((item): item is string => Boolean(item)),
+    style: normalizeChartNativeStyle(args.spec.style),
+    renderMode: "native",
+    fallbackMode:
+      args.spec.kind === "waterfall"
+        ? "native-waterfall-chart"
+        : args.spec.kind === "combo"
+          ? "native-combo-chart"
+          : "native-chart",
+  } satisfies NormalizedChartContract;
+}
+
+function normalizeChartContractFromElement(args: {
+  element: HTMLElement;
+  pageNumber: number;
+  warnings: PptExportWarning[];
+}) {
+  const spec = parseHtmlChartSpec(args.element.getAttribute(HTML_CHART_SPEC_ATTRIBUTE));
+  if (!spec) {
+    return null;
+  }
+
+  return normalizeChartContractFromSpec({
+    spec,
+    pageNumber: args.pageNumber,
+    warnings: args.warnings,
+  });
 }
 
 function inferChartLayoutRole(frame: ChartFrameCandidate) {
@@ -1086,38 +1249,20 @@ function inferChartLayoutRole(frame: ChartFrameCandidate) {
   return "chart-panel" as const;
 }
 
-function collectChartSupportRoots(frame: ChartFrameCandidate) {
-  const roots: HTMLElement[] = [];
-  const pageBody = frame.element.closest<HTMLElement>("[data-page-body]");
-  const frameParent = frame.element.parentElement;
-
-  if (pageBody) {
-    for (const child of Array.from(pageBody.children)) {
-      if (!isHtmlElementNode(child) || child.contains(frame.element)) {
-        continue;
-      }
-      roots.push(child);
-    }
-  }
-
-  if (frameParent) {
-    for (const child of Array.from(frameParent.children)) {
-      if (!isHtmlElementNode(child) || child === frame.element) {
-        continue;
-      }
-      roots.push(child);
-    }
-  }
-
-  return roots.filter((root, index) => roots.indexOf(root) === index);
-}
-
-function buildMeasuredTextNode(args: {
+function buildTextNodeFromElement(args: {
   pageElement: HTMLElement;
   element: HTMLElement;
   view: Window;
-  text: string;
-  items?: string[];
+  owner?: ExportOwner;
+  sourceElementId?: string;
+  useFixedBounds?: boolean;
+  allowFill?: boolean;
+  ordering?: {
+    sourceOrder?: number;
+    zIndex?: number;
+    zOrder?: number;
+    layerRole?: PptExportLayerRole;
+  };
 }) {
   const rect = measureElementRect(args.pageElement, args.element);
   if (!rect.w || !rect.h) {
@@ -1125,29 +1270,22 @@ function buildMeasuredTextNode(args: {
   }
 
   const computed = args.view.getComputedStyle(args.element);
-  if (isElementHiddenForExport(args.element, args.view)) {
-    return null;
-  }
   const color = parseCssColor(computed.color)?.hex ?? DEFAULT_TEXT;
   const fillColor = parseCssColor(computed.backgroundColor);
   const computedFontSize = Number.parseFloat(computed.fontSize || "");
   const fontSizePx = Number.isFinite(computedFontSize) ? computedFontSize : 16;
-  const lineHeightPx = Math.max(parseNumericValue(computed.lineHeight || ""), fontSizePx * 1.2);
-  const insets = resolveElementInsets(computed);
-  const textBox = resolveVisibleTextBox({
-    rect,
-    insets,
-    lineHeightPx,
-  });
-  const text = normalizeText(args.text);
-  const items = args.items?.map((item) => normalizeText(item)).filter(Boolean);
-  if (!text && !items?.length) {
+  const lineHeightPx = resolveComputedLineHeightPx(computed, fontSizePx);
+  const items = args.element.matches("ul,ol")
+    ? Array.from(args.element.querySelectorAll(":scope li"))
+        .map((item) => normalizeText(item.textContent ?? ""))
+        .filter(Boolean)
+    : undefined;
+  const text = normalizeMultilineText(args.element.innerText ?? args.element.textContent ?? "");
+  if (!text) {
     return null;
   }
-
-  const fitted = fitPptTextLayout({
-    widthPx: textBox.widthPx,
-    targetHeightPx: textBox.heightPx,
+  const baseMeasurement = measurePptTextLayout({
+    widthPx: Math.max(24, rect.w),
     fontSizePx,
     fontFamily: primaryFontFamily(computed.fontFamily) || "Arial",
     fontWeight: computed.fontWeight || "400",
@@ -1157,264 +1295,177 @@ function buildMeasuredTextNode(args: {
     items,
     whiteSpace: resolveElementTextLayoutWhiteSpace(args.element),
   });
-  const heightPx = resolvePptTextNodeHeightPx({
+  const isList = Boolean(items?.length);
+  const allowedLines = Math.max(1, Math.floor(Math.max(rect.h, lineHeightPx) / Math.max(lineHeightPx, 1)));
+  const overflowRatio =
+    baseMeasurement.lineCount > allowedLines ? allowedLines / Math.max(baseMeasurement.lineCount, 1) : 1;
+  const adjustedFontSizePx =
+    overflowRatio < 1 ? fontSizePx * Math.max(0.66, overflowRatio) : fontSizePx;
+  const adjustedLineHeightPx = Math.max(1, lineHeightPx * (adjustedFontSizePx / Math.max(fontSizePx, 1)));
+  const measurement =
+    adjustedFontSizePx === fontSizePx
+      ? baseMeasurement
+      : measurePptTextLayout({
+          widthPx: Math.max(24, rect.w),
+          fontSizePx: adjustedFontSizePx,
+          fontFamily: primaryFontFamily(computed.fontFamily) || "Arial",
+          fontWeight: computed.fontWeight || "400",
+          fontStyle: computed.fontStyle || "normal",
+          lineHeightPx: adjustedLineHeightPx,
+          text,
+          items,
+          whiteSpace: resolveElementTextLayoutWhiteSpace(args.element),
+        });
+  const rotate = resolveElementRotationDegrees(args.element);
+  const textBoxWidthPx = resolvePptTextBoxWidthPx({
     rect,
-    insets,
-    measuredHeightPx: fitted.measurement.height,
+    measurement,
+    lineHeightPx: adjustedLineHeightPx,
+    fontSizePx: adjustedFontSizePx,
+    text,
+    rotate,
   });
+  const textBoxHeightPx =
+    Math.abs(rotate ?? 0) % 180 > 1
+      ? Math.max(
+          adjustedLineHeightPx + 8,
+          Math.min(Math.max(rect.h, measurement.height), adjustedLineHeightPx * 1.35 + 8),
+        )
+      : Math.max(rect.h, measurement.height) + 8;
 
   return {
     kind: "text",
+    sourceElementId: args.sourceElementId ?? sourceElementIdForElement(args.pageElement, args.element, "text"),
+    ownerId: args.owner?.id,
+    ownerKind: args.owner?.kind ?? (args.element.matches("[data-html-block-id]") ? "block" : undefined),
+    sourceOrder: args.ordering?.sourceOrder,
+    zIndex: args.ordering?.zIndex,
+    zOrder: args.ordering?.zOrder,
+    layerRole: args.ordering?.layerRole ?? "text",
     x: pxToInches(rect.x),
     y: pxToInches(rect.y),
-    w: pxToInches(rect.w),
-    h: pxToInches(heightPx),
+    w: pxToInches(args.useFixedBounds ? Math.max(rect.w, textBoxWidthPx) : textBoxWidthPx),
+    h: pxToInches(args.useFixedBounds ? Math.max(rect.h, textBoxHeightPx) : textBoxHeightPx),
     text,
     items,
-    runs: items?.length
-      ? undefined
-      : collectInlineTextRuns({
-          element: args.element,
-          view: args.view,
-          baseText: text,
-          baseFontSizePx: fontSizePx,
-        }),
-    fontSize: pxFontToPoints(fitted.fontSizePx),
+    fontSize: pxFontToPoints(adjustedFontSizePx),
     fontFamily: primaryFontFamily(computed.fontFamily),
     color,
     bold: Number.parseInt(computed.fontWeight || "400", 10) >= 600,
     italic: computed.fontStyle === "italic",
     align: normalizeAlign(computed.textAlign),
-    fillColor: fillColor?.alpha && fillColor.alpha > 0 ? fillColor.hex : null,
-    rotation: parseCssRotation(computed.transform),
+    valign: normalizeVerticalAlign(computed),
+    rotate,
+    fillColor: args.allowFill && fillColor?.alpha && fillColor.alpha > 0 ? fillColor.hex : null,
+    lineSpacingMultiple: toLineSpacingMultiple(adjustedLineHeightPx, adjustedFontSizePx),
+    paraSpaceAfterPt: resolveParagraphSpacingAfterPt({
+      computed,
+      lineHeightPx: adjustedLineHeightPx,
+      isList,
+    }),
+    paraSpaceBeforePt: resolveParagraphSpacingBeforePt(computed),
+    listStyle: isList
+      ? resolveListStyle({
+          element: args.element,
+          computed,
+          fontSizePx: adjustedFontSizePx,
+        })
+      : undefined,
   } satisfies PptExportTextNode;
 }
 
-function buildTextNodeFromElement(args: {
-  pageElement: HTMLElement;
-  element: HTMLElement;
-  view: Window;
-}) {
-  return buildMeasuredTextNode({
-    ...args,
-    text: args.element.innerText ?? "",
-  });
-}
-
-function collectChartSupportTextNodes(args: {
-  pageElement: HTMLElement;
-  frame: ChartFrameCandidate;
-}) {
-  const view = args.pageElement.ownerDocument.defaultView;
-  if (!view) {
-    return [];
-  }
-
-  const roots = collectChartSupportRoots(args.frame);
-  const collected: PptExportTextNode[] = [];
-  const seenElements = new Set<HTMLElement>();
-
-  for (const root of roots) {
-    const listContainers = Array.from(root.querySelectorAll<HTMLElement>("ul,ol"));
-    for (const list of listContainers) {
-      if (list.closest('[data-html-visual-kind="chart-frame"]') || list.closest("[data-html-block-id]")) {
-        continue;
-      }
-      if (seenElements.has(list)) {
-        continue;
-      }
-      seenElements.add(list);
-      const rect = measureElementRect(args.pageElement, list);
-      const items = Array.from(list.querySelectorAll(":scope li"))
-        .map((item) => normalizeText(item.textContent ?? ""))
-        .filter(Boolean);
-      if (!rect.w || !rect.h || items.length === 0) {
-        continue;
-      }
-      const node = buildMeasuredTextNode({
-        pageElement: args.pageElement,
-        element: list,
-        view,
-        text: items.join("\n"),
-        items,
-      });
-      if (node) {
-        collected.push(node);
-      }
-    }
-
-    const candidates = Array.from(
-      root.querySelectorAll<HTMLElement>(
-        'h1,h2,h3,h4,h5,h6,p,[data-html-visual-kind="rail"],[data-html-visual-kind="annotation"],[data-html-visual-kind="badge"],div',
-      ),
-    );
-
-    for (const element of candidates) {
-      if (seenElements.has(element)) {
-        continue;
-      }
-      if (element.closest('[data-html-visual-kind="chart-frame"]') || element.closest("[data-html-block-id]")) {
-        continue;
-      }
-      if (element.matches("div") && element.querySelector("ul,ol,h1,h2,h3,h4,h5,h6,p,[data-html-visual-kind]")) {
-        continue;
-      }
-      const node = buildTextNodeFromElement({
-        pageElement: args.pageElement,
-        element,
-        view,
-      });
-      if (!node) {
-        continue;
-      }
-      seenElements.add(element);
-      collected.push(node);
-    }
-  }
-
-  return dedupeTextNodes(collected);
-}
-
-const SCIENTIFIC_DIAGRAM_TEXT_SELECTOR = [
-  ".scientific-diagram-kicker",
-  ".scientific-diagram-title",
-  ".scientific-diagram-top-label",
-  ".scientific-diagram-side-note",
-  ".scientific-diagram-layer-label",
-  ".scientific-diagram-bottom-label",
-  ".scientific-diagram-caption",
-].join(",");
-
-function isScientificDiagramFrame(frame: ChartFrameCandidate) {
-  return (
-    frame.element.getAttribute("data-html-module-kind") === SCIENTIFIC_DIAGRAM_MODULE_KIND ||
-    frame.element.hasAttribute(SCIENTIFIC_DIAGRAM_SPEC_ATTRIBUTE) ||
-    frame.element.classList.contains("scientific-diagram-shell")
+function hasReadableTextChild(element: HTMLElement) {
+  return Array.from(element.children).some(
+    (child) =>
+      normalizeText((child instanceof HTMLElement ? child.innerText : child.textContent) || "").length > 0,
   );
 }
 
-function collectScientificDiagramTextNodes(args: {
-  pageElement: HTMLElement;
-  frame: ChartFrameCandidate;
-}) {
-  if (!isScientificDiagramFrame(args.frame)) {
-    return [];
-  }
-
-  const view = args.pageElement.ownerDocument.defaultView;
-  if (!view) {
-    return [];
-  }
-
-  const collected: PptExportTextNode[] = [];
-  const candidates = Array.from(
-    args.frame.element.querySelectorAll<HTMLElement>(SCIENTIFIC_DIAGRAM_TEXT_SELECTOR),
-  );
-
-  for (const element of candidates) {
-    const node = buildTextNodeFromElement({
-      pageElement: args.pageElement,
-      element,
-      view,
-    });
-    if (node) {
-      collected.push(node);
+function hasMultipleReadableTextChildren(element: HTMLElement) {
+  let readableChildCount = 0;
+  for (const child of Array.from(element.children)) {
+    const text = normalizeText((child instanceof HTMLElement ? child.innerText : child.textContent) || "");
+    if (!text) {
+      continue;
+    }
+    readableChildCount += 1;
+    if (readableChildCount > 1) {
+      return true;
     }
   }
-
-  return dedupeTextNodes(collected);
+  return false;
 }
 
-function collectChartFrameSupportTextNodes(args: {
-  pageElement: HTMLElement;
-  frame: ChartFrameCandidate;
-}) {
-  return dedupeTextNodes([
-    ...collectChartSupportTextNodes(args),
-    ...collectScientificDiagramTextNodes(args),
-  ]);
-}
+function hasReadableStructuralTextChild(element: HTMLElement) {
+  const structuralSelector = [
+    '[data-html-fit-role="content"]',
+    "[data-html-block-id]",
+    "[data-html-module-kind]",
+    "[data-html-visual-kind]",
+    "[data-export-role]",
+    `[${HTML_TABLE_SPEC_ATTRIBUTE}]`,
+    `[${HTML_CHART_SPEC_ATTRIBUTE}]`,
+    "section",
+    "article",
+    "main",
+    "aside",
+    "header",
+    "footer",
+    "figure",
+    "table",
+    "thead",
+    "tbody",
+    "tfoot",
+    "tr",
+    "td",
+    "th",
+    "ul",
+    "ol",
+    "li",
+    "p",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+  ].join(",");
 
-async function waitForFrameReady(iframe: HTMLIFrameElement) {
-  if (iframe.contentDocument?.readyState === "complete") {
-    await waitForRenderableSurface(iframe.contentDocument);
-    return;
-  }
-
-  await new Promise<void>((resolve) => {
-    iframe.addEventListener("load", () => resolve(), { once: true });
+  return Array.from(element.children).some((child) => {
+    if (!(child instanceof HTMLElement)) {
+      return false;
+    }
+    const text = normalizeMultilineText(child.innerText || child.textContent || "");
+    if (!text) {
+      return false;
+    }
+    return child.matches(structuralSelector) || Boolean(child.querySelector(structuralSelector));
   });
-
-  if (iframe.contentDocument) {
-    await waitForRenderableSurface(iframe.contentDocument);
-  }
 }
 
-async function collectExportPageFrames(args: {
-  document: Document;
-  htmlReport: GeneratedHtmlReport;
-}) {
-  const pagePreviews = buildHtmlReportPagePreviews(args.htmlReport);
-  const container = args.document.createElement("div");
-  container.setAttribute("data-ppt-transient-export-frames", "true");
-  container.style.cssText = `
-    position: fixed;
-    visibility: hidden;
-    pointer-events: none;
-    opacity: 0;
-    top: -10000px;
-    left: 0;
-    width: ${HTML_REPORT_PAGE_WIDTH}px;
-    height: ${HTML_REPORT_PAGE_HEIGHT}px;
-    overflow: hidden;
-  `;
-  args.document.body.appendChild(container);
-
-  const frames = pagePreviews.map((pagePreview) => {
-    const iframe = args.document.createElement("iframe");
-    iframe.setAttribute("aria-hidden", "true");
-    iframe.setAttribute("sandbox", "allow-same-origin");
-    iframe.setAttribute("data-ppt-transient-export-page-frame", String(pagePreview.pageNumber));
-    iframe.tabIndex = -1;
-    iframe.style.cssText = `
-      display: block;
-      width: ${HTML_REPORT_PAGE_WIDTH}px;
-      height: ${HTML_REPORT_PAGE_HEIGHT}px;
-      border: 0;
-    `;
-    iframe.srcdoc = pagePreview.srcDoc;
-    container.appendChild(iframe);
-    return iframe;
-  });
-
-  await Promise.all(frames.map((frame) => waitForFrameReady(frame)));
-
-  const collected = frames
-    .map((iframe) => {
-      const document = iframe.contentDocument;
-      const pageElement = document?.querySelector("section.page");
-      if (!document || !isHtmlElementNode(pageElement)) {
-        return null;
-      }
-
-      return {
-        iframe,
-        document,
-        pageElement,
-      } satisfies ExportPageFrame;
-    })
-    .filter((frame): frame is ExportPageFrame => Boolean(frame));
-
-  return {
-    frames: collected,
-    cleanup: () => container.remove(),
-  };
+function isStructuralTextOwner(element: HTMLElement) {
+  return element.matches(
+    [
+      "[data-html-block-id]",
+      "[data-html-module-kind]",
+      '[data-html-visual-kind="chart-frame"]',
+      `[${HTML_TABLE_SPEC_ATTRIBUTE}]`,
+      `[${HTML_CHART_SPEC_ATTRIBUTE}]`,
+      "table",
+      "thead",
+      "tbody",
+      "tfoot",
+      "tr",
+    ].join(","),
+  );
 }
 
 function collectBlockTextNodes(args: {
   pageElement: HTMLElement;
   warnings: PptExportWarning[];
   pageNumber: number;
+  skipTextWithinElements?: HTMLElement[];
+  plan?: ExportPagePlan | null;
 }) {
   const textNodes: PptExportTextNode[] = [];
   const view = args.pageElement.ownerDocument.defaultView;
@@ -1427,17 +1478,32 @@ function collectBlockTextNodes(args: {
   }
 
   for (const element of blockElements) {
-    const blockId = element.getAttribute("data-html-block-id") ?? "unknown";
-    const blockKind = element.getAttribute("data-html-block-kind") ?? "text";
-    if (isElementHiddenForExport(element, view)) {
+    if (args.skipTextWithinElements?.some((container) => container.contains(element))) {
       continue;
     }
+    if (
+      !canEmitTextElement({
+        plan: args.plan,
+        element,
+        owners: args.plan?.owners,
+      })
+    ) {
+      continue;
+    }
+
+    const blockId = element.getAttribute("data-html-block-id") ?? "unknown";
+    const blockKind = element.getAttribute("data-html-block-kind") ?? "text";
 
     const rect = measureElementRect(args.pageElement, element);
     if (!rect.w || !rect.h) {
       continue;
     }
 
+    const computed = view.getComputedStyle(element);
+    const color = parseCssColor(computed.color)?.hex ?? DEFAULT_TEXT;
+    const fillColor = parseCssColor(computed.backgroundColor);
+    const computedFontSize = Number.parseFloat(computed.fontSize || "");
+    const fontSizePx = Number.isFinite(computedFontSize) ? computedFontSize : 16;
     const items =
       blockKind === "list"
         ? Array.from(element.querySelectorAll(":scope li"))
@@ -1458,110 +1524,188 @@ function collectBlockTextNodes(args: {
       continue;
     }
 
-    const node = buildMeasuredTextNode({
-      pageElement: args.pageElement,
-      element,
-      view,
+    const lineHeightPx = resolveComputedLineHeightPx(computed, fontSizePx);
+    const contentHeight = Math.max(rect.h, element.scrollHeight || 0, element.offsetHeight || 0);
+    const baseMeasurement = measurePptTextLayout({
+      widthPx: Math.max(24, rect.w),
+      fontSizePx,
+      fontFamily: primaryFontFamily(computed.fontFamily) || "Arial",
+      fontWeight: computed.fontWeight || "400",
+      fontStyle: computed.fontStyle || "normal",
+      lineHeightPx,
       text,
       items,
+      whiteSpace: resolveElementTextLayoutWhiteSpace(element),
     });
-    if (node) {
-      textNodes.push(node);
-    }
+    const allowedLines = Math.max(1, Math.round(contentHeight / lineHeightPx));
+    const estimatedLineCount = Math.max(1, baseMeasurement.lineCount);
+    const overflowRatio =
+      estimatedLineCount > allowedLines ? allowedLines / estimatedLineCount : 1;
+    const adjustedFontSizePx =
+      overflowRatio < 1 ? fontSizePx * Math.max(0.72, overflowRatio) : fontSizePx;
+    const adjustedLineHeightPx = Math.max(1, lineHeightPx * (adjustedFontSizePx / Math.max(fontSizePx, 1)));
+    const adjustedMeasurement = measurePptTextLayout({
+      widthPx: Math.max(24, rect.w),
+      fontSizePx: adjustedFontSizePx,
+      fontFamily: primaryFontFamily(computed.fontFamily) || "Arial",
+      fontWeight: computed.fontWeight || "400",
+      fontStyle: computed.fontStyle || "normal",
+      lineHeightPx: adjustedLineHeightPx,
+      text,
+      items,
+      whiteSpace: resolveElementTextLayoutWhiteSpace(element),
+    });
+    const textBoxWidthPx = resolvePptTextBoxWidthPx({
+      rect,
+      measurement: adjustedMeasurement,
+      lineHeightPx: adjustedLineHeightPx,
+      fontSizePx: adjustedFontSizePx,
+      text,
+      rotate: resolveElementRotationDegrees(element),
+    });
+    const rotate = resolveElementRotationDegrees(element);
+    const textBoxHeightPx =
+      Math.abs(rotate ?? 0) % 180 > 1
+        ? Math.max(
+            adjustedLineHeightPx + 8,
+            Math.min(
+              Math.max(contentHeight, adjustedMeasurement.height),
+              adjustedLineHeightPx * 1.35 + 8,
+            ),
+          )
+        : Math.max(contentHeight, adjustedMeasurement.height) + 8;
+
+    textNodes.push({
+      kind: "text",
+      sourceElementId: sourceElementIdForElement(args.pageElement, element, "block"),
+      ownerId: blockId,
+      ownerKind: "block",
+      ...nodeOrderingForElement({
+        plan: args.plan,
+        element,
+        layerRole: "text",
+        offset: 5,
+      }),
+      x: pxToInches(rect.x),
+      y: pxToInches(rect.y),
+      w: pxToInches(textBoxWidthPx),
+      h: pxToInches(textBoxHeightPx),
+      text,
+      items,
+      fontSize: pxFontToPoints(adjustedFontSizePx),
+      fontFamily: primaryFontFamily(computed.fontFamily),
+      color,
+      bold: Number.parseInt(computed.fontWeight || "400", 10) >= 600,
+      italic: computed.fontStyle === "italic",
+      align: normalizeAlign(computed.textAlign),
+      valign: normalizeVerticalAlign(computed),
+      rotate,
+      fillColor:
+        allowTextFillForElement({ plan: args.plan, element }) && fillColor?.alpha && fillColor.alpha > 0
+          ? fillColor.hex
+          : null,
+      lineSpacingMultiple: toLineSpacingMultiple(adjustedLineHeightPx, adjustedFontSizePx),
+      paraSpaceAfterPt: resolveParagraphSpacingAfterPt({
+        computed,
+        lineHeightPx: adjustedLineHeightPx,
+        isList: Boolean(items?.length),
+      }),
+      paraSpaceBeforePt: resolveParagraphSpacingBeforePt(computed),
+      listStyle: items?.length
+        ? resolveListStyle({
+            element,
+            computed,
+            fontSizePx: adjustedFontSizePx,
+          })
+        : undefined,
+    });
   }
 
   return textNodes;
 }
 
-function textNodeOverlapsExisting(
-  candidate: PptExportTextNode,
-  existingNodes: PptExportTextNode[],
-) {
-  const candidateText = normalizeText(candidate.text);
-  return existingNodes.some((node) => {
-    if (normalizeText(node.text) !== candidateText) {
-      return false;
-    }
-    const horizontalOverlap = Math.max(
-      0,
-      Math.min(candidate.x + candidate.w, node.x + node.w) - Math.max(candidate.x, node.x),
-    );
-    const verticalOverlap = Math.max(
-      0,
-      Math.min(candidate.y + candidate.h, node.y + node.h) - Math.max(candidate.y, node.y),
-    );
-    const overlapArea = horizontalOverlap * verticalOverlap;
-    const candidateArea = Math.max(candidate.w * candidate.h, 0.01);
-    return overlapArea / candidateArea > 0.58;
-  });
-}
-
-function hasTextCandidateDescendant(element: HTMLElement) {
-  return Boolean(
-    element.querySelector(
-      'h1,h2,h3,h4,h5,h6,p,button,label,figcaption,li,[data-html-block-id],[data-html-visual-kind="annotation"],[data-html-visual-kind="rail"],[data-html-visual-kind="badge"]',
-    ),
-  );
-}
-
-function shouldCollectLooseTextElement(element: HTMLElement) {
-  if (
-    element.getAttribute("data-html-canvas-placeholder") === "true" ||
-    element.closest("[data-html-block-id]") ||
-    element.closest('[data-html-visual-kind="chart-frame"]') ||
-    element.closest("[data-ppt-transient-export-frames]")
-  ) {
-    return false;
-  }
-
-  const text = normalizeText(element.innerText ?? element.textContent ?? "");
-  if (!text || text.length < 2) {
-    return false;
-  }
-
-  const tagName = element.tagName.toLowerCase();
-  if (tagName === "script" || tagName === "style" || tagName === "svg") {
-    return false;
-  }
-
-  if (["h1", "h2", "h3", "h4", "h5", "h6", "p", "button", "label", "figcaption", "li"].includes(tagName)) {
-    return true;
-  }
-
-  const visualKind = element.getAttribute("data-html-visual-kind");
-  if (visualKind === "annotation" || visualKind === "rail" || visualKind === "badge" || visualKind === "label-surface") {
-    return true;
-  }
-
-  if ((tagName === "div" || tagName === "span") && !hasTextCandidateDescendant(element)) {
-    return true;
-  }
-
-  return false;
-}
-
-function collectLooseTextNodes(args: {
+function collectLooseContentTextNodes(args: {
   pageElement: HTMLElement;
-  existingTextNodes: PptExportTextNode[];
+  skipTextWithinElements?: HTMLElement[];
+  plan?: ExportPagePlan | null;
 }) {
   const view = args.pageElement.ownerDocument.defaultView;
   if (!view) {
     return [];
   }
 
-  const collected: PptExportTextNode[] = [];
   const candidates = Array.from(
     args.pageElement.querySelectorAll<HTMLElement>(
-      'h1,h2,h3,h4,h5,h6,p,button,label,figcaption,li,span,div,[data-html-visual-kind="annotation"],[data-html-visual-kind="rail"],[data-html-visual-kind="badge"],[data-html-visual-kind="label-surface"]',
+      [
+        '[data-html-fit-role="content"]',
+        "[data-html-diagram-spec] h1",
+        "[data-html-diagram-spec] h2",
+        "[data-html-diagram-spec] h3",
+        "[data-html-diagram-spec] h4",
+        "[data-html-diagram-spec] h5",
+        "[data-html-diagram-spec] h6",
+        "[data-html-diagram-spec] p",
+        ".surface-card h1",
+        ".surface-card h2",
+        ".surface-card h3",
+        ".surface-card h4",
+        ".surface-card h5",
+        ".surface-card h6",
+        ".surface-card p",
+        ".page-footer",
+        ".eyebrow",
+        ".lede",
+      ].join(","),
     ),
-  ).sort((left, right) => left.childElementCount - right.childElementCount);
+  );
+  const textNodes: PptExportTextNode[] = [];
 
   for (const element of candidates) {
-    if (!shouldCollectLooseTextElement(element)) {
+    if (element.closest("[data-html-block-id]")) {
+      continue;
+    }
+    if (isStructuralTextOwner(element)) {
+      continue;
+    }
+    if (args.skipTextWithinElements?.some((container) => container.contains(element))) {
+      continue;
+    }
+    if (
+      !canEmitTextElement({
+        plan: args.plan,
+        element,
+        owners: args.plan?.owners,
+      })
+    ) {
       continue;
     }
 
-    if (isElementHiddenForExport(element, view)) {
+    const text = normalizeMultilineText(element.innerText || element.textContent || "");
+    if (!text) {
+      continue;
+    }
+
+    const childContent = Array.from(
+      element.querySelectorAll<HTMLElement>('[data-html-fit-role="content"]'),
+    ).some(
+      (child) =>
+        child !== element &&
+        !child.closest("[data-html-block-id]") &&
+        normalizeMultilineText(child.innerText || child.textContent || ""),
+    );
+    if (childContent) {
+      continue;
+    }
+    if (hasReadableStructuralTextChild(element)) {
+      continue;
+    }
+
+    const computed = view.getComputedStyle(element);
+    if (
+      computed.display === "none" ||
+      computed.visibility === "hidden" ||
+      Number.parseFloat(computed.opacity || "1") <= 0
+    ) {
       continue;
     }
 
@@ -1569,92 +1713,1343 @@ function collectLooseTextNodes(args: {
       pageElement: args.pageElement,
       element,
       view,
+      useFixedBounds: true,
+      allowFill: allowTextFillForElement({ plan: args.plan, element }),
+      ordering: nodeOrderingForElement({
+        plan: args.plan,
+        element,
+        layerRole: "text",
+        offset: 5,
+      }),
     });
-    if (!node || textNodeOverlapsExisting(node, [...args.existingTextNodes, ...collected])) {
+    if (!node) {
       continue;
     }
-    collected.push(node);
+
+    textNodes.push({
+      ...node,
+      text,
+    });
   }
 
-  return dedupeTextNodes(collected);
+  return dedupeTextNodes(textNodes);
+}
+
+function collectDiagramElements(pageElement: HTMLElement) {
+  return Array.from(pageElement.querySelectorAll<HTMLElement>("[data-html-diagram-spec]"));
+}
+
+function createExportOwner(args: {
+  pageElement: HTMLElement;
+  element: HTMLElement;
+  kind: PptExportOwnerKind;
+  idPrefix?: string;
+  index: number;
+  ownsText?: boolean;
+  ownsShapes?: boolean;
+  ownsSvg?: boolean;
+}): ExportOwner {
+  return {
+    id: `${args.idPrefix ?? args.kind}-${sourceElementIdForElement(args.pageElement, args.element, args.kind)}-${
+      args.index + 1
+    }`,
+    kind: args.kind,
+    element: args.element,
+    bounds: measureElementRect(args.pageElement, args.element),
+    ownsText: args.ownsText ?? true,
+    ownsShapes: args.ownsShapes ?? true,
+    ownsSvg: args.ownsSvg ?? true,
+  };
+}
+
+function collectDiagramOwners(pageElement: HTMLElement) {
+  return collectDiagramElements(pageElement).map((element, index) =>
+    createExportOwner({
+      pageElement,
+      element,
+      kind: "diagram",
+      index,
+    }),
+  );
+}
+
+function buildSvgTextNodeFromElement(args: {
+  pageElement: HTMLElement;
+  element: SVGTextElement;
+  view: Window;
+  owner?: ExportOwner;
+}) {
+  const rect = measureElementRect(args.pageElement, args.element);
+  if (!rect.w || !rect.h) {
+    return null;
+  }
+
+  const text = normalizeMultilineText(args.element.textContent ?? "");
+  if (!text) {
+    return null;
+  }
+
+  const computed = args.view.getComputedStyle(args.element);
+  const fontSizePx = Number.parseFloat(computed.fontSize || "") || 14;
+  const lineHeightPx = resolveComputedLineHeightPx(computed, fontSizePx);
+  const fillColor =
+    parseCssColor(args.element.getAttribute("fill") ?? computed.getPropertyValue("fill")) ??
+    parseCssColor(computed.color);
+  const anchor = args.element.getAttribute("text-anchor") ?? computed.getPropertyValue("text-anchor");
+  const transform = args.element.getAttribute("transform") || "";
+  const rotateMatch = transform.match(/rotate\(\s*(-?[0-9.]+)/i);
+
+  return {
+    kind: "text",
+    sourceElementId: sourceElementIdForElement(args.pageElement, args.element, "svg-text"),
+    ownerId: args.owner?.id,
+    ownerKind: args.owner?.kind,
+    x: pxToInches(rect.x),
+    y: pxToInches(rect.y),
+    w: pxToInches(Math.max(rect.w, 8)),
+    h: pxToInches(Math.max(rect.h, lineHeightPx + 4)),
+    text,
+    fontSize: pxFontToPoints(fontSizePx),
+    fontFamily: primaryFontFamily(computed.fontFamily),
+    color: fillColor?.hex ?? DEFAULT_TEXT,
+    bold: Number.parseInt(computed.fontWeight || "400", 10) >= 600,
+    italic: computed.fontStyle === "italic",
+    align: anchor === "middle" ? "center" : anchor === "end" ? "right" : "left",
+    rotate: rotateMatch ? Number.parseFloat(rotateMatch[1] ?? "0") : undefined,
+    fillColor: null,
+    lineSpacingMultiple: toLineSpacingMultiple(lineHeightPx, fontSizePx),
+  } satisfies PptExportTextNode;
+}
+
+function shouldUseOwnedTextElement(element: HTMLElement) {
+  if (element.matches("script,style,svg")) {
+    return false;
+  }
+  if (element.matches("ul,ol")) {
+    return true;
+  }
+  if (element.closest("ul,ol") && element.matches("li")) {
+    return false;
+  }
+  return !hasReadableStructuralTextChild(element) && !hasReadableTextChild(element);
+}
+
+function collectOwnedTextNodes(args: {
+  pageElement: HTMLElement;
+  owners: ExportOwner[];
+  plan?: ExportPagePlan | null;
+}) {
+  const view = args.pageElement.ownerDocument.defaultView;
+  if (!view) {
+    return [];
+  }
+
+  const textNodes: PptExportTextNode[] = [];
+  for (const owner of args.owners) {
+    if (!owner.ownsText) {
+      continue;
+    }
+
+    const candidates = Array.from(
+      owner.element.querySelectorAll<HTMLElement>(
+        [
+          "ul",
+          "ol",
+          "[data-html-block-id]",
+          '[data-html-fit-role="content"]',
+          "h1",
+          "h2",
+          "h3",
+          "h4",
+          "h5",
+          "h6",
+          "p",
+          "li",
+          "span",
+          "div",
+        ].join(","),
+      ),
+    );
+
+    for (const element of candidates) {
+      if (element !== owner.element && resolveOwnerForElement(element, args.owners)?.id !== owner.id) {
+        continue;
+      }
+      if (!shouldUseOwnedTextElement(element)) {
+        continue;
+      }
+      if (
+        !canEmitTextElement({
+          plan: args.plan,
+          element,
+          owner,
+          owners: args.owners,
+        })
+      ) {
+        continue;
+      }
+      const computed = view.getComputedStyle(element);
+      if (
+        computed.display === "none" ||
+        computed.visibility === "hidden" ||
+        Number.parseFloat(computed.opacity || "1") <= 0
+      ) {
+        continue;
+      }
+      const text = normalizeMultilineText(element.innerText || element.textContent || "");
+      if (!text) {
+        continue;
+      }
+      const node = buildTextNodeFromElement({
+        pageElement: args.pageElement,
+        element,
+        view,
+        owner,
+        useFixedBounds: true,
+        allowFill: allowTextFillForElement({ plan: args.plan, element }),
+        ordering: nodeOrderingForElement({
+          plan: args.plan,
+          element,
+          layerRole: "text",
+          offset: 5,
+        }),
+      });
+      if (node) {
+        textNodes.push({
+          ...node,
+          text,
+        });
+      }
+    }
+
+    for (const element of Array.from(owner.element.querySelectorAll<SVGTextElement>("svg text"))) {
+      const node = buildSvgTextNodeFromElement({
+        pageElement: args.pageElement,
+        element,
+        view,
+        owner,
+      });
+      if (node) {
+        textNodes.push({
+          ...node,
+          ...nodeOrderingForElement({
+            plan: args.plan,
+            element: owner.element,
+            layerRole: "text",
+            offset: 5,
+          }),
+        });
+      }
+    }
+  }
+
+  return dedupeTextNodes(textNodes);
 }
 
 function shouldRenderVisualAsLine(role: string, rect: { w: number; h: number }) {
   return role === "divider" || role === "rail" || rect.h <= 4 || rect.w <= 4;
 }
 
-function collectChartFrames(pageElement: HTMLElement) {
-  return Array.from(
-    pageElement.querySelectorAll<HTMLElement>('[data-html-visual-kind="chart-frame"]'),
-  ).map((element) => ({
-    visualId: element.getAttribute("data-html-visual-id") ?? `chart-frame-${Math.random()}`,
-    element,
-    rect: measureElementRect(pageElement, element),
-  }));
+function resolveVisualShapeKind(args: {
+  lineLike: boolean;
+  borderRadiusPx: number;
+  rect: { w: number; h: number };
+}): PptExportVisualNode["shape"] {
+  if (args.lineLike) {
+    return "line";
+  }
+
+  const minSide = Math.max(1, Math.min(args.rect.w, args.rect.h));
+  if (args.borderRadiusPx >= minSide * 0.44) {
+    return "ellipse";
+  }
+
+  return args.borderRadiusPx >= 4 ? "roundRect" : "rect";
 }
 
-function shouldExportNativeTableModel(
-  element: HTMLElement,
-  tableSpec: NonNullable<ReturnType<typeof parseHtmlTableSpec>>,
-) {
-  const absoluteDescendantCount = Array.from(element.querySelectorAll<HTMLElement>("[style]")).filter((child) =>
-    /position\s*:\s*absolute/i.test(child.getAttribute("style") ?? ""),
-  ).length;
-  if (absoluteDescendantCount > 4) {
+type SvgViewport = {
+  rect: DOMRect;
+  minX: number;
+  minY: number;
+  width: number;
+  height: number;
+};
+
+function parseSvgNumber(value?: string | null) {
+  if (!value) {
+    return 0;
+  }
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function parseSvgPoints(value?: string | null) {
+  if (!value) {
+    return [];
+  }
+
+  const values = value
+    .trim()
+    .split(/[\s,]+/)
+    .map((item) => Number.parseFloat(item))
+    .filter((item) => Number.isFinite(item));
+  const points: Array<{ x: number; y: number }> = [];
+  for (let index = 0; index + 1 < values.length; index += 2) {
+    points.push({ x: values[index]!, y: values[index + 1]! });
+  }
+  return points;
+}
+
+function readSvgViewport(svg: SVGSVGElement): SvgViewport | null {
+  const rect = svg.getBoundingClientRect();
+  if (!rect.width || !rect.height) {
+    return null;
+  }
+
+  const viewBox = svg.viewBox.baseVal;
+  const width = viewBox?.width || parseSvgNumber(svg.getAttribute("width")) || rect.width;
+  const height = viewBox?.height || parseSvgNumber(svg.getAttribute("height")) || rect.height;
+  if (!width || !height) {
+    return null;
+  }
+
+  return {
+    rect,
+    minX: viewBox?.x || 0,
+    minY: viewBox?.y || 0,
+    width,
+    height,
+  };
+}
+
+function mapSvgPointToPagePx(args: {
+  pageElement: HTMLElement;
+  viewport: SvgViewport;
+  x: number;
+  y: number;
+}) {
+  const pageRect = args.pageElement.getBoundingClientRect();
+  return {
+    x:
+      args.viewport.rect.left -
+      pageRect.left +
+      ((args.x - args.viewport.minX) / args.viewport.width) * args.viewport.rect.width,
+    y:
+      args.viewport.rect.top -
+      pageRect.top +
+      ((args.y - args.viewport.minY) / args.viewport.height) * args.viewport.rect.height,
+  };
+}
+
+function readSvgOpacity(element: SVGElement, computed: CSSStyleDeclaration, paintOpacityProperty: string) {
+  const elementOpacity = Number.parseFloat(element.getAttribute("opacity") ?? computed.opacity ?? "1");
+  const paintOpacity = Number.parseFloat(
+    element.getAttribute(paintOpacityProperty) ?? computed.getPropertyValue(paintOpacityProperty) ?? "1",
+  );
+
+  return clamp(
+    (Number.isFinite(elementOpacity) ? elementOpacity : 1) *
+      (Number.isFinite(paintOpacity) ? paintOpacity : 1),
+    0,
+    1,
+  );
+}
+
+function readSvgSolidPaint(args: {
+  element: SVGElement;
+  computed: CSSStyleDeclaration;
+  property: "fill" | "stroke";
+}) {
+  const rawAttribute = args.element.getAttribute(args.property);
+  const rawComputed = args.computed.getPropertyValue(args.property);
+  const raw =
+    rawAttribute && rawAttribute !== "currentColor"
+      ? rawAttribute
+      : rawComputed === "currentColor"
+        ? args.computed.color
+        : rawComputed;
+  const normalized = normalizeText(raw || "");
+  if (!normalized || normalized === "none" || normalized.startsWith("url(")) {
+    return null;
+  }
+
+  return parseCssColor(normalized);
+}
+
+function collectPageLineSegmentNode(args: {
+  pageElement: HTMLElement;
+  sourceElement: SVGElement;
+  start: { x: number; y: number };
+  end: { x: number; y: number };
+  strokePaint: ParsedSolidPaint | null;
+  strokeOpacity: number;
+  strokeWidth: number;
+  dashArray?: string | null;
+  owner?: ExportOwner;
+  sourceOrder?: number;
+  zIndex?: number;
+  canvasLayer?: ExportCanvasLayer;
+  canvasLayerOrder?: number;
+}): PptExportVisualNode | null {
+  if (!args.strokePaint || args.strokeOpacity <= 0) {
+    return null;
+  }
+
+  const width = args.end.x - args.start.x;
+  const height = args.end.y - args.start.y;
+  if (Math.abs(width) < 0.5 && Math.abs(height) < 0.5) {
+    return null;
+  }
+
+  return {
+    kind: "shape",
+    sourceElementId: sourceElementIdForElement(args.pageElement, args.sourceElement, "svg-line"),
+    ownerId: args.owner?.id,
+    ownerKind: args.owner?.kind,
+    sourceOrder: args.sourceOrder,
+    zIndex: args.zIndex,
+    zOrder: layerZOrder({
+      layerRole: "shape",
+      sourceOrder: args.sourceOrder,
+      zIndex: args.zIndex,
+      canvasLayer: args.canvasLayer,
+      canvasLayerOrder: args.canvasLayerOrder,
+    }),
+    layerRole: "shape",
+    role: "svg-line",
+    x: pxToInches(args.start.x),
+    y: pxToInches(args.start.y),
+    w: pxToInches(width),
+    h: pxToInches(height),
+    shape: "line",
+    paint: nonePaint(),
+    lineColor: args.strokePaint.hex,
+    lineTransparency: toTransparency(args.strokePaint.alpha * args.strokeOpacity),
+    lineWidthPt: pxLineToPoints(args.strokeWidth),
+    lineDash: args.dashArray && args.dashArray !== "none" ? "dash" : "solid",
+  };
+}
+
+function collectSvgLineSegmentNode(args: {
+  pageElement: HTMLElement;
+  sourceElement: SVGElement;
+  viewport: SvgViewport;
+  start: { x: number; y: number };
+  end: { x: number; y: number };
+  strokePaint: ParsedSolidPaint | null;
+  strokeOpacity: number;
+  strokeWidth: number;
+  dashArray?: string | null;
+  owner?: ExportOwner;
+  sourceOrder?: number;
+  zIndex?: number;
+  canvasLayer?: ExportCanvasLayer;
+  canvasLayerOrder?: number;
+}): PptExportVisualNode | null {
+  return collectPageLineSegmentNode({
+    ...args,
+    start: mapSvgPointToPagePx({
+      pageElement: args.pageElement,
+      viewport: args.viewport,
+      x: args.start.x,
+      y: args.start.y,
+    }),
+    end: mapSvgPointToPagePx({
+      pageElement: args.pageElement,
+      viewport: args.viewport,
+      x: args.end.x,
+      y: args.end.y,
+    }),
+  });
+}
+
+function withDefaultShapeOrdering(node: PptExportVisualNode) {
+  if (node.zOrder !== undefined && node.layerRole) {
+    return node;
+  }
+  const layerRole: PptExportLayerRole = node.layerRole ?? "shape";
+  return {
+    ...node,
+    layerRole,
+    zOrder: layerZOrder({
+      layerRole,
+      sourceOrder: node.sourceOrder,
+      zIndex: node.zIndex,
+      canvasLayer: "content",
+      canvasLayerOrder: 0,
+    }),
+  };
+}
+
+function collectSvgPrimitiveNodes(args: {
+  pageElement: HTMLElement;
+  skipWithinElements?: HTMLElement[];
+  owners?: ExportOwner[];
+  orderForElement?: (element: Element) => number;
+}) {
+  const view = args.pageElement.ownerDocument.defaultView;
+  if (!view) {
+    return [];
+  }
+
+  const nodes: PptExportVisualNode[] = [];
+  const svgs = Array.from(args.pageElement.querySelectorAll<SVGSVGElement>("svg")).filter(
+    (svg) =>
+      !args.skipWithinElements?.some((container) => container.contains(svg)) &&
+      !isHiddenForExport({
+        element: svg,
+        pageElement: args.pageElement,
+        view,
+      }).hidden,
+  );
+  for (const svg of svgs) {
+    const viewport = readSvgViewport(svg);
+    if (!viewport) {
+      continue;
+    }
+    const owner = resolveOwnerForElement(svg, args.owners);
+
+    const primitives = Array.from(
+      svg.querySelectorAll<SVGElement>("polygon,polyline,path,line,circle,rect"),
+    );
+    for (const primitive of primitives) {
+      if (
+        isHiddenForExport({
+          element: primitive,
+          pageElement: args.pageElement,
+          view,
+        }).hidden
+      ) {
+        continue;
+      }
+      const computed = view.getComputedStyle(primitive);
+      const fillPaint = readSvgSolidPaint({
+        element: primitive,
+        computed,
+        property: "fill",
+      });
+      const strokePaint = readSvgSolidPaint({
+        element: primitive,
+        computed,
+        property: "stroke",
+      });
+      const fillOpacity = readSvgOpacity(primitive, computed, "fill-opacity");
+      const strokeOpacity = readSvgOpacity(primitive, computed, "stroke-opacity");
+      const strokeWidth = Math.max(
+        0,
+        parseSvgNumber(primitive.getAttribute("stroke-width") ?? computed.getPropertyValue("stroke-width")),
+      );
+      const dashArray =
+        primitive.getAttribute("stroke-dasharray") ?? computed.getPropertyValue("stroke-dasharray");
+      const tagName = primitive.tagName.toLowerCase();
+      const primitiveOrder = args.orderForElement?.(primitive);
+      const primitiveZIndex = numericZIndex(view, primitive, args.pageElement);
+      const primitiveCanvasLayer = readExportCanvasLayer(primitive, args.pageElement);
+
+      if (tagName === "polyline" || tagName === "polygon") {
+        const rawPoints = parseSvgPoints(primitive.getAttribute("points"));
+        if (tagName === "polyline") {
+          for (let index = 0; index + 1 < rawPoints.length; index += 1) {
+            const node = collectSvgLineSegmentNode({
+              pageElement: args.pageElement,
+              sourceElement: primitive,
+              viewport,
+              start: rawPoints[index]!,
+              end: rawPoints[index + 1]!,
+              strokePaint,
+              strokeOpacity,
+              strokeWidth,
+              dashArray,
+              owner,
+              sourceOrder: primitiveOrder,
+      zIndex: primitiveZIndex,
+              canvasLayer: primitiveCanvasLayer.canvasLayer,
+              canvasLayerOrder: primitiveCanvasLayer.canvasLayerOrder,
+            });
+            if (node) {
+              nodes.push(node);
+            }
+          }
+          continue;
+        }
+
+        if (!fillPaint || fillOpacity <= 0 || rawPoints.length < 3) {
+          continue;
+        }
+
+        const pagePoints = rawPoints.map((point) =>
+          mapSvgPointToPagePx({
+            pageElement: args.pageElement,
+            viewport,
+            x: point.x,
+            y: point.y,
+          }),
+        );
+        const minX = Math.min(...pagePoints.map((point) => point.x));
+        const minY = Math.min(...pagePoints.map((point) => point.y));
+        const maxX = Math.max(...pagePoints.map((point) => point.x));
+        const maxY = Math.max(...pagePoints.map((point) => point.y));
+        const width = maxX - minX;
+        const height = maxY - minY;
+        if (width <= 0 || height <= 0) {
+          continue;
+        }
+
+        nodes.push({
+          kind: "shape",
+          sourceElementId: sourceElementIdForElement(args.pageElement, primitive, "svg-polygon"),
+          ownerId: owner?.id,
+          ownerKind: owner?.kind,
+          sourceOrder: primitiveOrder,
+          zIndex: primitiveZIndex,
+          zOrder: layerZOrder({
+            layerRole: "shape",
+            sourceOrder: primitiveOrder,
+            zIndex: primitiveZIndex,
+            canvasLayer: primitiveCanvasLayer.canvasLayer,
+            canvasLayerOrder: primitiveCanvasLayer.canvasLayerOrder,
+          }),
+          layerRole: "shape",
+          role: "svg-polygon",
+          x: pxToInches(minX),
+          y: pxToInches(minY),
+          w: pxToInches(width),
+          h: pxToInches(height),
+          shape: "freeform",
+          paint: paintFromCssPaint(fillPaint, fillOpacity),
+          freeformPoints: pagePoints.map((point) => ({
+            x: Math.round(((point.x - minX) / width) * 100000),
+            y: Math.round(((point.y - minY) / height) * 100000),
+          })),
+          lineColor: strokePaint?.hex ?? null,
+          lineTransparency: strokePaint ? toTransparency(strokePaint.alpha * strokeOpacity) : 100,
+          lineWidthPt: strokePaint && strokeWidth > 0 ? pxLineToPoints(strokeWidth) : 0,
+          lineDash: dashArray && dashArray !== "none" ? "dash" : "solid",
+        });
+        continue;
+      }
+
+      if (tagName === "line") {
+        const node = collectSvgLineSegmentNode({
+          pageElement: args.pageElement,
+          sourceElement: primitive,
+          viewport,
+          start: {
+            x: parseSvgNumber(primitive.getAttribute("x1")),
+            y: parseSvgNumber(primitive.getAttribute("y1")),
+          },
+          end: {
+            x: parseSvgNumber(primitive.getAttribute("x2")),
+            y: parseSvgNumber(primitive.getAttribute("y2")),
+          },
+          strokePaint,
+          strokeOpacity,
+          strokeWidth,
+          dashArray,
+          owner,
+          sourceOrder: primitiveOrder,
+          zIndex: primitiveZIndex,
+          canvasLayer: primitiveCanvasLayer.canvasLayer,
+          canvasLayerOrder: primitiveCanvasLayer.canvasLayerOrder,
+        });
+        if (node) {
+          nodes.push(node);
+        }
+        continue;
+      }
+
+      if (tagName === "path") {
+        const pathElement = primitive as SVGPathElement;
+        let totalLength = 0;
+        try {
+          totalLength =
+            typeof pathElement.getTotalLength === "function" ? pathElement.getTotalLength() : 0;
+        } catch {
+          totalLength = 0;
+        }
+        if (!Number.isFinite(totalLength) || totalLength <= 0) {
+          continue;
+        }
+        const sampleCount = Math.max(2, Math.min(48, Math.ceil(totalLength / 18)));
+        const pagePoints = Array.from({ length: sampleCount + 1 }, (_, index) => {
+          const point = pathElement.getPointAtLength((index / sampleCount) * totalLength);
+          return mapSvgPointToPagePx({
+            pageElement: args.pageElement,
+            viewport,
+            x: point.x,
+            y: point.y,
+          });
+        });
+        if (fillPaint && fillOpacity > 0 && pagePoints.length >= 3) {
+          const minX = Math.min(...pagePoints.map((point) => point.x));
+          const minY = Math.min(...pagePoints.map((point) => point.y));
+          const maxX = Math.max(...pagePoints.map((point) => point.x));
+          const maxY = Math.max(...pagePoints.map((point) => point.y));
+          const width = maxX - minX;
+          const height = maxY - minY;
+          if (width > 0 && height > 0) {
+            nodes.push({
+              kind: "shape",
+              sourceElementId: sourceElementIdForElement(args.pageElement, primitive, "svg-path"),
+              ownerId: owner?.id,
+              ownerKind: owner?.kind,
+              sourceOrder: primitiveOrder,
+              zIndex: primitiveZIndex,
+              zOrder: layerZOrder({
+                layerRole: "shape",
+                sourceOrder: primitiveOrder,
+                zIndex: primitiveZIndex,
+                canvasLayer: primitiveCanvasLayer.canvasLayer,
+                canvasLayerOrder: primitiveCanvasLayer.canvasLayerOrder,
+              }),
+              layerRole: "shape",
+              role: "svg-path",
+              x: pxToInches(minX),
+              y: pxToInches(minY),
+              w: pxToInches(width),
+              h: pxToInches(height),
+              shape: "freeform",
+              paint: paintFromCssPaint(fillPaint, fillOpacity),
+              freeformPoints: pagePoints.map((point) => ({
+                x: Math.round(((point.x - minX) / width) * 100000),
+                y: Math.round(((point.y - minY) / height) * 100000),
+              })),
+              lineColor: strokePaint?.hex ?? null,
+              lineTransparency: strokePaint ? toTransparency(strokePaint.alpha * strokeOpacity) : 100,
+              lineWidthPt: strokePaint && strokeWidth > 0 ? pxLineToPoints(strokeWidth) : 0,
+              lineDash: dashArray && dashArray !== "none" ? "dash" : "solid",
+            });
+          }
+          continue;
+        }
+
+        for (let index = 0; index + 1 < pagePoints.length; index += 1) {
+          const startPoint = pagePoints[index]!;
+          const endPoint = pagePoints[index + 1]!;
+          const node = collectPageLineSegmentNode({
+            pageElement: args.pageElement,
+            sourceElement: primitive,
+            start: startPoint,
+            end: endPoint,
+            strokePaint,
+            strokeOpacity,
+            strokeWidth,
+            dashArray,
+            owner,
+            sourceOrder: primitiveOrder,
+            zIndex: primitiveZIndex,
+            canvasLayer: primitiveCanvasLayer.canvasLayer,
+            canvasLayerOrder: primitiveCanvasLayer.canvasLayerOrder,
+          });
+          if (node) {
+            nodes.push(node);
+          }
+        }
+        continue;
+      }
+
+      if (tagName === "circle") {
+        if (!fillPaint || fillOpacity <= 0) {
+          continue;
+        }
+        const cx = parseSvgNumber(primitive.getAttribute("cx"));
+        const cy = parseSvgNumber(primitive.getAttribute("cy"));
+        const r = parseSvgNumber(primitive.getAttribute("r"));
+        if (r <= 0) {
+          continue;
+        }
+        const topLeft = mapSvgPointToPagePx({
+          pageElement: args.pageElement,
+          viewport,
+          x: cx - r,
+          y: cy - r,
+        });
+        const bottomRight = mapSvgPointToPagePx({
+          pageElement: args.pageElement,
+          viewport,
+          x: cx + r,
+          y: cy + r,
+        });
+
+        nodes.push({
+          kind: "shape",
+          sourceElementId: sourceElementIdForElement(args.pageElement, primitive, "svg-circle"),
+          ownerId: owner?.id,
+          ownerKind: owner?.kind,
+          sourceOrder: primitiveOrder,
+          zIndex: primitiveZIndex,
+          zOrder: layerZOrder({
+            layerRole: "shape",
+            sourceOrder: primitiveOrder,
+            zIndex: primitiveZIndex,
+            canvasLayer: primitiveCanvasLayer.canvasLayer,
+            canvasLayerOrder: primitiveCanvasLayer.canvasLayerOrder,
+          }),
+          layerRole: "shape",
+          role: "svg-circle",
+          x: pxToInches(topLeft.x),
+          y: pxToInches(topLeft.y),
+          w: pxToInches(bottomRight.x - topLeft.x),
+          h: pxToInches(bottomRight.y - topLeft.y),
+          shape: "ellipse",
+          paint: paintFromCssPaint(fillPaint, fillOpacity),
+          lineColor: strokePaint?.hex ?? null,
+          lineTransparency: strokePaint ? toTransparency(strokePaint.alpha * strokeOpacity) : 100,
+          lineWidthPt: strokePaint && strokeWidth > 0 ? pxLineToPoints(strokeWidth) : 0,
+        });
+        continue;
+      }
+
+      if (tagName === "rect") {
+        if (!fillPaint && !strokePaint) {
+          continue;
+        }
+        const x = parseSvgNumber(primitive.getAttribute("x"));
+        const y = parseSvgNumber(primitive.getAttribute("y"));
+        const width = parseSvgNumber(primitive.getAttribute("width"));
+        const height = parseSvgNumber(primitive.getAttribute("height"));
+        if (width <= 0 || height <= 0) {
+          continue;
+        }
+        const topLeft = mapSvgPointToPagePx({
+          pageElement: args.pageElement,
+          viewport,
+          x,
+          y,
+        });
+        const bottomRight = mapSvgPointToPagePx({
+          pageElement: args.pageElement,
+          viewport,
+          x: x + width,
+          y: y + height,
+        });
+        const rx = parseSvgNumber(primitive.getAttribute("rx"));
+
+        nodes.push({
+          kind: "shape",
+          sourceElementId: sourceElementIdForElement(args.pageElement, primitive, "svg-rect"),
+          ownerId: owner?.id,
+          ownerKind: owner?.kind,
+          sourceOrder: primitiveOrder,
+          zIndex: primitiveZIndex,
+          zOrder: layerZOrder({
+            layerRole: "shape",
+            sourceOrder: primitiveOrder,
+            zIndex: primitiveZIndex,
+            canvasLayer: primitiveCanvasLayer.canvasLayer,
+            canvasLayerOrder: primitiveCanvasLayer.canvasLayerOrder,
+          }),
+          layerRole: "shape",
+          role: "svg-rect",
+          x: pxToInches(topLeft.x),
+          y: pxToInches(topLeft.y),
+          w: pxToInches(bottomRight.x - topLeft.x),
+          h: pxToInches(bottomRight.y - topLeft.y),
+          shape: rx > 0 ? "roundRect" : "rect",
+          paint: paintFromCssPaint(fillPaint, fillOpacity),
+          lineColor: strokePaint?.hex ?? null,
+          lineTransparency: strokePaint ? toTransparency(strokePaint.alpha * strokeOpacity) : 100,
+          lineWidthPt: strokePaint && strokeWidth > 0 ? pxLineToPoints(strokeWidth) : 0,
+        });
+      }
+    }
+  }
+
+  return nodes.map(withDefaultShapeOrdering);
+}
+
+function collectVisualShapeElements(pageElement: HTMLElement, skipVisualIds: Set<string>) {
+  const candidates = Array.from(
+    pageElement.querySelectorAll<HTMLElement>(
+      [
+        "[data-html-visual-id]",
+        "[data-export-role]",
+        '[data-html-visual-kind="chart-frame"]',
+        '[data-html-visual-kind="surface"]',
+        '[data-html-visual-kind="highlight"]',
+        '[data-html-module-kind="scientific-diagram"]',
+        '[data-html-visual-kind="divider"]',
+        '[data-html-visual-kind="rail"]',
+        '[data-html-visual-kind="badge"]',
+        ".surface-card",
+      ].join(","),
+    ),
+  );
+
+  return candidates.filter((element, index) => {
+    return candidates.indexOf(element) === index;
+  });
+}
+
+function hasVisibleComputedShapePaint(args: {
+  pageElement: HTMLElement;
+  element: HTMLElement;
+  view: Window;
+}) {
+  if (args.element.closest("svg")) {
+    return false;
+  }
+  if (readAttribute(args.element, "data-export-omit") === "true") {
     return false;
   }
 
-  const cellCount = tableSpec.columns.length * Math.max(tableSpec.rows.length, 1);
-  const emptyCellCount = tableSpec.rows.flat().filter((cell) => !normalizeText(cell)).length;
-  const emptyRatio = cellCount > 0 ? emptyCellCount / cellCount : 0;
-  if (tableSpec.rows.length > 8 && emptyRatio > 0.42) {
+  const computed = args.view.getComputedStyle(args.element);
+  if (
+    computed.display === "none" ||
+    computed.visibility === "hidden" ||
+    Number.parseFloat(computed.opacity || "1") <= 0
+  ) {
     return false;
   }
 
-  if (element.classList.contains("html-table-module")) {
-    return true;
+  const rect = measureElementRect(
+    args.pageElement,
+    args.element,
+    resolveShapeClipBounds(args.pageElement, args.element),
+  );
+  if (!rect.w || !rect.h) {
+    return false;
   }
 
-  return Array.from(element.children).some((child) =>
-    /display\s*:\s*grid/i.test((child as HTMLElement).getAttribute("style") ?? ""),
+  const fillPaint = readElementFillPaint({
+    element: args.element,
+    computed,
+  });
+  const borderPaint = resolveComputedBorderPaint(computed);
+  const borderWidth = Number.parseFloat(computed.borderWidth || "0");
+  return alphaIsVisible(fillPaint) || Boolean(borderPaint && borderWidth > 0);
+}
+
+function collectOwnerPrimitiveShapeElements(args: {
+  pageElement: HTMLElement;
+  owners?: ExportOwner[];
+  view: Window;
+  existingElements: HTMLElement[];
+  plan?: ExportPagePlan | null;
+}) {
+  const seen = new Set(args.existingElements);
+  const collected: HTMLElement[] = [];
+  for (const owner of args.owners ?? []) {
+    if (!owner.ownsShapes) {
+      continue;
+    }
+
+    const candidates = Array.from(
+      owner.element.querySelectorAll<HTMLElement>(
+        [
+          "article",
+          "aside",
+          "section",
+          "figure",
+          "div",
+          "span",
+          "p",
+          "li",
+        ].join(","),
+      ),
+    );
+
+    for (const element of candidates) {
+      if (seen.has(element)) {
+        continue;
+      }
+      const record = recordForElement(args.plan, element);
+      if (record && !record.visible) {
+        if (record.hiddenByPlaceholder && args.plan) {
+          warnHiddenPlaceholder(args.plan, element);
+        }
+        continue;
+      }
+      if (resolveOwnerForElement(element, args.owners)?.id !== owner.id) {
+        continue;
+      }
+      if (
+        !hasVisibleComputedShapePaint({
+          pageElement: args.pageElement,
+          element,
+          view: args.view,
+        })
+      ) {
+        continue;
+      }
+      seen.add(element);
+      collected.push(element);
+    }
+  }
+
+  return collected;
+}
+
+function resolveChartRenderRect(pageElement: HTMLElement, frame: ChartFrameCandidate) {
+  const plotElement = findChartPlotElement(frame.element);
+  if (!plotElement) {
+    return frame.rect;
+  }
+
+  const rect = measureElementRect(pageElement, plotElement);
+  return rect.w && rect.h ? rect : frame.rect;
+}
+
+function resolveShapeClipBounds(pageElement: HTMLElement, element: HTMLElement): RectPx {
+  const pageBounds = pageClipBounds(pageElement);
+  const parentElement = element.parentElement;
+  const chartFrame = element.closest<HTMLElement>('[data-html-visual-kind="chart-frame"]');
+  if (chartFrame && chartFrame !== element) {
+    const plotElement = findChartPlotElement(chartFrame);
+    if (plotElement && plotElement.contains(element)) {
+      const plotBounds = measureElementRect(pageElement, plotElement, pageBounds);
+      return plotBounds.w > 0 && plotBounds.h > 0 ? plotBounds : pageBounds;
+    }
+    const frameBounds = measureElementRect(pageElement, chartFrame, pageBounds);
+    return frameBounds.w > 0 && frameBounds.h > 0 ? frameBounds : pageBounds;
+  }
+
+  const container = parentElement?.closest<HTMLElement>(
+    [
+      '[data-html-visual-kind="surface"]',
+      '[data-html-visual-kind="highlight"]',
+      '[data-html-visual-kind="chart-frame"]',
+      "[data-html-module-kind]",
+      ".surface-card",
+      ".chart-frame",
+      "article",
+      "figure",
+      "aside",
+    ].join(","),
+  );
+  if (container && container !== element && container !== pageElement) {
+    const containerBounds = measureElementRect(pageElement, container, pageBounds);
+    return containerBounds.w > 0 && containerBounds.h > 0 ? containerBounds : pageBounds;
+  }
+
+  return pageBounds;
+}
+
+function collectChartFrames(pageElement: HTMLElement) {
+  const view = pageElement.ownerDocument.defaultView;
+  if (!view) {
+    return [];
+  }
+
+  const candidates = Array.from(
+    pageElement.querySelectorAll<HTMLElement>(
+      [
+        '[data-html-visual-kind="chart-frame"]',
+        `[${HTML_CHART_SPEC_ATTRIBUTE}]`,
+        "[data-export-chart]",
+      ].join(","),
+    ),
+  )
+    .filter((element) => {
+      if (
+        isHiddenForExport({
+          element,
+          pageElement,
+          view,
+        }).hidden
+      ) {
+        return false;
+      }
+      if (hasStructuredChartContract(element)) {
+        return true;
+      }
+      const moduleKind = element.getAttribute("data-html-module-kind");
+      return (
+        (!moduleKind || moduleKind === "chart") &&
+        (element.getAttribute("data-html-visual-kind") === "chart-frame" ||
+          Boolean(findChartContractElement(element)))
+      );
+    })
+    .map((element, index) => ({
+      visualId: element.getAttribute("data-html-visual-id") ?? `chart-frame-${index + 1}`,
+      element,
+      rect: measureElementRect(pageElement, element),
+    }));
+
+  return candidates.filter((candidate, index) => {
+    const structured = hasStructuredChartContract(candidate.element);
+    const contractElement = findChartContractElement(candidate.element);
+    const hasContractDescendant = Boolean(contractElement && contractElement !== candidate.element);
+    const exportable =
+      structured || hasContractDescendant || hasUnstructuredChartPrimitives(candidate.element);
+    const hasStructuredDescendant = candidates.some(
+      (other) =>
+        other !== candidate &&
+        candidate.element.contains(other.element) &&
+        hasStructuredChartContract(other.element),
+    );
+    const hasStructuredAncestor = candidates.some(
+      (other) =>
+        other !== candidate &&
+        other.element.contains(candidate.element) &&
+        hasStructuredChartContract(other.element),
+    );
+    const hasExportableAncestor = candidates.some(
+      (other) =>
+        other !== candidate &&
+        other.element.contains(candidate.element) &&
+        (Boolean(findChartContractElement(other.element)) ||
+          hasUnstructuredChartPrimitives(other.element)) &&
+        other.rect.w >= 180 &&
+        other.rect.h >= 110,
+    );
+    const hasExportableChartDescendant = candidates.some(
+      (other) =>
+        other !== candidate &&
+        candidate.element.contains(other.element) &&
+        (hasStructuredChartContract(other.element) || hasUnstructuredChartPrimitives(other.element)) &&
+        other.rect.w >= 180 &&
+        other.rect.h >= 110,
+    );
+
+    if (structured && hasStructuredAncestor) {
+      return false;
+    }
+
+    if (structured && hasExportableAncestor) {
+      return false;
+    }
+
+    if (!structured && !hasContractDescendant && hasStructuredDescendant) {
+      return false;
+    }
+
+    if (!structured && !hasContractDescendant && hasExportableChartDescendant) {
+      return false;
+    }
+
+    if (!exportable) {
+      return false;
+    }
+
+    if (!structured && (candidate.rect.w < 180 || candidate.rect.h < 110)) {
+      return false;
+    }
+
+    return candidates.findIndex((entry) => entry.element === candidate.element) === index;
+  });
+}
+
+function warnIfUnsupportedStructuredChart(args: {
+  element: HTMLElement;
+  warnings: PptExportWarning[];
+  pageNumber: number;
+}) {
+  const spec = parseHtmlChartSpec(args.element.getAttribute(HTML_CHART_SPEC_ATTRIBUTE));
+  args.warnings.push({
+    code: "chart-native-unsupported",
+    severity: "info",
+    countsAgainstQuality: false,
+    pageNumber: args.pageNumber,
+    message: spec
+      ? `${spec.kind} chart on page ${args.pageNumber} skipped its native data relationship but kept editable DOM geometry.`
+      : `Chart frame on page ${args.pageNumber} kept editable DOM geometry without a native data relationship.`,
+  });
+}
+
+function collectTableElements(pageElement: HTMLElement) {
+  const selector = `[data-html-module-kind="${TABLE_MODULE_KIND}"],[${HTML_TABLE_SPEC_ATTRIBUTE}],table`;
+  const candidates = Array.from(pageElement.querySelectorAll<HTMLElement>(selector));
+  return candidates.filter((element, index) => {
+    const firstMatchingAncestor = candidates.find(
+      (candidate) => candidate !== element && candidate.contains(element),
+    );
+    return !firstMatchingAncestor || candidates.indexOf(firstMatchingAncestor) > index;
+  });
+}
+
+function readTableSpecFromElement(element: HTMLElement) {
+  const explicitSpec = parseHtmlTableSpec(element.getAttribute(HTML_TABLE_SPEC_ATTRIBUTE));
+  if (explicitSpec) {
+    return explicitSpec;
+  }
+
+  if (element.tagName.toLowerCase() !== "table") {
+    return null;
+  }
+
+  const rows = Array.from(element.querySelectorAll("tr"))
+    .map((row) =>
+      Array.from(row.querySelectorAll("th, td"))
+        .map((cell) => normalizeText(cell.textContent ?? ""))
+        .filter((cell) => cell.length > 0),
+    )
+    .filter((row) => row.length > 0);
+  if (rows.length < 2) {
+    return null;
+  }
+
+  const columns = rows[0]!.map((label, index) => ({
+    id: `column-${index + 1}`,
+    label: label || `Column ${index + 1}`,
+    type: "text" as const,
+  }));
+  const dataRows = rows.slice(1);
+  return {
+    raw: [columns.map((column) => column.label), ...dataRows].map((row) => row.join("\t")).join("\n"),
+    hasHeader: true,
+    columns,
+    rows: dataRows,
+  };
+}
+
+function normalizeTableRows(spec: HtmlTableSpec) {
+  const columnCount = Math.max(spec.columns.length, ...spec.rows.map((row) => row.length), 1);
+  const bodyRows = spec.rows.map((row) =>
+    Array.from({ length: columnCount }, (_, index) => normalizeText(row[index] ?? "")),
+  );
+  if (spec.hasHeader === false) {
+    return bodyRows;
+  }
+
+  return [
+    Array.from({ length: columnCount }, (_, index) =>
+      normalizeText(spec.columns[index]?.label ?? `Column ${index + 1}`),
+    ),
+    ...bodyRows,
+  ];
+}
+
+function shouldExportTableAsDomGeometry(element: HTMLElement, spec: HtmlTableSpec) {
+  if (element.tagName.toLowerCase() === "table") {
+    return false;
+  }
+
+  const columnCount = Math.max(spec.columns.length, ...spec.rows.map((row) => row.length), 1);
+  const cells = spec.rows.flatMap((row) =>
+    Array.from({ length: columnCount }, (_, index) => normalizeText(row[index] ?? "")),
+  );
+  const emptyRatio = cells.length
+    ? cells.filter((cell) => !cell).length / cells.length
+    : 0;
+  const specText = normalizeMultilineText(
+    [
+      spec.raw,
+      ...spec.columns.map((column) => column.label),
+      ...spec.rows.flat(),
+      element.getAttribute("data-html-module-label"),
+    ].join("\n"),
+  );
+  const looksLikeQuadrant =
+    (/重要性/.test(specText) && /确定性/.test(specText)) ||
+    (/impact/i.test(specText) && /effort|confidence|certainty/i.test(specText)) ||
+    /quadrant|matrix|2x2/i.test(specText);
+  const hasPositionedVisualChildren = Array.from(element.querySelectorAll<HTMLElement>("*")).some((child) => {
+    const style = child.getAttribute("style") ?? "";
+    return /position\s*:\s*absolute/i.test(style);
+  });
+
+  return (
+    looksLikeQuadrant &&
+    spec.rows.length >= 6 &&
+    columnCount <= 4 &&
+    emptyRatio >= 0.35 &&
+    hasPositionedVisualChildren
   );
 }
 
 function collectTableModels(args: {
   pageElement?: HTMLElement | null;
   theme: PptExportThemeSnapshot;
+  warnings: PptExportWarning[];
+  pageNumber: number;
+  plan?: ExportPagePlan | null;
 }): TableCollectionResult {
   const tableNodes: PptExportTableModel[] = [];
   const skipVisualIds = new Set<string>();
-  const tableElements = args.pageElement
-    ? Array.from(args.pageElement.querySelectorAll<HTMLElement>('[data-html-module-kind="table"]'))
-    : [];
+  const skipTextElements: HTMLElement[] = [];
+  const skipPrimitiveWithinElements: HTMLElement[] = [];
+  const owners: ExportOwner[] = [];
+  const themeTokens = buildChartThemeTokens(args.theme);
+  const tableElements = args.pageElement ? collectTableElements(args.pageElement) : [];
 
-  for (const element of tableElements) {
-    const tableSpec = parseHtmlTableSpec(element.getAttribute(HTML_TABLE_SPEC_ATTRIBUTE));
+  for (const [index, element] of tableElements.entries()) {
     const rect = args.pageElement ? measureElementRect(args.pageElement, element) : null;
-    if (!tableSpec || !rect?.w || !rect.h || !shouldExportNativeTableModel(element, tableSpec)) {
+    if (!rect?.w || !rect.h) {
       continue;
     }
 
+    const spec = readTableSpecFromElement(element);
+    if (!spec) {
+      args.warnings.push({
+        code: "table-native-unsupported",
+        pageNumber: args.pageNumber,
+        message: `Table on page ${args.pageNumber} did not expose enough structured data for native PPTX export.`,
+      });
+      continue;
+    }
+
+    if (shouldExportTableAsDomGeometry(element, spec)) {
+      continue;
+    }
+
+    const rows = normalizeTableRows(spec);
+    if (!rows.length || rows.every((row) => row.every((cell) => !cell))) {
+      args.warnings.push({
+        code: "table-native-unsupported",
+        pageNumber: args.pageNumber,
+        message: `Table on page ${args.pageNumber} had no exportable cell content.`,
+      });
+      continue;
+    }
+
+    skipTextElements.push(element);
+    skipPrimitiveWithinElements.push(element);
     const visualId = element.getAttribute("data-html-visual-id");
     if (visualId) {
       skipVisualIds.add(visualId);
     }
+    if (args.pageElement) {
+      const owner = createExportOwner({
+        pageElement: args.pageElement,
+        element,
+        kind: "table",
+        index,
+        ownsText: false,
+        ownsShapes: false,
+        ownsSvg: false,
+      });
+      owners.push(owner);
+      claimExportOwnership({
+        plan: args.plan,
+        element,
+        ownership: "table",
+        ownerId: owner.id,
+      });
+    }
 
+    const ordering = nodeOrderingForElement({
+      plan: args.plan,
+      element,
+      layerRole: "table",
+    });
     tableNodes.push({
       kind: "table",
+      sourceElementId: sourceElementIdForElement(args.pageElement!, element, "table"),
+      sourceOrder: ordering.sourceOrder,
+      zIndex: ordering.zIndex,
+      zOrder: ordering.zOrder,
+      layerRole: ordering.layerRole,
+      renderMode: "native",
       x: pxToInches(rect.x),
       y: pxToInches(rect.y),
       w: pxToInches(rect.w),
       h: pxToInches(rect.h),
-      columns: tableSpec.columns.map((column, index) => normalizeText(column.label) || `Column ${index + 1}`),
-      rows: tableSpec.rows.map((row) => row.map((cell) => normalizeMultilineText(cell))),
-      themeTokens: buildChartThemeTokens(args.theme),
+      rows,
+      headerRow: spec.hasHeader !== false,
+      themeTokens,
     });
   }
 
-  return { tableNodes, skipVisualIds };
+  return {
+    tableNodes,
+    skipVisualIds,
+    skipTextElements: skipTextElements.filter((element, index) => skipTextElements.indexOf(element) === index),
+    skipPrimitiveWithinElements: skipPrimitiveWithinElements.filter(
+      (element, index) => skipPrimitiveWithinElements.indexOf(element) === index,
+    ),
+    owners: dedupeOwners(owners),
+  };
 }
 
 function buildThemeSnapshot(args: {
@@ -1737,84 +3132,109 @@ function buildThemeSnapshot(args: {
 function collectVisualShapeNodes(args: {
   pageElement: HTMLElement;
   skipVisualIds: Set<string>;
+  skipPrimitiveWithinElements?: HTMLElement[];
+  owners?: ExportOwner[];
+  plan?: ExportPagePlan | null;
   warnings: PptExportWarning[];
   pageNumber: number;
 }) {
   const shapeNodes: PptExportVisualNode[] = [];
   const view = args.pageElement.ownerDocument.defaultView;
-  const visualElements = Array.from(
-    args.pageElement.querySelectorAll<HTMLElement>("[data-html-visual-id]"),
-  );
+  const annotatedVisualElements = collectVisualShapeElements(args.pageElement, args.skipVisualIds);
+  const orderForElement = createDomOrderResolver(args.pageElement);
 
   if (!view) {
     return shapeNodes;
   }
 
+  const visualElements = [
+    ...annotatedVisualElements,
+    ...collectOwnerPrimitiveShapeElements({
+      pageElement: args.pageElement,
+      owners: args.owners,
+      view,
+      existingElements: annotatedVisualElements,
+      plan: args.plan,
+    }),
+  ];
+
   for (const element of visualElements) {
-    const nodeId = element.getAttribute("data-html-visual-id") ?? "unknown";
+    const nodeId =
+      element.getAttribute("data-html-visual-id") ??
+      readAttribute(element, "data-export-role", "data-html-visual-kind") ??
+      "unknown";
     if (args.skipVisualIds.has(nodeId)) {
       continue;
     }
 
-    if (readAttribute(element, "data-export-omit") === "true" || isElementHiddenForExport(element, view)) {
+    if (
+      args.skipPrimitiveWithinElements?.some((container) => container !== element && container.contains(element))
+    ) {
+      continue;
+    }
+
+    if (readAttribute(element, "data-export-omit") === "true") {
+      continue;
+    }
+    const record = recordForElement(args.plan, element);
+    if (record && !record.visible) {
+      if (record.hiddenByPlaceholder && args.plan) {
+        warnHiddenPlaceholder(args.plan, element);
+      }
+      claimExportOwnership({
+        plan: args.plan,
+        element,
+        ownership: "omit",
+        reason: "hidden",
+      });
       continue;
     }
 
     const nodeKind = element.getAttribute("data-html-visual-kind") ?? "surface";
     const role = readAttribute(element, "data-export-role") ?? nodeKind;
     if (role === "decorative") {
+      claimExportOwnership({
+        plan: args.plan,
+        element,
+        ownership: "owner-only",
+        reason: "decorative",
+      });
       continue;
     }
+    const owner = resolveOwnerForElement(element, args.owners);
 
-    const rect = measureElementRect(args.pageElement, element);
+    const rect = measureElementRect(
+      args.pageElement,
+      element,
+      resolveShapeClipBounds(args.pageElement, element),
+    );
     if (!rect.w || !rect.h) {
       continue;
     }
 
     const computed = view.getComputedStyle(element);
-    const fillPaint = parseCssPaint(
-      readAttribute(element, "data-export-fill", "data-html-visual-fill") ?? computed.backgroundColor,
-    );
-    const borderPaint = parseCssColor(
-      readAttribute(element, "data-export-border", "data-html-visual-border") ?? computed.borderColor,
-    );
+    const fillPaint = readElementFillPaint({ element, computed });
     const computedBorderWidth = Number.parseFloat(computed.borderWidth || "0");
-    const computedBorderRadius = Number.parseFloat(computed.borderRadius || "0");
+    const computedBorderPaint = resolveComputedBorderPaint(computed);
+    const hasComputedBorder = Boolean(computedBorderPaint && computedBorderWidth > 0);
+    const borderPaint = hasComputedBorder ? computedBorderPaint : null;
     const borderWidth =
-      readNumericAttribute(element, "data-export-border-width", "data-html-visual-border-width") ??
-      (Number.isFinite(computedBorderWidth) ? computedBorderWidth : undefined) ??
-      0;
-    const borderRadius =
-      readNumericAttribute(element, "data-export-radius", "data-html-visual-radius") ??
-      (Number.isFinite(computedBorderRadius) ? computedBorderRadius : undefined) ??
-      0;
-    const opacity =
-      readNumericAttribute(element, "data-export-opacity", "data-html-visual-opacity") ??
-      clamp(Number.parseFloat(computed.opacity || "1") || 1, 0, 1);
+      hasComputedBorder && Number.isFinite(computedBorderWidth)
+        ? computedBorderWidth
+        : 0;
+    const borderRadius = resolveBorderRadiusPx(computed, rect);
+    const opacity = clamp(Number.parseFloat(computed.opacity || "1") || 1, 0, 1);
+    const shadow = resolveBoxShadow(computed, opacity);
+    const lineDash = resolveLineDash(computed);
 
     const lineLike = shouldRenderVisualAsLine(role, rect);
-    let fillColor: string | null = null;
-    let fillAlpha: number | undefined = opacity;
+    const paint = lineLike ? nonePaint() : paintFromCssPaint(fillPaint, opacity);
+    const solidLineColor =
+      fillPaint?.type === "solid" ? fillPaint.hex : borderPaint?.hex ?? null;
+    const solidLineAlpha =
+      fillPaint?.type === "solid" ? fillPaint.alpha * opacity : (borderPaint?.alpha ?? 1) * opacity;
 
-    if (fillPaint?.type === "solid") {
-      fillColor = fillPaint.hex;
-      fillAlpha = fillPaint.alpha * opacity;
-    } else if (fillPaint?.type === "linear-gradient") {
-      fillColor = fillPaint.stops[0]?.hex ?? null;
-      fillAlpha = (fillPaint.stops[0]?.alpha ?? 1) * opacity;
-      args.warnings.push({
-        code: "gradient-flattened",
-        pageNumber: args.pageNumber,
-        message: `Visual node ${nodeId} on page ${args.pageNumber} flattened a gradient fill during PPTX export.`,
-      });
-    }
-
-    if (lineLike && !fillColor && borderPaint?.hex) {
-      fillColor = borderPaint.hex;
-      fillAlpha = (borderPaint.alpha ?? 1) * opacity;
-    }
-
-    if (!lineLike && !fillColor && !borderPaint?.hex) {
+    if (!lineLike && paint.type === "none" && !borderPaint?.hex) {
       args.warnings.push({
         code: "visual-missing",
         pageNumber: args.pageNumber,
@@ -1823,23 +3243,81 @@ function collectVisualShapeNodes(args: {
       continue;
     }
 
+    claimExportOwnership({
+      plan: args.plan,
+      element,
+      ownership: "visual-shape",
+    });
+
+    const ordering = nodeOrderingForElement({
+      plan: args.plan,
+      element,
+      layerRole: "shape",
+      offset: lineLike ? 1 : 0,
+    });
+
+    const lineThicknessPx = Math.max(
+      borderWidth,
+      lineLike ? Math.min(rect.w, rect.h) : 0,
+      1,
+    );
+
+    if (rect.clipped) {
+      args.warnings.push({
+        code: "visual-clipped",
+        severity: "info",
+        countsAgainstQuality: false,
+        pageNumber: args.pageNumber,
+        sourceId: nodeId,
+        sourceKind: "visual",
+        message: `Visual node ${nodeId} on page ${args.pageNumber} was clipped to its export container.`,
+      });
+    }
+
     shapeNodes.push({
       kind: "shape",
+      sourceElementId: sourceElementIdForElement(args.pageElement, element, "shape"),
+      ownerId: owner?.id,
+      ownerKind: owner?.kind,
+      sourceOrder: ordering.sourceOrder ?? orderForElement(element),
+      zIndex: ordering.zIndex ?? numericZIndex(view, element, args.pageElement),
+      zOrder: ordering.zOrder,
+      layerRole: ordering.layerRole,
       role,
       x: pxToInches(rect.x),
       y: pxToInches(rect.y),
       w: pxToInches(rect.w),
       h: pxToInches(rect.h),
-      shape: lineLike ? "rect" : borderRadius >= 6 ? "roundRect" : "rect",
-      fillColor,
-      fillTransparency: toTransparency(fillAlpha),
-      lineColor: lineLike ? null : borderPaint?.hex ?? null,
-      lineTransparency: lineLike ? undefined : toTransparency((borderPaint?.alpha ?? 1) * opacity),
-      lineWidthPt: lineLike ? 0 : borderWidth > 0 ? pxLineToPoints(borderWidth) : 0,
+      shape: resolveVisualShapeKind({ lineLike, borderRadiusPx: borderRadius, rect }),
+      paint,
+      lineColor: lineLike ? solidLineColor : borderPaint?.hex ?? null,
+      lineTransparency: lineLike
+        ? toTransparency(solidLineAlpha)
+        : toTransparency((borderPaint?.alpha ?? 1) * opacity),
+      lineWidthPt: lineLike ? pxLineToPoints(lineThicknessPx) : borderWidth > 0 ? pxLineToPoints(borderWidth) : 0,
+      lineDash,
+      shadow: lineLike ? undefined : shadow,
+      sourceBounds: pxRectToInches(rect.sourceBounds),
+      clipBounds: pxRectToInches(rect.clipBounds),
+      clipped: rect.clipped,
     });
   }
 
-  return shapeNodes;
+  return [
+    ...shapeNodes,
+    ...collectSvgPrimitiveNodes({
+      pageElement: args.pageElement,
+      skipWithinElements: args.skipPrimitiveWithinElements,
+      owners: args.owners,
+      orderForElement,
+    }),
+  ].sort((left, right) => {
+    const zDelta = (left.zIndex ?? 0) - (right.zIndex ?? 0);
+    if (zDelta !== 0) {
+      return zDelta;
+    }
+    return (left.sourceOrder ?? 0) - (right.sourceOrder ?? 0);
+  });
 }
 
 function normalizeSceneChartDataModel(args: {
@@ -1867,9 +3345,12 @@ function normalizeSceneChartDataModel(args: {
         subtitle: normalizeText(args.chart.body ?? "") || undefined,
         xAxisTitle: chartData.xAxisTitle,
         yAxisTitle: chartData.yAxisTitle,
+        valueAxisMin: undefined,
+        valueAxisMax: undefined,
         colors: series.map((item) => item.color).filter((item): item is string => Boolean(item)),
-        renderMode: args.chart.chartKind === "waterfall" ? "hybrid" : "native",
-        fallbackMode: args.chart.chartKind === "waterfall" ? "hybrid-waterfall" : "native-chart",
+        renderMode: "native",
+        fallbackMode:
+          args.chart.chartKind === "waterfall" ? "native-waterfall-chart" : "native-chart",
       };
     }
   }
@@ -1890,11 +3371,14 @@ function normalizeSceneChartDataModel(args: {
       ],
       title: normalizeText(args.chart.title ?? "") || undefined,
       subtitle: normalizeText(args.chart.body ?? "") || undefined,
+      valueAxisMin: undefined,
+      valueAxisMax: undefined,
       colors: args.chart.series
         .map((series) => parseCssColor(series.color)?.hex)
         .filter((item): item is string => Boolean(item)),
-      renderMode: args.chart.chartKind === "waterfall" ? "hybrid" : "native",
-      fallbackMode: args.chart.chartKind === "waterfall" ? "hybrid-waterfall" : "native-chart",
+      renderMode: "native",
+      fallbackMode:
+        args.chart.chartKind === "waterfall" ? "native-waterfall-chart" : "native-chart",
     };
   }
 
@@ -1912,16 +3396,174 @@ function collectChartModels(args: {
   scene?: SlideScene;
   warnings: PptExportWarning[];
   pageNumber: number;
+  plan?: ExportPagePlan | null;
 }): ChartCollectionResult {
   const chartNodes: PptExportChartModel[] = [];
   const skipVisualIds = new Set<string>();
-  const supportTextNodes: PptExportTextNode[] = [];
+  const skipTextElements: HTMLElement[] = [];
+  const skipPrimitiveWithinElements: HTMLElement[] = [];
+  const owners: ExportOwner[] = [];
   const chartFrames = args.pageElement ? collectChartFrames(args.pageElement) : [];
   const sceneCharts = (args.scene?.objects ?? []).filter(
     (object): object is SlideSceneChartObject => object.kind === "chart",
   );
   const nativeFrameIndexes = new Set<number>();
   const themeTokens = buildChartThemeTokens(args.theme);
+
+  const addFrameOwner = (
+    frame: ChartFrameCandidate,
+    chartKind?: SupportedNativeChartKind,
+    ownerElement: HTMLElement = frame.element,
+    ownsTextOverride?: boolean,
+  ) => {
+    if (!args.pageElement) {
+      return null;
+    }
+    const ownsChartDom = ownsTextOverride ?? (!chartKind || chartKind === "matrix");
+    const owner = createExportOwner({
+      pageElement: args.pageElement,
+      element: ownerElement,
+      kind: chartKind === "matrix" ? "matrix" : "chart",
+      idPrefix: frame.visualId,
+      index: owners.length,
+      ownsText: ownsChartDom,
+      ownsShapes: !chartKind || chartKind === "matrix",
+      ownsSvg: !chartKind || chartKind === "matrix",
+    });
+    if (!owners.some((existing) => existing.element === owner.element)) {
+      owners.push(owner);
+    }
+    claimExportOwnership({
+      plan: args.plan,
+      element: ownerElement,
+      ownership: "visual-shape",
+      ownerId: owner.id,
+    });
+    return owner;
+  };
+
+  const skipUnsupportedFrame = (frame: ChartFrameCandidate) => {
+    skipTextElements.push(frame.element);
+    addFrameOwner(frame);
+    warnIfUnsupportedStructuredChart({
+      element: frame.element,
+      warnings: args.warnings,
+      pageNumber: args.pageNumber,
+    });
+  };
+
+  const addNativeChart = (
+    normalized: NormalizedChartContract,
+    frame: ChartFrameCandidate | null,
+    sceneChart?: SlideSceneChartObject,
+  ) => {
+    const chartRect =
+      frame && args.pageElement
+        ? normalized.chartKind === "matrix"
+          ? frame.rect
+          : resolveChartRenderRect(args.pageElement, frame)
+        : null;
+    const semanticSpec = frame ? semanticSpecFromNormalizedChart(normalized) : undefined;
+    if (frame) {
+      const plotElement =
+        args.pageElement && normalized.chartKind !== "matrix"
+          ? findChartPlotElement(frame.element)
+          : null;
+      const directChartElement = !plotElement && normalized.chartKind !== "matrix";
+      if (plotElement) {
+        skipTextElements.push(plotElement);
+        skipPrimitiveWithinElements.push(plotElement);
+        const plotVisualId = plotElement.getAttribute("data-html-visual-id");
+        if (plotVisualId) {
+          skipVisualIds.add(plotVisualId);
+        }
+      } else if (directChartElement) {
+        skipPrimitiveWithinElements.push(frame.element);
+        if (frame.visualId) {
+          skipVisualIds.add(frame.visualId);
+        }
+      } else if (normalized.chartKind === "matrix") {
+        skipTextElements.push(frame.element);
+      }
+      const keepOverlayText = directChartElement;
+      addFrameOwner(
+        frame,
+        normalized.chartKind,
+        plotElement ?? frame.element,
+        keepOverlayText ? true : undefined,
+      );
+    }
+    const layerRole: PptExportLayerRole = "chart";
+    const ordering =
+      frame && args.pageElement
+        ? nodeOrderingForElement({
+            plan: args.plan,
+            element: frame.element,
+            layerRole,
+          })
+        : {
+            sourceOrder: sceneChart ? sceneCharts.indexOf(sceneChart) + 1 : chartNodes.length + 1,
+            zIndex: 0,
+            layerRole,
+            zOrder: layerZOrder({
+              layerRole,
+              sourceOrder: sceneChart ? sceneCharts.indexOf(sceneChart) + 1 : chartNodes.length + 1,
+            }),
+          };
+    chartNodes.push({
+      kind: "chart",
+      sourceElementId: frame
+        ? sourceElementIdForElement(args.pageElement!, frame.element, "chart")
+        : normalized.title ?? sceneChart?.title ?? `chart-${chartNodes.length + 1}`,
+      sourceOrder: ordering.sourceOrder,
+      zIndex: ordering.zIndex,
+      zOrder: ordering.zOrder,
+      layerRole: ordering.layerRole,
+      renderMode: "native",
+      x: pxToInches(chartRect?.x ?? frame?.rect.x ?? sceneChart?.x ?? 0),
+      y: pxToInches(chartRect?.y ?? frame?.rect.y ?? sceneChart?.y ?? 0),
+      w: pxToInches(chartRect?.w ?? frame?.rect.w ?? sceneChart?.w ?? 0),
+      h: pxToInches(chartRect?.h ?? frame?.rect.h ?? sceneChart?.h ?? 0),
+      title: normalized.title ?? sceneChart?.title,
+      subtitle: normalized.subtitle ?? sceneChart?.body,
+      insight: normalized.insight,
+      layoutRole: frame ? inferChartLayoutRole(frame) : "chart-panel",
+      fallbackMode: normalized.fallbackMode,
+      chartKind: normalized.chartKind,
+      frameBounds: frame ? pxRectToInches(frame.rect) : undefined,
+      semanticSpec,
+      labels: normalized.labels,
+      series: normalized.series,
+      bubblePoints: normalized.bubblePoints,
+      xAxisTitle: normalized.xAxisTitle,
+      yAxisTitle: normalized.yAxisTitle,
+      secondaryYAxisTitle: normalized.secondaryYAxisTitle,
+      sizeAxisTitle: normalized.sizeAxisTitle,
+      valueAxisMin: normalized.valueAxisMin,
+      valueAxisMax: normalized.valueAxisMax,
+      colors: normalized.colors,
+      style: normalized.style,
+      showInlineHeading: frame ? false : normalized.showInlineHeading,
+      showNativeVisual: true,
+      themeTokens,
+    });
+    args.warnings.push({
+      code: "native-chart-exported",
+      pageNumber: args.pageNumber,
+      message: `Chart on page ${args.pageNumber} exported as a PowerPoint-native chart.`,
+    });
+    if (frame) {
+      args.warnings.push({
+        code: "native-chart-visible",
+        severity: "success",
+        countsAgainstQuality: false,
+        pageNumber: args.pageNumber,
+        sourceId: frame.visualId,
+        sourceKind: normalized.chartKind === "matrix" ? "matrix" : "chart",
+        message: `Chart visible layer on page ${args.pageNumber} is rendered as a native PowerPoint chart.`,
+      });
+    }
+  };
 
   sceneCharts.forEach((chart, index) => {
     const sceneNormalized = normalizeSceneChartDataModel({
@@ -1930,101 +3572,40 @@ function collectChartModels(args: {
       pageNumber: args.pageNumber,
     });
     const frame = chartFrames[index] ?? null;
+    const frameContractElement = frame ? findChartContractElement(frame.element) ?? frame.element : null;
     const domNormalized =
-      frame && parseExportChartData(frame.element)
-        ? normalizeChartContractFromParsed({
-            parsed: parseExportChartData(frame.element)!,
+      frame
+        ? normalizeChartContractFromElement({
+            element: frameContractElement!,
             warnings: args.warnings,
             pageNumber: args.pageNumber,
-            fallbackTitle: chart.title,
-            fallbackSubtitle: chart.body,
-          })
+          }) ??
+          (parseExportChartData(frameContractElement!)
+            ? normalizeChartContractFromParsed({
+                parsed: parseExportChartData(frameContractElement!)!,
+                warnings: args.warnings,
+                pageNumber: args.pageNumber,
+                fallbackTitle: chart.title,
+                fallbackSubtitle: chart.body,
+              })
+            : null)
         : null;
     const normalized = sceneNormalized ?? domNormalized;
     if (!normalized && !frame) {
       return;
     }
 
-    const frameSupportTextNodes =
-      frame && args.pageElement
-        ? collectChartFrameSupportTextNodes({
-            pageElement: args.pageElement,
-            frame,
-          })
-        : [];
-
     if (frame) {
       nativeFrameIndexes.add(index);
-      skipVisualIds.add(frame.visualId);
-      supportTextNodes.push(...frameSupportTextNodes);
     }
 
     if (normalized) {
-      chartNodes.push({
-        kind: "chart",
-        renderMode: normalized.renderMode,
-        x: pxToInches(frame?.rect.x ?? chart.x),
-        y: pxToInches(frame?.rect.y ?? chart.y),
-        w: pxToInches(frame?.rect.w ?? chart.w),
-        h: pxToInches(frame?.rect.h ?? chart.h),
-        title: normalized.title ?? chart.title,
-        subtitle: normalized.subtitle ?? chart.body,
-        insight: normalized.insight,
-        layoutRole: frame ? inferChartLayoutRole(frame) : "chart-panel",
-        fallbackMode: normalized.fallbackMode,
-        chartKind: normalized.chartKind,
-        labels: normalized.labels,
-        series: normalized.series,
-        xAxisTitle: normalized.xAxisTitle,
-        yAxisTitle: normalized.yAxisTitle,
-        colors: normalized.colors,
-        themeTokens,
-      });
-      args.warnings.push({
-        code: normalized.renderMode === "native" ? "native-chart-exported" : "hybrid-chart-exported",
-        pageNumber: args.pageNumber,
-        message:
-          normalized.renderMode === "native"
-            ? `Chart on page ${args.pageNumber} exported as a PowerPoint-native chart.`
-            : `Chart on page ${args.pageNumber} exported in hybrid mode to preserve layout fidelity.`,
-      });
+      addNativeChart(normalized, frame, chart);
       return;
     }
 
     if (frame) {
-      const svgData = createElementSvgFallback({
-        sourceDocument: args.pageElement?.ownerDocument ?? document,
-        element: frame.element,
-        width: Math.max(1, Math.round(frame.rect.w)),
-        height: Math.max(1, Math.round(frame.rect.h)),
-      });
-
-      chartNodes.push({
-        kind: "chart",
-        renderMode: frameSupportTextNodes.length ? "hybrid" : "image",
-        x: pxToInches(frame.rect.x),
-        y: pxToInches(frame.rect.y),
-        w: pxToInches(frame.rect.w),
-        h: pxToInches(frame.rect.h),
-        layoutRole: inferChartLayoutRole(frame),
-        fallbackMode: "chart-image",
-        labels: [],
-        series: [],
-        colors: [],
-        themeTokens,
-        fallbackAsset: {
-          kind: "svg",
-          data: svgData,
-          reason: "chart-image-fallback",
-        },
-      });
-      args.warnings.push({
-        code: frameSupportTextNodes.length ? "hybrid-chart-exported" : "chart-image-fallback",
-        pageNumber: args.pageNumber,
-        message: frameSupportTextNodes.length
-          ? `Chart on page ${args.pageNumber} used a hybrid export to preserve the chart page structure.`
-          : `Chart frame on page ${args.pageNumber} used an SVG fallback so the chart remains visible in PPTX export.`,
-      });
+      skipUnsupportedFrame(frame);
     }
   });
 
@@ -2033,95 +3614,37 @@ function collectChartModels(args: {
       return;
     }
 
-    const parsed = parseExportChartData(frame.element);
-    const normalized = parsed
-      ? normalizeChartContractFromParsed({
-          parsed,
-          warnings: args.warnings,
-          pageNumber: args.pageNumber,
-        })
-      : null;
-    const frameSupportTextNodes = args.pageElement
-      ? collectChartFrameSupportTextNodes({
-          pageElement: args.pageElement,
-          frame,
-        })
-      : [];
-    supportTextNodes.push(...frameSupportTextNodes);
-
-    if (normalized) {
-      chartNodes.push({
-        kind: "chart",
-        renderMode: normalized.renderMode,
-        x: pxToInches(frame.rect.x),
-        y: pxToInches(frame.rect.y),
-        w: pxToInches(frame.rect.w),
-        h: pxToInches(frame.rect.h),
-        title: normalized.title,
-        subtitle: normalized.subtitle,
-        insight: normalized.insight,
-        layoutRole: inferChartLayoutRole(frame),
-        fallbackMode: normalized.fallbackMode,
-        chartKind: normalized.chartKind,
-        labels: normalized.labels,
-        series: normalized.series,
-        xAxisTitle: normalized.xAxisTitle,
-        yAxisTitle: normalized.yAxisTitle,
-        colors: normalized.colors,
-        themeTokens,
-      });
-      skipVisualIds.add(frame.visualId);
-      args.warnings.push({
-        code: normalized.renderMode === "native" ? "native-chart-exported" : "hybrid-chart-exported",
+    const frameContractElement = findChartContractElement(frame.element) ?? frame.element;
+    const parsed = parseExportChartData(frameContractElement);
+    const normalized =
+      normalizeChartContractFromElement({
+        element: frameContractElement,
+        warnings: args.warnings,
         pageNumber: args.pageNumber,
-        message:
-          normalized.renderMode === "native"
-            ? `Chart on page ${args.pageNumber} exported as a PowerPoint-native chart.`
-            : `Chart on page ${args.pageNumber} exported in hybrid mode to preserve layout fidelity.`,
-      });
+      }) ??
+      (parsed
+        ? normalizeChartContractFromParsed({
+            parsed,
+            warnings: args.warnings,
+            pageNumber: args.pageNumber,
+          })
+        : null);
+    if (normalized) {
+      addNativeChart(normalized, frame);
       return;
     }
 
-    const svgData = createElementSvgFallback({
-      sourceDocument: args.pageElement?.ownerDocument ?? document,
-      element: frame.element,
-      width: Math.max(1, Math.round(frame.rect.w)),
-      height: Math.max(1, Math.round(frame.rect.h)),
-    });
-
-    chartNodes.push({
-      kind: "chart",
-      renderMode: frameSupportTextNodes.length ? "hybrid" : "image",
-      x: pxToInches(frame.rect.x),
-      y: pxToInches(frame.rect.y),
-      w: pxToInches(frame.rect.w),
-      h: pxToInches(frame.rect.h),
-      layoutRole: inferChartLayoutRole(frame),
-      fallbackMode: "chart-image",
-      labels: [],
-      series: [],
-      colors: [],
-      themeTokens,
-      fallbackAsset: {
-        kind: "svg",
-        data: svgData,
-        reason: "chart-image-fallback",
-      },
-    });
-    skipVisualIds.add(frame.visualId);
-    args.warnings.push({
-      code: frameSupportTextNodes.length ? "hybrid-chart-exported" : "chart-image-fallback",
-      pageNumber: args.pageNumber,
-      message: frameSupportTextNodes.length
-        ? `Chart on page ${args.pageNumber} used a hybrid export to preserve the chart page structure.`
-        : `Chart frame on page ${args.pageNumber} used an SVG fallback so the chart remains visible in PPTX export.`,
-    });
+    skipUnsupportedFrame(frame);
   });
 
   return {
     chartNodes,
     skipVisualIds,
-    supportTextNodes: dedupeTextNodes(supportTextNodes),
+    owners: dedupeOwners(owners),
+    skipTextElements: skipTextElements.filter((element, index) => skipTextElements.indexOf(element) === index),
+    skipPrimitiveWithinElements: skipPrimitiveWithinElements.filter(
+      (element, index) => skipPrimitiveWithinElements.indexOf(element) === index,
+    ),
   };
 }
 
@@ -2158,45 +3681,102 @@ function collectExportAnnotations(args: {
     };
   }
 
+  const plan = createExportPagePlan({
+    pageElement: args.frame.pageElement,
+    pageNumber: args.pageNumber,
+    warnings: args.warnings,
+  });
   const chartCollection = collectChartModels({
     pageElement: args.frame.pageElement,
     theme,
     scene: args.scene,
     warnings: args.warnings,
     pageNumber: args.pageNumber,
+    plan,
   });
   const tableCollection = collectTableModels({
     pageElement: args.frame.pageElement,
     theme,
+    warnings: args.warnings,
+    pageNumber: args.pageNumber,
+    plan,
   });
+  const diagramElements = collectDiagramElements(args.frame.pageElement);
+  const exportOwners = dedupeOwners([
+    ...chartCollection.owners,
+    ...tableCollection.owners,
+    ...collectDiagramOwners(args.frame.pageElement),
+  ]);
+  if (plan) {
+    plan.owners = exportOwners;
+  }
   const skipVisualIds = new Set([
     ...chartCollection.skipVisualIds,
     ...tableCollection.skipVisualIds,
   ]);
-  const structuredTextNodes = dedupeTextNodes([
-    ...collectBlockTextNodes({
-      pageElement: args.frame.pageElement,
-      warnings: args.warnings,
+  const skipTextWithinElements = [
+    ...chartCollection.skipTextElements,
+    ...tableCollection.skipTextElements,
+    ...diagramElements,
+  ].filter((element, index, elements) => elements.indexOf(element) === index);
+  const skipPrimitiveWithinElements = [
+    ...chartCollection.skipPrimitiveWithinElements,
+    ...tableCollection.skipPrimitiveWithinElements,
+  ].filter((element, index, elements) => elements.indexOf(element) === index);
+  const ownedTextNodes = collectOwnedTextNodes({
+    pageElement: args.frame.pageElement,
+    owners: exportOwners,
+    plan,
+  });
+  const shapeNodes = collectVisualShapeNodes({
+    pageElement: args.frame.pageElement,
+    skipVisualIds,
+    skipPrimitiveWithinElements,
+    owners: exportOwners,
+    plan,
+    warnings: args.warnings,
+    pageNumber: args.pageNumber,
+  });
+  const ownedShapeCount = shapeNodes.filter((node) => node.ownerId).length;
+  if (ownedTextNodes.length) {
+    args.warnings.push({
+      code: "text-owned",
+      severity: "info",
+      countsAgainstQuality: false,
       pageNumber: args.pageNumber,
-    }),
-    ...chartCollection.supportTextNodes,
-  ]);
+      sourceKind: "page",
+      message: `${ownedTextNodes.length} text nodes on page ${args.pageNumber} were exported through a single owner pass.`,
+    });
+  }
+  if (ownedShapeCount) {
+    args.warnings.push({
+      code: "shape-owned",
+      severity: "info",
+      countsAgainstQuality: false,
+      pageNumber: args.pageNumber,
+      sourceKind: "page",
+      message: `${ownedShapeCount} shape nodes on page ${args.pageNumber} were exported with chart/diagram ownership.`,
+    });
+  }
 
   return {
     theme,
     textNodes: dedupeTextNodes([
-      ...structuredTextNodes,
-      ...collectLooseTextNodes({
+      ...collectBlockTextNodes({
         pageElement: args.frame.pageElement,
-        existingTextNodes: structuredTextNodes,
+        warnings: args.warnings,
+        pageNumber: args.pageNumber,
+        skipTextWithinElements,
+        plan,
       }),
+      ...collectLooseContentTextNodes({
+        pageElement: args.frame.pageElement,
+        skipTextWithinElements,
+        plan,
+      }),
+      ...ownedTextNodes,
     ]),
-    shapeNodes: collectVisualShapeNodes({
-      pageElement: args.frame.pageElement,
-      skipVisualIds,
-      warnings: args.warnings,
-      pageNumber: args.pageNumber,
-    }),
+    shapeNodes,
     chartNodes: chartCollection.chartNodes,
     tableNodes: tableCollection.tableNodes,
   };
@@ -2257,736 +3837,178 @@ async function loadPptxGen() {
   return module.default;
 }
 
-function renderSlideBackground(pptx: any, slide: any, slideModel: PptExportSlideModel) {
-  slide.background = { color: slideModel.theme.backgroundColor };
-  if (slideModel.theme.backgroundImageData) {
-    slide.addImage({
-      data: slideModel.theme.backgroundImageData,
-      x: 0,
-      y: 0,
-      w: PPT_LAYOUT.widthInches,
-      h: PPT_LAYOUT.heightInches,
+function escapeXml(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function pointsToEmu(value: number | undefined, fallback: number) {
+  const next = Number.isFinite(value) ? value! : fallback;
+  return Math.round(Math.max(0, next) * 12700);
+}
+
+function chartDashToPreset(value: "solid" | "dash" | "dot" | "none" | undefined) {
+  if (value === "dot") {
+    return "dot";
+  }
+  if (value === "dash") {
+    return "dash";
+  }
+  return "solid";
+}
+
+function buildChartColorElement(color: string | null | undefined, opacity = 1) {
+  const normalizedHex = typeof color === "string" ? color.trim().replace(/^#/, "").toUpperCase() : "";
+  const parsed = /^[0-9A-F]{6}$/.test(normalizedHex) ? { hex: normalizedHex, alpha: 1 } : parseCssColor(color);
+  const hex = parsed?.hex ?? "000000";
+  const alpha = Math.round(clamp((parsed?.alpha ?? 1) * opacity, 0, 1) * 100000);
+  return `<a:srgbClr val="${escapeXml(hex)}">${alpha < 100000 ? `<a:alpha val="${alpha}"/>` : ""}</a:srgbClr>`;
+}
+
+function buildChartSolidFillXml(color: string | null | undefined, opacity = 1) {
+  return `<a:solidFill>${buildChartColorElement(color, opacity)}</a:solidFill>`;
+}
+
+function buildChartLineXml(args: {
+  color?: string | null;
+  widthPt?: number;
+  dash?: "solid" | "dash" | "dot" | "none";
+  fallbackColor: string;
+  fallbackWidthPt: number;
+}) {
+  if (args.dash === "none") {
+    return `<a:ln w="${pointsToEmu(args.widthPt, args.fallbackWidthPt)}" cap="flat"><a:noFill/><a:prstDash val="solid"/><a:round/></a:ln>`;
+  }
+  return `<a:ln w="${pointsToEmu(args.widthPt, args.fallbackWidthPt)}" cap="round">${buildChartSolidFillXml(
+    args.color ?? args.fallbackColor,
+  )}<a:prstDash val="${chartDashToPreset(args.dash)}"/><a:round/></a:ln>`;
+}
+
+function downloadBlob(args: {
+  document: Document;
+  fileName: string;
+  blob: Blob;
+}) {
+  const view = args.document.defaultView ?? window;
+  const url = view.URL.createObjectURL(args.blob);
+  const anchor = args.document.createElement("a");
+  anchor.href = url;
+  anchor.download = args.fileName;
+  args.document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  view.setTimeout(() => view.URL.revokeObjectURL(url), 500);
+}
+
+async function collectTransientExportPageFrames(args: {
+  document: Document;
+  htmlReport: GeneratedHtmlReport;
+}) {
+  const pagePreviews = buildHtmlReportPagePreviews(args.htmlReport);
+  const container = args.document.createElement("div");
+  container.setAttribute("data-ppt-transient-export-frames", "true");
+  container.style.cssText = `
+    position: fixed;
+    visibility: hidden;
+    pointer-events: none;
+    opacity: 0;
+    top: -10000px;
+    left: 0;
+    width: ${HTML_REPORT_PAGE_WIDTH}px;
+    height: ${HTML_REPORT_PAGE_HEIGHT * Math.max(pagePreviews.length, 1)}px;
+    overflow: visible;
+  `;
+  args.document.body.appendChild(container);
+
+  const iframes = pagePreviews.map((pagePreview) => {
+    const iframe = args.document.createElement("iframe");
+    iframe.setAttribute("aria-hidden", "true");
+    iframe.setAttribute("data-ppt-transient-export-page-frame", String(pagePreview.pageNumber));
+    iframe.loading = "eager";
+    iframe.tabIndex = -1;
+    iframe.style.cssText = `
+      display: block;
+      width: ${HTML_REPORT_PAGE_WIDTH}px;
+      height: ${HTML_REPORT_PAGE_HEIGHT}px;
+      border: 0;
+    `;
+    container.appendChild(iframe);
+    return {
+      iframe,
+      pageNumber: pagePreview.pageNumber,
+      srcDoc: pagePreview.srcDoc,
+    };
+  });
+
+  for (const { iframe, srcDoc } of iframes) {
+    await new Promise<void>((resolve) => {
+      const timeout = window.setTimeout(resolve, 3000);
+      iframe.addEventListener(
+        "load",
+        () => {
+          window.clearTimeout(timeout);
+          resolve();
+        },
+        { once: true },
+      );
+      iframe.srcdoc = srcDoc;
     });
-  }
-}
-
-function renderVisualNodes(pptx: any, slide: any, slideModel: PptExportSlideModel) {
-  for (const shapeNode of slideModel.shapeNodes) {
-    slide.addShape(
-      shapeNode.shape === "roundRect" ? pptx.ShapeType.roundRect : pptx.ShapeType.rect,
-      {
-        x: shapeNode.x,
-        y: shapeNode.y,
-        w: shapeNode.w,
-        h: shapeNode.h,
-        fill: shapeNode.fillColor
-          ? {
-              color: shapeNode.fillColor,
-              transparency: shapeNode.fillTransparency,
-            }
-          : { color: "FFFFFF", transparency: 100 },
-        line: shapeNode.lineColor
-          ? {
-              color: shapeNode.lineColor,
-              transparency: shapeNode.lineTransparency,
-              width: shapeNode.lineWidthPt ?? 0.75,
-            }
-          : { color: "FFFFFF", transparency: 100, width: 0 },
-      },
-    );
-  }
-}
-
-function formatChartValue(value: number) {
-  const absolute = Math.abs(value);
-  if (absolute >= 1000) {
-    return `${Math.round(value)}`;
-  }
-  if (Number.isInteger(value)) {
-    return `${value}`;
-  }
-  return value.toFixed(1);
-}
-
-function buildChartDomain(values: number[], options?: { includeZero?: boolean; paddingRatio?: number }) {
-  const finiteValues = values.filter(Number.isFinite);
-  const includeZero = options?.includeZero ?? true;
-  let minValue = finiteValues.length ? Math.min(...finiteValues) : 0;
-  let maxValue = finiteValues.length ? Math.max(...finiteValues) : 1;
-
-  if (includeZero) {
-    minValue = Math.min(minValue, 0);
-    maxValue = Math.max(maxValue, 0);
+    if (iframe.contentDocument) {
+      await waitForRenderableSurface(iframe.contentDocument);
+    }
+    const deadline = window.performance.now() + 3000;
+    while (!iframe.contentDocument?.querySelector("section.page") && window.performance.now() < deadline) {
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+    }
   }
 
-  if (minValue === maxValue) {
-    const spread = Math.max(1, Math.abs(maxValue) * 0.2);
-    minValue -= spread;
-    maxValue += spread;
-  }
+  const frames = iframes
+    .map(({ iframe, pageNumber }) => {
+      const frameDocument = iframe.contentDocument;
+      const pageElement = frameDocument?.querySelector("section.page");
+      if (!frameDocument || !isHtmlElementNode(pageElement)) {
+        return null;
+      }
+      canonicalizeDataBackedModulesOnPage(pageElement);
+      return {
+        iframe,
+        document: frameDocument,
+        pageElement,
+        pageNumber,
+      } satisfies ExportPageFrame;
+    })
+    .filter((frame): frame is ExportPageFrame => Boolean(frame));
 
-  const range = Math.max(maxValue - minValue, 1);
-  const padding = range * (options?.paddingRatio ?? 0.08);
   return {
-    min: minValue - padding,
-    max: maxValue + padding,
+    frames,
+    cleanup: () => container.remove(),
   };
 }
 
-function scaleChartY(value: number, domain: { min: number; max: number }, plotY: number, plotH: number) {
-  const range = Math.max(domain.max - domain.min, 1);
-  return plotY + ((domain.max - value) / range) * plotH;
+function indexExportPageFramesByPageNumber(frames: ExportPageFrame[]) {
+  const indexed = new Map<number, ExportPageFrame>();
+  for (const frame of frames) {
+    if (Number.isFinite(frame.pageNumber) && frame.pageNumber >= 1) {
+      indexed.set(frame.pageNumber, frame);
+    }
+  }
+  return indexed;
 }
 
-function shouldRenderCategoryLabel(index: number, total: number, plotW: number) {
-  const maxLabels = Math.max(2, Math.floor(plotW / 0.62));
-  const step = Math.max(1, Math.ceil(total / maxLabels));
-  return index === 0 || index === total - 1 || index % step === 0;
-}
-
-function resolveSeriesColor(chartNode: PptExportChartModel, series: PptExportChartSeries | undefined, index = 0) {
-  return (
-    series?.color ??
-    chartNode.themeTokens.chartPalette[index % Math.max(chartNode.themeTokens.chartPalette.length, 1)] ??
-    chartNode.themeTokens.accent
-  );
-}
-
-function renderChartGridLines(args: {
-  pptx: any;
-  slide: any;
-  chartNode: PptExportChartModel;
-  plotX: number;
-  plotY: number;
-  plotW: number;
-  plotH: number;
-  domain: { min: number; max: number };
-  baseline?: boolean;
-}) {
-  [0.25, 0.5, 0.75].forEach((ratio) => {
-    const y = args.plotY + ratio * args.plotH;
-    args.slide.addShape(args.pptx.ShapeType.line, {
-      x: args.plotX,
-      y,
-      w: args.plotW,
-      h: 0,
-      line: {
-        color: args.chartNode.themeTokens.dividerColor,
-        width: 0.45,
-        transparency: 36,
-        dash: "dash",
-      },
-    });
-  });
-
-  if (args.baseline !== false && args.domain.min <= 0 && args.domain.max >= 0) {
-    args.slide.addShape(args.pptx.ShapeType.line, {
-      x: args.plotX,
-      y: scaleChartY(0, args.domain, args.plotY, args.plotH),
-      w: args.plotW,
-      h: 0,
-      line: { color: args.chartNode.themeTokens.dividerColor, width: 1.1 },
-    });
+function hasExportPageFramesForEveryPage(framesByPageNumber: Map<number, ExportPageFrame>, pageCount: number) {
+  for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+    if (!framesByPageNumber.has(pageNumber)) {
+      return false;
+    }
   }
-}
-
-function renderHybridWaterfallChart(pptx: any, slide: any, chartNode: PptExportChartModel) {
-  const values = chartNode.series[0]?.values ?? [];
-  if (!values.length || !chartNode.labels.length) {
-    if (chartNode.fallbackAsset) {
-      slide.addImage({
-        data: chartNode.fallbackAsset.data,
-        x: chartNode.x,
-        y: chartNode.y,
-        w: chartNode.w,
-        h: chartNode.h,
-      });
-    }
-    return;
-  }
-
-  let chartTop = chartNode.y;
-  let chartHeight = chartNode.h;
-
-  if (chartNode.title) {
-    slide.addText(chartNode.title, {
-      x: chartNode.x,
-      y: chartTop,
-      w: chartNode.w,
-      h: 0.34,
-      fontFace: "Iowan Old Style",
-      fontSize: 16,
-      bold: true,
-      margin: 0,
-      color: chartNode.themeTokens.textPrimary,
-    });
-    chartTop += 0.4;
-    chartHeight -= 0.4;
-  }
-
-  if (chartNode.subtitle) {
-    slide.addText(chartNode.subtitle, {
-      x: chartNode.x,
-      y: chartTop,
-      w: chartNode.w,
-      h: 0.3,
-      fontFace: "Avenir Next",
-      fontSize: 9,
-      color: chartNode.themeTokens.textMuted,
-      margin: 0,
-    });
-    chartTop += 0.36;
-    chartHeight -= 0.36;
-  }
-
-  const leftPad = 0.38;
-  const rightPad = 0.16;
-  const topPad = 0.24;
-  const bottomPad = 0.62;
-  const plotX = chartNode.x + leftPad;
-  const plotY = chartTop + topPad;
-  const plotW = Math.max(0.4, chartNode.w - leftPad - rightPad);
-  const plotH = Math.max(0.6, chartHeight - topPad - bottomPad);
-
-  const totals = [0];
-  let running = 0;
-  values.forEach((value) => {
-    running += value;
-    totals.push(running);
-  });
-
-  const domain = buildChartDomain(totals, { includeZero: true, paddingRatio: 0.06 });
-  const stepWidth = plotW / Math.max(values.length, 1);
-  const barWidth = Math.max(0.14, Math.min(0.42, stepWidth * 0.52));
-
-  renderChartGridLines({
-    pptx,
-    slide,
-    chartNode,
-    plotX,
-    plotY,
-    plotW,
-    plotH,
-    domain,
-  });
-
-  let cumulative = 0;
-  values.forEach((value, index) => {
-    const nextTotal = cumulative + value;
-    const segmentTop = scaleChartY(Math.max(cumulative, nextTotal), domain, plotY, plotH);
-    const segmentBottom = scaleChartY(Math.min(cumulative, nextTotal), domain, plotY, plotH);
-    const barHeight = Math.max(0.12, segmentBottom - segmentTop);
-    const x = plotX + index * stepWidth + (stepWidth - barWidth) / 2;
-    const fillColor =
-      value >= 0
-        ? resolveSeriesColor(chartNode, chartNode.series[0], 0)
-        : chartNode.themeTokens.chartPalette[2] ?? chartNode.themeTokens.textMuted;
-
-    slide.addShape(pptx.ShapeType.rect, {
-      x,
-      y: segmentTop,
-      w: barWidth,
-      h: barHeight,
-      fill: { color: fillColor, transparency: 0 },
-      line: { color: fillColor, width: 0.8 },
-    });
-
-    if (index > 0) {
-      const connectorY = scaleChartY(cumulative, domain, plotY, plotH);
-      const previousX = plotX + (index - 1) * stepWidth + stepWidth / 2;
-      slide.addShape(pptx.ShapeType.line, {
-        x: previousX,
-        y: connectorY,
-        w: stepWidth,
-        h: 0,
-        line: { color: chartNode.themeTokens.dividerColor, width: 1, dash: "dash" },
-      });
-    }
-
-    slide.addText(formatChartValue(value), {
-      x: x - 0.08,
-      y:
-        value >= 0
-          ? clamp(segmentTop - 0.22, plotY - 0.02, plotY + plotH - 0.1)
-          : clamp(segmentBottom + 0.04, plotY, plotY + plotH + 0.08),
-      w: barWidth + 0.16,
-      h: 0.2,
-      fontFace: "Avenir Next",
-      fontSize: 8,
-      align: "center",
-      color: chartNode.themeTokens.textMuted,
-      margin: 0,
-    });
-
-    if (shouldRenderCategoryLabel(index, values.length, plotW)) {
-      slide.addText(chartNode.labels[index] ?? `Step ${index + 1}`, {
-        x: plotX + index * stepWidth,
-        y: plotY + plotH + 0.12,
-        w: stepWidth,
-        h: 0.3,
-        fontFace: "Avenir Next",
-        fontSize: values.length > 8 ? 7 : 8,
-        align: "center",
-        color: chartNode.themeTokens.textMuted,
-        margin: 0,
-        fit: "shrink",
-      });
-    }
-
-    cumulative = nextTotal;
-  });
-}
-
-function renderHybridComboChart(pptx: any, slide: any, chartNode: PptExportChartModel) {
-  const barSeries = chartNode.series.filter((series) => (series.role ?? "bar") !== "line");
-  const lineSeries = chartNode.series.filter((series) => (series.role ?? "bar") === "line");
-  if (!chartNode.labels.length || (!barSeries.length && !lineSeries.length)) {
-    if (chartNode.fallbackAsset) {
-      slide.addImage({
-        data: chartNode.fallbackAsset.data,
-        x: chartNode.x,
-        y: chartNode.y,
-        w: chartNode.w,
-        h: chartNode.h,
-      });
-    }
-    return;
-  }
-
-  let chartTop = chartNode.y;
-  let chartHeight = chartNode.h;
-  if (chartNode.title) {
-    slide.addText(chartNode.title, {
-      x: chartNode.x,
-      y: chartTop,
-      w: chartNode.w,
-      h: 0.34,
-      fontFace: "Iowan Old Style",
-      fontSize: 16,
-      bold: true,
-      margin: 0,
-      color: chartNode.themeTokens.textPrimary,
-    });
-    chartTop += 0.4;
-    chartHeight -= 0.4;
-  }
-  if (chartNode.subtitle) {
-    slide.addText(chartNode.subtitle, {
-      x: chartNode.x,
-      y: chartTop,
-      w: chartNode.w,
-      h: 0.3,
-      fontFace: "Avenir Next",
-      fontSize: 9,
-      color: chartNode.themeTokens.textMuted,
-      margin: 0,
-    });
-    chartTop += 0.36;
-    chartHeight -= 0.36;
-  }
-
-  const leftPad = 0.42;
-  const rightPad = 0.34;
-  const topPad = 0.2;
-  const bottomPad = 0.62;
-  const plotX = chartNode.x + leftPad;
-  const plotY = chartTop + topPad;
-  const plotW = Math.max(0.4, chartNode.w - leftPad - rightPad);
-  const plotH = Math.max(0.6, chartHeight - topPad - bottomPad);
-  const primaryValues = barSeries.flatMap((series) => series.values);
-  const secondaryValues = lineSeries.flatMap((series) => series.values);
-  const primaryDomain = buildChartDomain(primaryValues, { includeZero: true, paddingRatio: 0.08 });
-  const secondaryDomain = buildChartDomain(secondaryValues, {
-    includeZero: false,
-    paddingRatio: 0.12,
-  });
-  const primaryY = (value: number) => scaleChartY(value, primaryDomain, plotY, plotH);
-  const secondaryY = (value: number) => scaleChartY(value, secondaryDomain, plotY, plotH);
-  const baselineY = primaryY(0);
-  const stepWidth = plotW / Math.max(chartNode.labels.length, 1);
-  const groupWidth = Math.min(stepWidth * 0.62, stepWidth - 0.06);
-  const barWidth = Math.max(0.08, groupWidth / Math.max(barSeries.length, 1));
-
-  renderChartGridLines({
-    pptx,
-    slide,
-    chartNode,
-    plotX,
-    plotY,
-    plotW,
-    plotH,
-    domain: primaryDomain,
-  });
-
-  chartNode.labels.forEach((label, categoryIndex) => {
-    const xBase = plotX + categoryIndex * stepWidth + (stepWidth - groupWidth) / 2;
-    barSeries.forEach((series, seriesIndex) => {
-      const value = series.values[categoryIndex] ?? 0;
-      const y = primaryY(value);
-      const barTop = Math.min(y, baselineY);
-      const h = Math.max(0.06, Math.abs(baselineY - y));
-      const fillColor = resolveSeriesColor(chartNode, series, seriesIndex);
-      slide.addShape(pptx.ShapeType.rect, {
-        x: xBase + seriesIndex * barWidth,
-        y: barTop,
-        w: Math.max(0.06, barWidth - 0.035),
-        h,
-        fill: { color: fillColor, transparency: 8 },
-        line: { color: fillColor, transparency: 18, width: 0.4 },
-      });
-    });
-
-    if (shouldRenderCategoryLabel(categoryIndex, chartNode.labels.length, plotW)) {
-      slide.addText(label, {
-        x: plotX + categoryIndex * stepWidth,
-        y: plotY + plotH + 0.12,
-        w: stepWidth,
-        h: 0.28,
-        fontFace: "Avenir Next",
-        fontSize: chartNode.labels.length > 8 ? 7 : 8,
-        align: "center",
-        color: chartNode.themeTokens.textMuted,
-        margin: 0,
-        fit: "shrink",
-      });
-    }
-  });
-
-  lineSeries.forEach((series, seriesIndex) => {
-    const color = resolveSeriesColor(chartNode, series, barSeries.length + seriesIndex);
-    const points = chartNode.labels.map((_, categoryIndex) => ({
-      x: plotX + categoryIndex * stepWidth + stepWidth / 2,
-      y: secondaryY(series.values[categoryIndex] ?? 0),
-      value: series.values[categoryIndex] ?? 0,
-    }));
-
-    points.slice(1).forEach((point, pointIndex) => {
-      const previous = points[pointIndex]!;
-      slide.addShape(pptx.ShapeType.line, {
-        x: previous.x,
-        y: previous.y,
-        w: point.x - previous.x,
-        h: point.y - previous.y,
-        line: { color, width: 2.2 },
-      });
-    });
-
-    points.forEach((point, pointIndex) => {
-      slide.addShape(pptx.ShapeType.ellipse, {
-        x: point.x - 0.035,
-        y: point.y - 0.035,
-        w: 0.07,
-        h: 0.07,
-        fill: { color, transparency: 0 },
-        line: { color: "FFFFFF", width: 0.8 },
-      });
-      if (pointIndex === points.length - 1) {
-        slide.addText(formatChartValue(point.value), {
-          x: point.x - 0.28,
-          y: Math.max(plotY, point.y - 0.28),
-          w: 0.56,
-          h: 0.2,
-          fontFace: "Avenir Next",
-          fontSize: 8,
-          bold: true,
-          align: "center",
-          color: chartNode.themeTokens.textPrimary,
-          margin: 0,
-        });
-      }
-    });
-  });
-}
-
-function resolveTableColumnWidths(tableNode: PptExportTableModel) {
-  const weights = tableNode.columns.map((column, columnIndex) => {
-    const columnValues = tableNode.rows.map((row) => row[columnIndex] ?? "");
-    const maxLength = Math.max(column.length, ...columnValues.map((value) => value.length), 4);
-    const preferred = Math.sqrt(maxLength);
-    return clamp(preferred, columnIndex === 0 ? 1.35 : 0.9, columnIndex === 0 ? 2.4 : 1.8);
-  });
-  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0) || 1;
-  return weights.map((weight) => Number(((tableNode.w * weight) / totalWeight).toFixed(3)));
-}
-
-function resolveTableRowHeights(tableNode: PptExportTableModel) {
-  const rowCount = tableNode.rows.length + 1;
-  if (rowCount <= 1) {
-    return [tableNode.h];
-  }
-
-  const headerHeight = clamp(tableNode.h * 0.16, 0.18, Math.min(0.34, tableNode.h * 0.34));
-  const bodyHeight = Math.max(0.05, (tableNode.h - headerHeight) / Math.max(tableNode.rows.length, 1));
-  return [
-    Number(headerHeight.toFixed(3)),
-    ...tableNode.rows.map(() => Number(bodyHeight.toFixed(3))),
-  ];
-}
-
-function renderTableNodes(slide: any, slideModel: PptExportSlideModel) {
-  for (const tableNode of slideModel.tableNodes) {
-    if (!tableNode.columns.length) {
-      continue;
-    }
-
-    const rowCount = tableNode.rows.length + 1;
-    const fontSize = rowCount > 10 ? 6.5 : rowCount > 8 ? 7 : rowCount > 5 ? 8 : 9;
-    const border = {
-      type: "solid" as const,
-      color: tableNode.themeTokens.dividerColor,
-      pt: 0.5,
-    };
-    const headerFill = {
-      color: tableNode.themeTokens.surfaceSecondary,
-      transparency: 0,
-    };
-    const bodyFill = {
-      color: tableNode.themeTokens.surfaceFill,
-      transparency: 4,
-    };
-    const zebraFill = {
-      color: tableNode.themeTokens.surfaceSecondary,
-      transparency: 18,
-    };
-    const rows = [
-      tableNode.columns.map((column) => ({
-        text: column,
-        options: {
-          bold: true,
-          color: tableNode.themeTokens.textPrimary,
-          fill: headerFill,
-          border,
-          fontSize: Math.max(7, fontSize - 1),
-          margin: [0.05, 0.07, 0.05, 0.07],
-          valign: "middle" as const,
-          fit: "shrink" as const,
-        },
-      })),
-      ...tableNode.rows.map((row, rowIndex) =>
-        tableNode.columns.map((_, columnIndex) => ({
-          text: row[columnIndex] ?? "",
-          options: {
-            bold: columnIndex === 0,
-            color:
-              columnIndex === 0
-                ? tableNode.themeTokens.textPrimary
-                : tableNode.themeTokens.textMuted,
-            fill: rowIndex % 2 === 0 ? bodyFill : zebraFill,
-            border,
-            fontSize,
-            margin: [0.05, 0.07, 0.05, 0.07],
-            valign: "top" as const,
-            fit: "shrink" as const,
-          },
-        })),
-      ),
-    ];
-
-    slide.addTable(rows, {
-      x: tableNode.x,
-      y: tableNode.y,
-      w: tableNode.w,
-      h: tableNode.h,
-      colW: resolveTableColumnWidths(tableNode),
-      rowH: resolveTableRowHeights(tableNode),
-      fontFace: "Avenir Next",
-      fontSize,
-      color: tableNode.themeTokens.textMuted,
-      margin: 0,
-      border,
-      fit: "shrink",
-      autoPage: false,
-    });
-  }
-}
-
-function renderChartNodes(pptx: any, slide: any, slideModel: PptExportSlideModel) {
-  for (const chartNode of slideModel.chartNodes) {
-    if (chartNode.renderMode === "image" && chartNode.fallbackAsset) {
-      slide.addImage({
-        data: chartNode.fallbackAsset.data,
-        x: chartNode.x,
-        y: chartNode.y,
-        w: chartNode.w,
-        h: chartNode.h,
-      });
-      continue;
-    }
-
-    if (chartNode.renderMode === "hybrid" && chartNode.chartKind === "waterfall") {
-      renderHybridWaterfallChart(pptx, slide, chartNode);
-      continue;
-    }
-
-    if (chartNode.renderMode === "hybrid" && chartNode.chartKind === "combo") {
-      renderHybridComboChart(pptx, slide, chartNode);
-      continue;
-    }
-
-    if (chartNode.renderMode === "hybrid" && chartNode.fallbackAsset) {
-      slide.addImage({
-        data: chartNode.fallbackAsset.data,
-        x: chartNode.x,
-        y: chartNode.y,
-        w: chartNode.w,
-        h: chartNode.h,
-      });
-      continue;
-    }
-
-    let chartTop = chartNode.y;
-    let chartHeight = chartNode.h;
-
-    if (chartNode.title) {
-      slide.addText(chartNode.title, {
-        x: chartNode.x,
-        y: chartTop,
-        w: chartNode.w,
-        h: 0.34,
-        fontFace: "Iowan Old Style",
-        fontSize: 16,
-        bold: true,
-        margin: 0,
-        color: chartNode.themeTokens.textPrimary,
-      });
-      chartTop += 0.4;
-      chartHeight -= 0.4;
-    }
-
-    if (chartNode.subtitle) {
-      slide.addText(chartNode.subtitle, {
-        x: chartNode.x,
-        y: chartTop,
-        w: chartNode.w,
-        h: 0.3,
-        fontFace: "Avenir Next",
-        fontSize: 9,
-        color: chartNode.themeTokens.textMuted,
-        margin: 0,
-      });
-      chartTop += 0.36;
-      chartHeight -= 0.36;
-    }
-
-    const chartType =
-      chartNode.chartKind === "line" ? pptx.ChartType.line : pptx.ChartType.bar;
-    const chartData = chartNode.series.map((series, index) => ({
-      name: series.name || `Series ${index + 1}`,
-      labels: chartNode.labels,
-      values: series.values,
-    }));
-    const chartColors = chartNode.series
-      .map((series) => series.color)
-      .filter((item): item is string => Boolean(item));
-    const nativeChartHeight = Math.max(0.8, chartHeight);
-    const axisLabelFontSize =
-      chartNode.labels.length > 10 ? 7 : chartNode.labels.length > 6 ? 8 : 9;
-    const showLegend = chartNode.series.length > 1 && chartNode.w >= 3.2 && nativeChartHeight >= 1.45;
-
-    slide.addChart(chartType, chartData, {
-      x: chartNode.x,
-      y: chartTop,
-      w: chartNode.w,
-      h: nativeChartHeight,
-      showLegend,
-      showTitle: false,
-      catAxisLabelFontSize: axisLabelFontSize,
-      valAxisLabelFontSize: Math.max(7, axisLabelFontSize - 1),
-      showValue: false,
-      chartColors: chartColors.length
-        ? chartColors
-        : chartNode.colors.length
-          ? chartNode.colors
-          : chartNode.themeTokens.chartPalette.length
-            ? chartNode.themeTokens.chartPalette
-            : [chartNode.themeTokens.accent],
-      chartColorsOpacity: 100,
-      showValAxisTitle: Boolean(chartNode.yAxisTitle),
-      showCatAxisTitle: Boolean(chartNode.xAxisTitle),
-      valAxisTitle: chartNode.yAxisTitle,
-      catAxisTitle: chartNode.xAxisTitle,
-      catAxisLabelColor: chartNode.themeTokens.textMuted,
-      valAxisLabelColor: chartNode.themeTokens.textMuted,
-      catAxisLabelPos: "nextTo",
-      valAxisLabelPos: "nextTo",
-      valGridLine: { color: chartNode.themeTokens.dividerColor, size: 1, style: "solid" },
-      catGridLine: { color: "FFFFFF", size: 0, style: "none" },
-      showSerName: false,
-      showPercent: false,
-      showLeaderLines: false,
-      legendPos: "b",
-      dataLabelPosition: "outEnd",
-      barDir: "col",
-      lineSize: chartNode.chartKind === "line" ? 2 : undefined,
-      barGrouping: chartNode.chartKind === "stacked" ? "stacked" : "clustered",
-    });
-  }
-}
-
-function renderTextNodes(slide: any, slideModel: PptExportSlideModel) {
-  for (const textNode of slideModel.textNodes) {
-    const baseOptions = {
-      x: textNode.x,
-      y: textNode.y,
-      w: textNode.w,
-      h: textNode.h,
-      fontFace: textNode.fontFamily || "Avenir Next",
-      fontSize: textNode.fontSize,
-      bold: textNode.bold ?? false,
-      italic: textNode.italic ?? false,
-      color: textNode.color,
-      align: textNode.align,
-      valign: "top" as const,
-      margin: 0,
-      breakLine: false,
-      fit: "shrink" as const,
-      rotate: textNode.rotation,
-      fill: textNode.fillColor
-        ? { color: textNode.fillColor, transparency: 0, type: "solid" }
-        : { color: "FFFFFF", transparency: 100, type: "none" },
-      line: { color: "FFFFFF", transparency: 100, width: 0 },
-    };
-
-    if (textNode.items?.length) {
-      slide.addText(textNode.items.join("\n"), {
-        ...baseOptions,
-        bullet: { indent: 12 },
-        paraSpaceAfter: 4,
-      });
-      continue;
-    }
-
-    if (textNode.runs?.length) {
-      slide.addText(
-        textNode.runs.map((run) => ({
-          text: run.text,
-          options: {
-            fontFace: run.fontFamily,
-            fontSize: run.fontSize,
-            bold: run.bold,
-            italic: run.italic,
-            color: run.color,
-          },
-        })),
-        baseOptions,
-      );
-      continue;
-    }
-
-    slide.addText(textNode.text, baseOptions);
-  }
-}
-
-function renderSlideToPptx(args: {
-  pptx: any;
-  slideModel: PptExportSlideModel;
-}) {
-  const slide = args.pptx.addSlide();
-  renderSlideBackground(args.pptx, slide, args.slideModel);
-  renderVisualNodes(args.pptx, slide, args.slideModel);
-  renderTableNodes(slide, args.slideModel);
-  renderChartNodes(args.pptx, slide, args.slideModel);
-  renderTextNodes(slide, args.slideModel);
+  return true;
 }
 
 export async function exportProjectToPptx(args: {
@@ -3003,28 +4025,44 @@ export async function exportProjectToPptx(args: {
   }
 
   await waitForRenderableSurface(args.reportRoot);
-  const exportFrames = await collectExportPageFrames({
-    document: args.document,
-    htmlReport,
-  });
-  const warnings: PptExportWarning[] = [];
-  let slides: PptExportSlideModel[];
-  try {
-    slides = args.project.pages.map((_, pageIndex) => {
-      const built = normalizeSlideModel({
-        project: args.project,
-        draft: args.draft,
-        htmlReport,
-        pageIndex,
-        frame: exportFrames.frames[pageIndex] ?? null,
-      });
-      warnings.push(...built.warnings);
-      return built.slide;
+  const expectedPageCount = Math.max(args.project.pages.length, htmlReport.pageCount);
+  const renderedFrames = await collectRenderedExportPageFrames(args.reportRoot);
+  const framesByPageNumber = indexExportPageFramesByPageNumber(renderedFrames);
+  let cleanupTransientFrames: (() => void) | null = null;
+  if (!hasExportPageFramesForEveryPage(framesByPageNumber, expectedPageCount)) {
+    const transient = await collectTransientExportPageFrames({
+      document: args.document,
+      htmlReport,
     });
-  } finally {
-    exportFrames.cleanup();
+    for (const frame of transient.frames) {
+      if (!framesByPageNumber.has(frame.pageNumber)) {
+        framesByPageNumber.set(frame.pageNumber, frame);
+      }
+    }
+    cleanupTransientFrames = transient.cleanup;
   }
+  const warnings: PptExportWarning[] = [];
+  const slides: PptExportSlideModel[] = args.project.pages.map((_, pageIndex) => {
+    const pageNumber = pageIndex + 1;
+    const built = normalizeSlideModel({
+      project: args.project,
+      draft: args.draft,
+      htmlReport,
+      pageIndex,
+      frame: framesByPageNumber.get(pageNumber) ?? null,
+    });
+    warnings.push(...built.warnings);
+    return built.slide;
+  });
+  cleanupTransientFrames?.();
   const dedupedWarnings = dedupeWarnings(warnings);
+  const diagnostics = normalizePptxDiagnostics(dedupedWarnings);
+  const visibleWarnings = filterPptxWarnings(diagnostics);
+  const exportDocument = buildPptxExportDocument({
+    slides,
+    diagnostics,
+  });
+  const qualityReport = buildPptxExportQualityReport(exportDocument);
 
   const PptxGenJS = await loadPptxGen();
   const pptx = new PptxGenJS();
@@ -3038,21 +4076,39 @@ export async function exportProjectToPptx(args: {
     bodyFontFace: "Avenir Next",
   };
 
-  for (const slideModel of slides) {
-    renderSlideToPptx({
-      pptx,
-      slideModel,
-    });
-  }
+  renderExportDocumentToPptx({
+    pptx,
+    document: exportDocument,
+  });
 
   const fileName = args.fileName || slugifyFileName(args.project.projectName);
-  await pptx.writeFile({ fileName, compression: true });
+  const rawPptx = (await pptx.write({
+    outputType: "arraybuffer",
+    compression: true,
+  })) as ArrayBuffer;
+  const pptxBlob = await patchPptxPackageXml({
+    arrayBuffer: rawPptx,
+    document: exportDocument,
+  });
+  const packageDiagnostics = await validatePptxPackageBlob(pptxBlob);
+  if (packageDiagnostics.length) {
+    const normalizedPackageDiagnostics = normalizePptxDiagnostics(packageDiagnostics);
+    const firstMessage = normalizedPackageDiagnostics[0]?.message ?? "Unknown PPTX package error.";
+    throw new Error(`PPTX package validation failed: ${firstMessage}`);
+  }
+  downloadBlob({
+    document: args.document,
+    fileName,
+    blob: pptxBlob,
+  });
 
   return {
     fileName,
     slideCount: slides.length,
-    warningCount: dedupedWarnings.length,
-    warnings: dedupedWarnings,
+    warningCount: visibleWarnings.length,
+    warnings: visibleWarnings,
+    diagnostics,
     slides,
+    qualityReport,
   } satisfies PptExportResult;
 }

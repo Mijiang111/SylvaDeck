@@ -25,6 +25,7 @@ import {
   runStudioGeneration,
   runStudioRevision,
 } from "../lib/studio-engine/core.js";
+import { createStudioRunSessionRecorder } from "../lib/studio-engine/run-session.js";
 import { compactBriefForGeneration } from "../lib/studio-engine/brief.js";
 import {
   loadStudio3dHeroSkill,
@@ -95,6 +96,12 @@ export function studioRoutes() {
     };
     const agentConfig = resolveAgentConfig(payload.agentConfig);
     const runId = `studio-${randomUUID()}`;
+    const runSession = createStudioRunSessionRecorder({
+      kind: "generate",
+      runId,
+      payload: preparedPayload,
+      agentConfig,
+    });
 
     try {
       logger.info(
@@ -127,8 +134,9 @@ export function studioRoutes() {
         res.json({
           provider: "unavailable",
           model: null,
-          reason,
-        });
+            reason,
+          });
+        runSession.finishFailed(reason);
         return;
       }
 
@@ -136,6 +144,15 @@ export function studioRoutes() {
         payload: preparedPayload,
         agentConfig,
         runId,
+        onStageTrace: async (entry) => {
+          runSession.recordStageTrace(entry);
+        },
+      });
+      runSession.finishSucceeded({
+        model: result.model ?? agentConfig.model,
+        enginePath: result.enginePath,
+        title: result.report.title,
+        pageCount: result.report.pageCount,
       });
 
       logger.info(
@@ -168,6 +185,7 @@ export function studioRoutes() {
         },
         "studio generate request errored",
       );
+      runSession.finishFailed(reason);
       res.json({
         provider: "error",
         model: null,
@@ -207,6 +225,16 @@ export function studioRoutes() {
     res.flushHeaders();
 
     const emit = createStreamWriter(res);
+    const runSession = createStudioRunSessionRecorder({
+      kind: "generate",
+      runId,
+      payload: preparedPayload,
+      agentConfig,
+    });
+    const emitWithRunSession = async (event: Parameters<typeof emit>[0]) => {
+      runSession.recordStreamEvent(event);
+      await emit(event);
+    };
 
     try {
       logger.info(
@@ -228,11 +256,12 @@ export function studioRoutes() {
       const blockingErrors = getBlockingAgentChecks(environment);
       if (blockingErrors.length > 0) {
         const reason = blockingErrors.map((check) => check.message).join(" ");
-        await emit({
+        await emitWithRunSession({
           type: "error",
           runId,
           reason,
         });
+        runSession.finishFailed(reason);
         res.end();
         return;
       }
@@ -242,8 +271,12 @@ export function studioRoutes() {
         agentConfig,
         runId,
         signal: abortController.signal,
-        emit,
+        emit: emitWithRunSession,
+        onStageTrace: async (entry) => {
+          runSession.recordStageTrace(entry);
+        },
       });
+      runSession.finishSucceeded();
 
       res.end();
     } catch (error) {
@@ -263,13 +296,14 @@ export function studioRoutes() {
       );
 
       if (!res.writableEnded) {
-        await emit({
+        await emitWithRunSession({
           type: "error",
           runId,
           reason,
         });
         res.end();
       }
+      runSession.finishFailed(reason);
     }
   });
 
@@ -301,6 +335,16 @@ export function studioRoutes() {
     res.flushHeaders();
 
     const emit = createStreamWriter(res);
+    const runSession = createStudioRunSessionRecorder({
+      kind: "revise",
+      runId,
+      payload: preparedPayload,
+      agentConfig,
+    });
+    const emitWithRunSession = async (event: Parameters<typeof emit>[0]) => {
+      runSession.recordStreamEvent(event);
+      await emit(event);
+    };
 
     try {
       logger.info(
@@ -321,11 +365,12 @@ export function studioRoutes() {
       const blockingErrors = getBlockingAgentChecks(environment);
       if (blockingErrors.length > 0) {
         const reason = blockingErrors.map((check) => check.message).join(" ");
-        await emit({
+        await emitWithRunSession({
           type: "error",
           runId,
           reason,
         });
+        runSession.finishFailed(reason);
         res.end();
         return;
       }
@@ -335,8 +380,12 @@ export function studioRoutes() {
         agentConfig,
         runId,
         signal: abortController.signal,
-        emit,
+        emit: emitWithRunSession,
+        onStageTrace: async (entry) => {
+          runSession.recordStageTrace(entry);
+        },
       });
+      runSession.finishSucceeded();
 
       res.end();
     } catch (error) {
@@ -356,13 +405,14 @@ export function studioRoutes() {
       );
 
       if (!res.writableEnded) {
-        await emit({
+        await emitWithRunSession({
           type: "error",
           runId,
           reason,
         });
         res.end();
       }
+      runSession.finishFailed(reason);
     }
   });
 

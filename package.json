@@ -26,8 +26,10 @@
     "build": "corepack pnpm --dir server build && corepack pnpm --dir ui build",
     "typecheck": "corepack pnpm --dir server typecheck && corepack pnpm --dir ui typecheck",
     "stop": "node ./scripts/dev.mjs --clean-only",
+    "test:golden": "corepack pnpm --dir server exec tsx ../tests/golden-set/run.ts",
     "test:stability:quick": "playwright test -c tests/stability/playwright.config.mjs --grep @quick",
     "test:stability:full": "playwright test -c tests/stability/playwright.config.mjs",
+    "test:pptx:golden": "playwright test -c tests/stability/playwright.config.mjs tests/stability/pptx-golden.stability.spec.js",
     "test:stability:canary": "STUDIO_STABILITY_LIVE=1 playwright test -c tests/stability/playwright.config.mjs --grep @canary",
     "test:stability:record": "node ./tests/stability/record-fixtures.mjs",
     "test:workspace:eval": "corepack pnpm --dir server exec tsx ../tests/workspace-eval/run.ts"
