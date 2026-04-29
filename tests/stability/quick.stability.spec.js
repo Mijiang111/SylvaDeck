@@ -46,10 +46,11 @@ test.describe("Studio stability quick gate", () => {
     expect(pptx.objectCounts.textRunCount).toBeGreaterThan(0);
     expect(pptx.objectCounts.shapeCount).toBeGreaterThan(0);
     expect(
-      pptx.objectCounts.chartCount +
-        pptx.objectCounts.chartRelCount +
-        pptx.objectCounts.pictureCount,
+      pptx.objectCounts.connectorCount +
+        pptx.objectCounts.roundRectCount +
+        pptx.objectCounts.ellipseCount,
     ).toBeGreaterThan(0);
+    expect(pptx.objectCounts.imageRelCount).toBe(0);
     expect(pptx.combinedText.toLowerCase()).toContain(editedHeadline.toLowerCase());
 
     await page.reload();
@@ -388,7 +389,9 @@ test.describe("Studio stability quick gate", () => {
     expect(pptx.slideCount).toBe(3);
     expect(pptx.layoutSize?.aspectRatio ?? 0).toBeCloseTo(16 / 9, 2);
     expect(pptx.objectCounts.textRunCount).toBeGreaterThan(0);
-    expect(pptx.objectCounts.pictureCount + pptx.objectCounts.imageRelCount).toBeGreaterThan(0);
+    expect(pptx.objectCounts.connectorCount).toBeGreaterThanOrEqual(40);
+    expect(pptx.objectCounts.ellipseCount).toBeGreaterThanOrEqual(15);
+    expect(pptx.objectCounts.imageRelCount).toBe(0);
     expect(pptx.combinedText.toLowerCase()).toContain("dense reranking network");
     expect(pptx.combinedText.toLowerCase()).toContain("input layer");
   });
