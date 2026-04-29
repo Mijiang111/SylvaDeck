@@ -3,27 +3,12 @@ import {
   type PptExportPaint,
   type PptxExportChartNode,
   type PptxExportDocument,
+  type PptxExportNode,
   type PptxExportShapeNode,
   type PptxExportSlide,
   type PptxExportTableNode,
   type PptxExportTextNode,
 } from "./types";
-
-function textNodes(slide: PptxExportSlide) {
-  return slide.nodes.filter((node): node is PptxExportTextNode => node.nodeType === "text");
-}
-
-function shapeNodes(slide: PptxExportSlide) {
-  return slide.nodes.filter((node): node is PptxExportShapeNode => node.nodeType === "shape");
-}
-
-function chartNodes(slide: PptxExportSlide) {
-  return slide.nodes.filter((node): node is PptxExportChartNode => node.nodeType === "chart");
-}
-
-function tableNodes(slide: PptxExportSlide) {
-  return slide.nodes.filter((node): node is PptxExportTableNode => node.nodeType === "table");
-}
 
 function renderSlideBackground(slide: any, slideModel: PptxExportSlide) {
   slide.background = { color: slideModel.theme.backgroundColor };
@@ -71,56 +56,54 @@ function shadowFromShapeNode(shapeNode: PptxExportShapeNode) {
   };
 }
 
-function renderVisualNodes(pptx: any, slide: any, slideModel: PptxExportSlide) {
-  for (const shapeNode of shapeNodes(slideModel)) {
-    if (shapeNode.shape === "line") {
-      const useExactLineVector = shapeNode.role.startsWith("svg-");
-      const isVertical = Math.abs(shapeNode.h) > Math.abs(shapeNode.w);
-      slide.addShape(pptx.ShapeType.line, {
-        objectName: shapeNode.id,
-        x: useExactLineVector ? shapeNode.x : isVertical ? shapeNode.x + shapeNode.w / 2 : shapeNode.x,
-        y: useExactLineVector ? shapeNode.y : isVertical ? shapeNode.y : shapeNode.y + shapeNode.h / 2,
-        w: useExactLineVector ? shapeNode.w : isVertical ? 0 : shapeNode.w,
-        h: useExactLineVector ? shapeNode.h : isVertical ? shapeNode.h : 0,
-        line: shapeNode.lineColor
-          ? {
-              color: shapeNode.lineColor,
-              transparency: shapeNode.lineTransparency,
-              width: shapeNode.lineWidthPt ?? 0.75,
-              dashType: shapeNode.lineDash === "dash" ? "dash" : shapeNode.lineDash === "sysDot" ? "sysDot" : undefined,
-            }
-          : { color: "FFFFFF", transparency: 100, width: 0 },
-        shadow: shadowFromShapeNode(shapeNode),
-      });
-      continue;
-    }
-
-    const shapeType =
-      shapeNode.shape === "ellipse"
-        ? pptx.ShapeType.ellipse
-        : shapeNode.shape === "roundRect"
-          ? pptx.ShapeType.roundRect
-          : pptx.ShapeType.rect;
-
-    slide.addShape(shapeType, {
+function renderVisualNode(pptx: any, slide: any, shapeNode: PptxExportShapeNode) {
+  if (shapeNode.shape === "line") {
+    const useExactLineVector = shapeNode.role.startsWith("svg-");
+    const isVertical = Math.abs(shapeNode.h) > Math.abs(shapeNode.w);
+    slide.addShape(pptx.ShapeType.line, {
       objectName: shapeNode.id,
-      x: shapeNode.x,
-      y: shapeNode.y,
-      w: shapeNode.w,
-      h: shapeNode.h,
-      fill: solidFillFromPaint(shapeNode.paint),
+      x: useExactLineVector ? shapeNode.x : isVertical ? shapeNode.x + shapeNode.w / 2 : shapeNode.x,
+      y: useExactLineVector ? shapeNode.y : isVertical ? shapeNode.y : shapeNode.y + shapeNode.h / 2,
+      w: useExactLineVector ? shapeNode.w : isVertical ? 0 : shapeNode.w,
+      h: useExactLineVector ? shapeNode.h : isVertical ? shapeNode.h : 0,
       line: shapeNode.lineColor
         ? {
             color: shapeNode.lineColor,
             transparency: shapeNode.lineTransparency,
             width: shapeNode.lineWidthPt ?? 0.75,
-            dashType:
-              shapeNode.lineDash === "dash" ? "dash" : shapeNode.lineDash === "sysDot" ? "sysDot" : undefined,
+            dashType: shapeNode.lineDash === "dash" ? "dash" : shapeNode.lineDash === "sysDot" ? "sysDot" : undefined,
           }
         : { color: "FFFFFF", transparency: 100, width: 0 },
       shadow: shadowFromShapeNode(shapeNode),
     });
+    return;
   }
+
+  const shapeType =
+    shapeNode.shape === "ellipse"
+      ? pptx.ShapeType.ellipse
+      : shapeNode.shape === "roundRect"
+        ? pptx.ShapeType.roundRect
+        : pptx.ShapeType.rect;
+
+  slide.addShape(shapeType, {
+    objectName: shapeNode.id,
+    x: shapeNode.x,
+    y: shapeNode.y,
+    w: shapeNode.w,
+    h: shapeNode.h,
+    fill: solidFillFromPaint(shapeNode.paint),
+    line: shapeNode.lineColor
+      ? {
+          color: shapeNode.lineColor,
+          transparency: shapeNode.lineTransparency,
+          width: shapeNode.lineWidthPt ?? 0.75,
+          dashType:
+            shapeNode.lineDash === "dash" ? "dash" : shapeNode.lineDash === "sysDot" ? "sysDot" : undefined,
+        }
+      : { color: "FFFFFF", transparency: 100, width: 0 },
+    shadow: shadowFromShapeNode(shapeNode),
+  });
 }
 
 function formatChartValue(value: number) {
@@ -199,16 +182,11 @@ function resolveChartColors(chartNode: PptxExportChartNode) {
 }
 
 function usesHtmlChartChrome(chartNode: PptxExportChartNode) {
-  return chartNode.showInlineHeading === false;
+  return chartNode.showInlineHeading === false && chartNode.showNativeVisual === false;
 }
 
 function shouldHideNativeChartVisual(chartNode: PptxExportChartNode) {
-  return (
-    usesHtmlChartChrome(chartNode) &&
-    (chartNode.chartKind === "waterfall" ||
-      chartNode.chartKind === "bubble" ||
-      chartNode.chartKind === "line")
-  );
+  return chartNode.showNativeVisual === false && chartNode.chartKind !== "matrix";
 }
 
 function chartFrameBounds(chartNode: PptxExportChartNode) {
@@ -766,24 +744,25 @@ function renderSemanticMatrixChart(pptx: any, slide: any, chartNode: PptxExportC
   }
 }
 
-function renderSemanticChartNodes(pptx: any, slide: any, slideModel: PptxExportSlide) {
-  for (const chartNode of chartNodes(slideModel)) {
-    switch (chartNode.semanticSpec?.kind) {
-      case "line":
-        renderSemanticLineChart(pptx, slide, chartNode);
-        break;
-      case "waterfall":
-        renderSemanticWaterfallChart(pptx, slide, chartNode);
-        break;
-      case "bubble":
-        renderSemanticBubbleChart(pptx, slide, chartNode);
-        break;
-      case "matrix":
-        renderSemanticMatrixChart(pptx, slide, chartNode);
-        break;
-      default:
-        break;
-    }
+function renderSemanticChartNode(pptx: any, slide: any, chartNode: PptxExportChartNode) {
+  if (chartNode.frameBounds) {
+    return;
+  }
+  switch (chartNode.semanticSpec?.kind) {
+    case "line":
+      renderSemanticLineChart(pptx, slide, chartNode);
+      break;
+    case "waterfall":
+      renderSemanticWaterfallChart(pptx, slide, chartNode);
+      break;
+    case "bubble":
+      renderSemanticBubbleChart(pptx, slide, chartNode);
+      break;
+    case "matrix":
+      renderSemanticMatrixChart(pptx, slide, chartNode);
+      break;
+    default:
+      break;
   }
 }
 
@@ -828,21 +807,8 @@ function resolveValueDomain(values: number[]) {
 
 function toBubbleChartData(chartNode: PptxExportChartNode) {
   const points = chartNode.bubblePoints ?? [];
-  const groupedSeries = points.map((point, index) => {
-    const values = Array.from({ length: points.length }, () => undefined as number | undefined);
-    const sizes = Array.from({ length: points.length }, () => undefined as number | undefined);
-    values[index] = point.y;
-    sizes[index] = point.size;
-    return {
-      name: point.label || point.group || chartNode.sizeAxisTitle || `Bubble ${index + 1}`,
-      color: point.color,
-      values,
-      sizes,
-    };
-  });
-  const colors = groupedSeries
-    .map((series) => series.color)
-    .filter((item): item is string => Boolean(item));
+  const colors = points.map((point) => point.color).filter((item): item is string => Boolean(item));
+  const seriesName = chartNode.sizeAxisTitle || chartNode.title || "Bubbles";
 
   return {
     data: [
@@ -850,16 +816,16 @@ function toBubbleChartData(chartNode: PptxExportChartNode) {
         name: chartNode.xAxisTitle || "X",
         values: points.map((point) => point.x),
       },
-      ...groupedSeries.map((series) => ({
-        name: series.name,
-        values: series.values,
-        sizes: series.sizes,
-      })),
+      {
+        name: seriesName,
+        values: points.map((point) => point.y),
+        sizes: points.map((point) => point.size),
+      },
     ],
     colors,
     xDomain: resolveValueDomain(points.map((point) => point.x)),
     yDomain: resolveValueDomain(points.map((point) => point.y)),
-    seriesCount: groupedSeries.length,
+    seriesCount: points.length ? 1 : 0,
   };
 }
 
@@ -991,7 +957,7 @@ function renderNativeBubbleChart(pptx: any, slide: any, chartNode: PptxExportCha
     showLegend: false,
     showTitle: false,
     showValue: false,
-    showSerName: !hideNativeVisual,
+    showSerName: false,
     showPercent: false,
     showLeaderLines: false,
     chartColors,
@@ -1000,8 +966,8 @@ function renderNativeBubbleChart(pptx: any, slide: any, chartNode: PptxExportCha
     dataLabelFontBold: true,
     dataLabelFontFace: "Avenir Next",
     dataLabelFontSize: 8,
-    showCatAxisTitle: Boolean(chartNode.xAxisTitle),
-    showValAxisTitle: Boolean(chartNode.yAxisTitle),
+    showCatAxisTitle: !hideNativeVisual && Boolean(chartNode.xAxisTitle),
+    showValAxisTitle: !hideNativeVisual && Boolean(chartNode.yAxisTitle),
     catAxisTitle: chartNode.xAxisTitle,
     valAxisTitle: chartNode.yAxisTitle,
     catAxisMinVal: bubbleData.xDomain.min,
@@ -1042,6 +1008,7 @@ function renderNativeComboChart(pptx: any, slide: any, chartNode: PptxExportChar
   }
 
   const { chartTop, chartHeight } = renderChartHeading(slide, chartNode);
+  const hideNativeVisual = shouldHideNativeChartVisual(chartNode);
   const fallbackColors = resolveChartColors(chartNode);
   const usesSecondaryAxis = lineSeries.some((series) => series.axis === "secondary");
   const colorsFor = (seriesGroup: typeof chartNode.series) => {
@@ -1060,6 +1027,7 @@ function renderNativeComboChart(pptx: any, slide: any, chartNode: PptxExportChar
           barDir: "col",
           barGrouping: "clustered",
           chartColors: colorsFor(barSeries),
+          chartColorsOpacity: hideNativeVisual ? 0 : 100,
           dataLabelPosition: "outEnd",
           showValue: false,
         },
@@ -1069,6 +1037,7 @@ function renderNativeComboChart(pptx: any, slide: any, chartNode: PptxExportChar
         data: toChartData(chartNode, lineSeries),
         options: {
           chartColors: colorsFor(lineSeries),
+          chartColorsOpacity: hideNativeVisual ? 0 : 100,
           dataLabelPosition: "t",
           lineSize: 2.8,
           secondaryValAxis: usesSecondaryAxis,
@@ -1081,37 +1050,44 @@ function renderNativeComboChart(pptx: any, slide: any, chartNode: PptxExportChar
       y: chartTop,
       w: chartNode.w,
       h: chartHeight,
-      showLegend: true,
+      showLegend: !hideNativeVisual,
       showTitle: false,
       catAxisLabelFontSize: 9,
       valAxisLabelFontSize: 8,
       catAxisLabelColor: chartNode.themeTokens.textMuted,
       valAxisLabelColor: chartNode.themeTokens.textMuted,
-      catAxisLabelPos: "nextTo",
-      valAxisLabelPos: "nextTo",
+      catAxisHidden: hideNativeVisual,
+      valAxisHidden: hideNativeVisual,
+      catAxisLabelPos: hideNativeVisual ? "none" : "nextTo",
+      valAxisLabelPos: hideNativeVisual ? "none" : "nextTo",
       valAxisMinVal: chartNode.valueAxisMin,
       valAxisMaxVal: chartNode.valueAxisMax,
-      catAxisLineShow: true,
+      catAxisLineShow: !hideNativeVisual,
       catAxisLineColor: chartNode.themeTokens.dividerColor,
-      valAxisLineShow: true,
+      valAxisLineShow: !hideNativeVisual,
       valAxisLineColor: chartNode.themeTokens.dividerColor,
-      valGridLine: { color: chartNode.themeTokens.dividerColor, size: 1, style: "solid" },
+      valGridLine: hideNativeVisual
+        ? { color: "FFFFFF", size: 0, style: "none" }
+        : { color: chartNode.themeTokens.dividerColor, size: 1, style: "solid" },
       catGridLine: { color: "FFFFFF", size: 0, style: "none" },
       showSerName: false,
       showPercent: false,
       showLeaderLines: false,
       legendPos: "b",
+      ...transparentChartSurfaceOptions(),
       valAxes: [
         {
-          showValAxisTitle: Boolean(chartNode.yAxisTitle),
+          showValAxisTitle: !hideNativeVisual && Boolean(chartNode.yAxisTitle),
           valAxisTitle: chartNode.yAxisTitle,
           valAxisLabelColor: chartNode.themeTokens.textMuted,
-          valGridLine: { color: chartNode.themeTokens.dividerColor, size: 1, style: "solid" },
+          valGridLine: hideNativeVisual
+            ? { color: "FFFFFF", size: 0, style: "none" }
+            : { color: chartNode.themeTokens.dividerColor, size: 1, style: "solid" },
         },
         ...(usesSecondaryAxis
           ? [
               {
-                showValAxisTitle: Boolean(chartNode.secondaryYAxisTitle),
+                showValAxisTitle: !hideNativeVisual && Boolean(chartNode.secondaryYAxisTitle),
                 valAxisTitle: chartNode.secondaryYAxisTitle,
                 valAxisLabelColor: chartNode.themeTokens.textMuted,
                 valGridLine: { style: "none" },
@@ -1125,168 +1101,169 @@ function renderNativeComboChart(pptx: any, slide: any, chartNode: PptxExportChar
   return true;
 }
 
-function renderChartNodes(
-  pptx: any,
-  slide: any,
-  slideModel: PptxExportSlide,
-  shouldRenderChart: (chartNode: PptxExportChartNode) => boolean = () => true,
-) {
-  for (const chartNode of chartNodes(slideModel)) {
-    if (!shouldRenderChart(chartNode)) {
-      continue;
-    }
-
-    if (chartNode.renderMode !== "native") {
-      continue;
-    }
-
-    if (chartNode.chartKind === "matrix") {
-      continue;
-    }
-
-    if (chartNode.renderMode === "native" && chartNode.chartKind === "combo") {
-      if (renderNativeComboChart(pptx, slide, chartNode)) {
-        continue;
-      }
-    }
-
-    if (chartNode.renderMode === "native" && chartNode.chartKind === "waterfall") {
-      if (renderNativeWaterfallChart(pptx, slide, chartNode)) {
-        continue;
-      }
-    }
-
-    if (chartNode.renderMode === "native" && chartNode.chartKind === "bubble") {
-      if (renderNativeBubbleChart(pptx, slide, chartNode)) {
-        continue;
-      }
-    }
-
-    const { chartTop, chartHeight } = renderChartHeading(slide, chartNode);
-    const chartType = chartNode.chartKind === "line" ? pptx.ChartType.line : pptx.ChartType.bar;
-    const htmlChrome = usesHtmlChartChrome(chartNode);
-    const hideNativeVisual = shouldHideNativeChartVisual(chartNode);
-
-    slide.addChart(chartType, toChartData(chartNode), {
-      x: chartNode.x,
-      y: chartTop,
-      w: chartNode.w,
-      h: chartHeight,
-      showLegend: !htmlChrome && chartNode.series.length > 1,
-      showTitle: false,
-      catAxisLabelFontSize: htmlChrome ? 7 : 9,
-      valAxisLabelFontSize: htmlChrome ? 7 : 8,
-      showValue: false,
-      chartColors: resolveChartColors(chartNode),
-      chartColorsOpacity: hideNativeVisual ? 0 : 100,
-      showValAxisTitle: Boolean(chartNode.yAxisTitle),
-      showCatAxisTitle: Boolean(chartNode.xAxisTitle),
-      valAxisTitle: chartNode.yAxisTitle,
-      catAxisTitle: chartNode.xAxisTitle,
-      catAxisLabelColor: chartNode.themeTokens.textMuted,
-      valAxisLabelColor: chartNode.themeTokens.textMuted,
-      catAxisLabelPos: htmlChrome || hideNativeVisual ? "none" : "nextTo",
-      valAxisLabelPos: htmlChrome || hideNativeVisual ? "none" : "nextTo",
-      valAxisMinVal: chartNode.valueAxisMin,
-      valAxisMaxVal: chartNode.valueAxisMax,
-      catAxisLineShow: !htmlChrome && !hideNativeVisual,
-      catAxisLineColor: chartNode.themeTokens.dividerColor,
-      valAxisLineShow: !htmlChrome && !hideNativeVisual,
-      valAxisLineColor: chartNode.themeTokens.dividerColor,
-      valGridLine: htmlChrome || hideNativeVisual
-        ? { color: "FFFFFF", size: 0, style: "none" }
-        : { color: chartNode.themeTokens.dividerColor, size: 1, style: "solid" },
-      catGridLine: { color: "FFFFFF", size: 0, style: "none" },
-      ...transparentChartSurfaceOptions(),
-      showSerName: false,
-      showPercent: false,
-      showLeaderLines: false,
-      legendPos: "b",
-      dataLabelPosition: "outEnd",
-      barDir: "col",
-      lineSize: chartNode.chartKind === "line" ? 2.8 : undefined,
-      barGrouping: chartNode.chartKind === "stacked" ? "stacked" : "clustered",
-    });
+function renderNativeChartNode(pptx: any, slide: any, chartNode: PptxExportChartNode) {
+  if (chartNode.renderMode !== "native") {
+    return;
   }
+
+  if (chartNode.chartKind === "matrix") {
+    return;
+  }
+
+  if (chartNode.chartKind === "combo" && renderNativeComboChart(pptx, slide, chartNode)) {
+    return;
+  }
+
+  if (chartNode.chartKind === "waterfall" && renderNativeWaterfallChart(pptx, slide, chartNode)) {
+    return;
+  }
+
+  if (chartNode.chartKind === "bubble" && renderNativeBubbleChart(pptx, slide, chartNode)) {
+    return;
+  }
+
+  const { chartTop, chartHeight } = renderChartHeading(slide, chartNode);
+  const chartType = chartNode.chartKind === "line" ? pptx.ChartType.line : pptx.ChartType.bar;
+  const htmlChrome = usesHtmlChartChrome(chartNode);
+  const hideNativeVisual = shouldHideNativeChartVisual(chartNode);
+
+  slide.addChart(chartType, toChartData(chartNode), {
+    x: chartNode.x,
+    y: chartTop,
+    w: chartNode.w,
+    h: chartHeight,
+    showLegend: !htmlChrome && chartNode.series.length > 1,
+    showTitle: false,
+    catAxisLabelFontSize: htmlChrome ? 7 : 9,
+    valAxisLabelFontSize: htmlChrome ? 7 : 8,
+    showValue: false,
+    chartColors: resolveChartColors(chartNode),
+    chartColorsOpacity: hideNativeVisual ? 0 : 100,
+    showValAxisTitle: !hideNativeVisual && Boolean(chartNode.yAxisTitle),
+    showCatAxisTitle: !hideNativeVisual && Boolean(chartNode.xAxisTitle),
+    valAxisTitle: chartNode.yAxisTitle,
+    catAxisTitle: chartNode.xAxisTitle,
+    catAxisLabelColor: chartNode.themeTokens.textMuted,
+    valAxisLabelColor: chartNode.themeTokens.textMuted,
+    catAxisHidden: hideNativeVisual,
+    valAxisHidden: hideNativeVisual,
+    catAxisLabelPos: htmlChrome || hideNativeVisual ? "none" : "nextTo",
+    valAxisLabelPos: htmlChrome || hideNativeVisual ? "none" : "nextTo",
+    valAxisMinVal: chartNode.valueAxisMin,
+    valAxisMaxVal: chartNode.valueAxisMax,
+    catAxisLineShow: !htmlChrome && !hideNativeVisual,
+    catAxisLineColor: chartNode.themeTokens.dividerColor,
+    valAxisLineShow: !htmlChrome && !hideNativeVisual,
+    valAxisLineColor: chartNode.themeTokens.dividerColor,
+    valGridLine: htmlChrome || hideNativeVisual
+      ? { color: "FFFFFF", size: 0, style: "none" }
+      : { color: chartNode.themeTokens.dividerColor, size: 1, style: "solid" },
+    catGridLine: { color: "FFFFFF", size: 0, style: "none" },
+    ...transparentChartSurfaceOptions(),
+    showSerName: false,
+    showPercent: false,
+    showLeaderLines: false,
+    legendPos: "b",
+    dataLabelPosition: "outEnd",
+    barDir: "col",
+    lineSize: chartNode.chartKind === "line" ? 2.8 : undefined,
+    barGrouping: chartNode.chartKind === "stacked" ? "stacked" : "clustered",
+  });
 }
 
-function renderTableNodes(slide: any, slideModel: PptxExportSlide) {
-  for (const tableNode of tableNodes(slideModel)) {
-    if (tableNode.renderMode !== "native") {
-      continue;
-    }
-
-    if (!tableNode.rows.length) {
-      continue;
-    }
-
-    slide.addTable(tableNode.rows, {
-      x: tableNode.x,
-      y: tableNode.y,
-      w: tableNode.w,
-      h: tableNode.h,
-      border: { color: tableNode.themeTokens.dividerColor, pt: 0.6 },
-      margin: 0.04,
-      fontFace: "Avenir Next",
-      fontSize: 8,
-      color: tableNode.themeTokens.textPrimary,
-      fill: { color: tableNode.themeTokens.surfaceFill },
-    });
+function renderTableNode(slide: any, tableNode: PptxExportTableNode) {
+  if (tableNode.renderMode !== "native") {
+    return;
   }
+
+  if (!tableNode.rows.length) {
+    return;
+  }
+
+  slide.addTable(tableNode.rows, {
+    x: tableNode.x,
+    y: tableNode.y,
+    w: tableNode.w,
+    h: tableNode.h,
+    border: { color: tableNode.themeTokens.dividerColor, pt: 0.6 },
+    margin: 0.04,
+    fontFace: "Avenir Next",
+    fontSize: 8,
+    color: tableNode.themeTokens.textPrimary,
+    fill: { color: tableNode.themeTokens.surfaceFill },
+  });
 }
 
-function renderTextNodes(slide: any, slideModel: PptxExportSlide) {
-  for (const textNode of textNodes(slideModel)) {
-    const baseOptions = {
-      x: textNode.x,
-      y: textNode.y,
-      w: textNode.w,
-      h: textNode.h,
-      fontFace: textNode.fontFamily || "Avenir Next",
-      fontSize: textNode.fontSize,
-      bold: textNode.bold ?? false,
-      italic: textNode.italic ?? false,
-      color: textNode.color,
-      align: textNode.align,
-      valign: textNode.valign ?? ("top" as const),
-      rotate: textNode.rotate,
-      margin: 0,
-      breakLine: false,
-      lineSpacingMultiple: textNode.lineSpacingMultiple,
-      paraSpaceAfter: textNode.paraSpaceAfterPt,
-      paraSpaceBefore: textNode.paraSpaceBeforePt,
-      fill: textNode.fillColor
-        ? { color: textNode.fillColor, transparency: 0, type: "solid" }
-        : { color: "FFFFFF", transparency: 100, type: "none" },
-      line: { color: "FFFFFF", transparency: 100, width: 0 },
-    };
+function renderTextNode(slide: any, textNode: PptxExportTextNode) {
+  const baseOptions = {
+    x: textNode.x,
+    y: textNode.y,
+    w: textNode.w,
+    h: textNode.h,
+    fontFace: textNode.fontFamily || "Avenir Next",
+    fontSize: textNode.fontSize,
+    bold: textNode.bold ?? false,
+    italic: textNode.italic ?? false,
+    color: textNode.color,
+    align: textNode.align,
+    valign: textNode.valign ?? ("top" as const),
+    rotate: textNode.rotate,
+    margin: 0,
+    breakLine: false,
+    lineSpacingMultiple: textNode.lineSpacingMultiple,
+    paraSpaceAfter: textNode.paraSpaceAfterPt,
+    paraSpaceBefore: textNode.paraSpaceBeforePt,
+    fill: textNode.fillColor
+      ? { color: textNode.fillColor, transparency: 0, type: "solid" }
+      : { color: "FFFFFF", transparency: 100, type: "none" },
+    line: { color: "FFFFFF", transparency: 100, width: 0 },
+  };
 
-    if (textNode.items?.length) {
-      const bullet =
-        textNode.listStyle?.kind === "number"
-          ? {
-              type: "number",
-              style: "arabicPeriod",
-              numberStartAt: textNode.listStyle.numberStartAt ?? 1,
-              indent: textNode.listStyle.indentPt ?? 18,
-            }
-          : {
-              characterCode: "2022",
-              indent: textNode.listStyle?.indentPt ?? 18,
-            };
-      slide.addText(
-        textNode.items.map((item) => ({
-          text: item,
-          options: {
-            bullet,
-          },
-        })),
-        baseOptions,
-      );
-      continue;
-    }
+  if (textNode.items?.length) {
+    const bullet =
+      textNode.listStyle?.kind === "number"
+        ? {
+            type: "number",
+            style: "arabicPeriod",
+            numberStartAt: textNode.listStyle.numberStartAt ?? 1,
+            indent: textNode.listStyle.indentPt ?? 18,
+          }
+        : {
+            characterCode: "2022",
+            indent: textNode.listStyle?.indentPt ?? 18,
+          };
+    slide.addText(
+      textNode.items.map((item) => ({
+        text: item,
+        options: {
+          bullet,
+        },
+      })),
+      baseOptions,
+    );
+    return;
+  }
 
-    slide.addText(textNode.text, baseOptions);
+  slide.addText(textNode.text, baseOptions);
+}
+
+function renderOrderedNode(pptx: any, slide: any, node: PptxExportNode) {
+  switch (node.nodeType) {
+    case "chart":
+      renderSemanticChartNode(pptx, slide, node);
+      renderNativeChartNode(pptx, slide, node);
+      break;
+    case "shape":
+      renderVisualNode(pptx, slide, node);
+      break;
+    case "table":
+      renderTableNode(slide, node);
+      break;
+    case "text":
+      renderTextNode(slide, node);
+      break;
+    default:
+      break;
   }
 }
 
@@ -1296,17 +1273,9 @@ function renderSlideToPptx(args: {
 }) {
   const slide = args.pptx.addSlide();
   renderSlideBackground(slide, args.slideModel);
-  renderChartNodes(args.pptx, slide, args.slideModel, shouldHideNativeChartVisual);
-  renderVisualNodes(args.pptx, slide, args.slideModel);
-  renderSemanticChartNodes(args.pptx, slide, args.slideModel);
-  renderChartNodes(
-    args.pptx,
-    slide,
-    args.slideModel,
-    (chartNode) => !shouldHideNativeChartVisual(chartNode),
-  );
-  renderTableNodes(slide, args.slideModel);
-  renderTextNodes(slide, args.slideModel);
+  for (const node of args.slideModel.nodes) {
+    renderOrderedNode(args.pptx, slide, node);
+  }
 }
 
 export function renderExportDocumentToPptx(args: {

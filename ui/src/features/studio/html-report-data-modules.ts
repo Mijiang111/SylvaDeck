@@ -6,12 +6,17 @@ import {
 import type {
   DataTableModel,
   HtmlBasicChartSpec,
+  HtmlChartAxisStyle,
   HtmlBubbleChartSpec,
   HtmlBubblePoint,
   HtmlChartAxisRole,
   HtmlChartKind,
+  HtmlChartLineDash,
+  HtmlChartNativeStyle,
   HtmlChartSeries,
+  HtmlChartSeriesStyle,
   HtmlChartSeriesRole,
+  HtmlChartShadowStyle,
   HtmlChartSpec,
   HtmlComboChartSpec,
   HtmlMatrixChartSpec,
@@ -68,6 +73,166 @@ function parsePercentOrNumberToken(value: string | null | undefined) {
 function parseFiniteNumber(value: unknown) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function normalizeChartLineDash(value: unknown): HtmlChartLineDash | undefined {
+  const normalized = normalizeText(typeof value === "string" ? value : "");
+  if (normalized === "solid" || normalized === "dash" || normalized === "dot") {
+    return normalized;
+  }
+  return undefined;
+}
+
+function normalizeChartLineDashOrNone(value: unknown): HtmlChartAxisStyle["lineDash"] | undefined {
+  const normalized = normalizeText(typeof value === "string" ? value : "");
+  if (normalized === "none") {
+    return "none";
+  }
+  return normalizeChartLineDash(normalized);
+}
+
+function normalizeChartShadowStyle(value: unknown): HtmlChartShadowStyle | null | undefined {
+  if (value === null) {
+    return null;
+  }
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const raw = value as Partial<HtmlChartShadowStyle>;
+  const shadow: HtmlChartShadowStyle = {};
+  const color = normalizeText(raw.color);
+  if (color) {
+    shadow.color = color;
+  }
+  const opacity = parseFiniteNumber(raw.opacity);
+  if (opacity !== undefined) {
+    shadow.opacity = clamp(opacity, 0, 1);
+  }
+  const blurPt = parseFiniteNumber(raw.blurPt);
+  if (blurPt !== undefined) {
+    shadow.blurPt = clamp(blurPt, 0, 60);
+  }
+  const offsetPt = parseFiniteNumber(raw.offsetPt);
+  if (offsetPt !== undefined) {
+    shadow.offsetPt = clamp(offsetPt, 0, 60);
+  }
+  const angle = parseFiniteNumber(raw.angle);
+  if (angle !== undefined) {
+    shadow.angle = ((angle % 360) + 360) % 360;
+  }
+
+  return Object.keys(shadow).length ? shadow : {};
+}
+
+function normalizeChartAxisStyle(value: unknown): HtmlChartAxisStyle | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const raw = value as Partial<HtmlChartAxisStyle>;
+  const style: HtmlChartAxisStyle = {};
+  const lineColor = normalizeText(raw.lineColor);
+  if (lineColor) {
+    style.lineColor = lineColor;
+  }
+  const lineWidthPt = parseFiniteNumber(raw.lineWidthPt);
+  if (lineWidthPt !== undefined) {
+    style.lineWidthPt = clamp(lineWidthPt, 0, 20);
+  }
+  const lineDash = normalizeChartLineDashOrNone(raw.lineDash);
+  if (lineDash) {
+    style.lineDash = lineDash;
+  }
+  const gridColor = normalizeText(raw.gridColor);
+  if (gridColor) {
+    style.gridColor = gridColor;
+  }
+  const gridWidthPt = parseFiniteNumber(raw.gridWidthPt);
+  if (gridWidthPt !== undefined) {
+    style.gridWidthPt = clamp(gridWidthPt, 0, 20);
+  }
+  const gridDash = normalizeChartLineDashOrNone(raw.gridDash);
+  if (gridDash) {
+    style.gridDash = gridDash;
+  }
+  const labelColor = normalizeText(raw.labelColor);
+  if (labelColor) {
+    style.labelColor = labelColor;
+  }
+  const labelFontSize = parseFiniteNumber(raw.labelFontSize);
+  if (labelFontSize !== undefined) {
+    style.labelFontSize = clamp(labelFontSize, 4, 72);
+  }
+
+  return Object.keys(style).length ? style : undefined;
+}
+
+function normalizeChartNativeStyle(value: unknown): HtmlChartNativeStyle | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const raw = value as Partial<HtmlChartNativeStyle>;
+  const style: HtmlChartNativeStyle = {};
+  const xAxis = normalizeChartAxisStyle(raw.xAxis);
+  if (xAxis) {
+    style.xAxis = xAxis;
+  }
+  const yAxis = normalizeChartAxisStyle(raw.yAxis);
+  if (yAxis) {
+    style.yAxis = yAxis;
+  }
+  const secondaryYAxis = normalizeChartAxisStyle(raw.secondaryYAxis);
+  if (secondaryYAxis) {
+    style.secondaryYAxis = secondaryYAxis;
+  }
+  if ("chartShadow" in raw) {
+    const chartShadow = normalizeChartShadowStyle(raw.chartShadow);
+    if (chartShadow !== undefined) {
+      style.chartShadow = chartShadow;
+    }
+  }
+  if ("plotShadow" in raw) {
+    const plotShadow = normalizeChartShadowStyle(raw.plotShadow);
+    if (plotShadow !== undefined) {
+      style.plotShadow = plotShadow;
+    }
+  }
+  const bubbleScale = parseFiniteNumber(raw.bubbleScale);
+  if (bubbleScale !== undefined) {
+    style.bubbleScale = clamp(bubbleScale, 1, 300);
+  }
+
+  return Object.keys(style).length ? style : undefined;
+}
+
+function normalizeChartSeriesStyle(value: unknown): HtmlChartSeriesStyle | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const raw = value as Partial<HtmlChartSeriesStyle>;
+  const style: HtmlChartSeriesStyle = {};
+  const lineDash = normalizeChartLineDash(raw.lineDash);
+  if (lineDash) {
+    style.lineDash = lineDash;
+  }
+  const lineWidthPt = parseFiniteNumber(raw.lineWidthPt);
+  if (lineWidthPt !== undefined) {
+    style.lineWidthPt = clamp(lineWidthPt, 0, 20);
+  }
+  if (raw.marker === "circle" || raw.marker === "none") {
+    style.marker = raw.marker;
+  }
+  if ("shadow" in raw) {
+    const shadow = normalizeChartShadowStyle(raw.shadow);
+    if (shadow !== undefined) {
+      style.shadow = shadow;
+    }
+  }
+
+  return Object.keys(style).length ? style : undefined;
 }
 
 function serializeJson(value: unknown) {
@@ -229,11 +394,42 @@ function isSeriesChartSpec(
   );
 }
 
+function cloneChartShadowStyle(style: HtmlChartShadowStyle | null | undefined) {
+  return style ? { ...style } : style;
+}
+
+function cloneChartAxisStyle(style: HtmlChartAxisStyle | undefined) {
+  return style ? { ...style } : style;
+}
+
+function cloneChartNativeStyle(style: HtmlChartNativeStyle | undefined) {
+  return style
+    ? {
+        ...style,
+        xAxis: cloneChartAxisStyle(style.xAxis),
+        yAxis: cloneChartAxisStyle(style.yAxis),
+        secondaryYAxis: cloneChartAxisStyle(style.secondaryYAxis),
+        chartShadow: cloneChartShadowStyle(style.chartShadow),
+        plotShadow: cloneChartShadowStyle(style.plotShadow),
+      }
+    : style;
+}
+
+function cloneChartSeriesStyle(style: HtmlChartSeriesStyle | undefined) {
+  return style
+    ? {
+        ...style,
+        shadow: cloneChartShadowStyle(style.shadow),
+      }
+    : style;
+}
+
 function cloneChartSpecForUpdate(spec: HtmlChartSpec): HtmlChartSpec {
   if (spec.kind === "bubble") {
     return {
       ...spec,
       points: spec.points.map((point) => ({ ...point })),
+      style: cloneChartNativeStyle(spec.style),
     };
   }
   if (spec.kind === "matrix") {
@@ -248,7 +444,12 @@ function cloneChartSpecForUpdate(spec: HtmlChartSpec): HtmlChartSpec {
   }
   return {
     ...spec,
-    series: spec.series.map((series) => ({ ...series, values: [...series.values] })),
+    style: cloneChartNativeStyle(spec.style),
+    series: spec.series.map((series) => ({
+      ...series,
+      values: [...series.values],
+      style: cloneChartSeriesStyle(series.style),
+    })),
   };
 }
 
@@ -273,6 +474,7 @@ function normalizeChartSeries(
     color: normalizeText(series.color) || pickColor(index, defaults?.role ?? "bar"),
     role: defaults?.role ?? series.role ?? "bar",
     axis: defaults?.axis ?? series.axis ?? "primary",
+    style: normalizeChartSeriesStyle(series.style),
   };
 }
 
@@ -315,6 +517,7 @@ export function parseHtmlChartSpec(raw: string | null | undefined): HtmlChartSpe
         yLabel: normalizeChartText(bubble.yLabel, "Y axis"),
         sizeLabel: normalizeChartText(bubble.sizeLabel, "Bubble size"),
         points,
+        style: normalizeChartNativeStyle(bubble.style),
       };
     }
 
@@ -433,6 +636,7 @@ export function parseHtmlChartSpec(raw: string | null | undefined): HtmlChartSpe
         secondaryUnit: normalizeChartText((parsed as { secondaryUnit?: string }).secondaryUnit),
         valueAxisMin: parseFiniteNumber((parsed as { valueAxisMin?: unknown }).valueAxisMin),
         valueAxisMax: parseFiniteNumber((parsed as { valueAxisMax?: unknown }).valueAxisMax),
+        style: normalizeChartNativeStyle((parsed as { style?: unknown }).style),
         categories:
           categories.length > 0
             ? categories
@@ -449,6 +653,7 @@ export function parseHtmlChartSpec(raw: string | null | undefined): HtmlChartSpe
       unit: normalizeChartText((parsed as { unit?: string }).unit),
       valueAxisMin: parseFiniteNumber((parsed as { valueAxisMin?: unknown }).valueAxisMin),
       valueAxisMax: parseFiniteNumber((parsed as { valueAxisMax?: unknown }).valueAxisMax),
+      style: normalizeChartNativeStyle((parsed as { style?: unknown }).style),
       categories:
         categories.length > 0
           ? categories
@@ -1697,6 +1902,7 @@ function dataTableToChartSpec(args: {
       yLabel: baseSpec?.kind === "bubble" ? baseSpec.yLabel : "Y axis",
       sizeLabel: baseSpec?.kind === "bubble" ? baseSpec.sizeLabel : "Bubble size",
       points,
+      style: baseSpec?.kind === "bubble" ? cloneChartNativeStyle(baseSpec.style) : undefined,
     };
   }
 
@@ -1756,6 +1962,10 @@ function dataTableToChartSpec(args: {
           baseSpec && isSeriesChartSpec(baseSpec)
             ? baseSpec?.series[columnIndex]?.color ?? undefined
             : undefined,
+        style:
+          baseSpec && isSeriesChartSpec(baseSpec)
+            ? cloneChartSeriesStyle(baseSpec.series[columnIndex]?.style)
+            : undefined,
         role:
           kind === "combo"
             ? baseSpec?.kind === "combo"
@@ -1795,8 +2005,11 @@ function dataTableToChartSpec(args: {
       insight: baseSpec?.insight ?? "",
       unit: baseSpec && isSeriesChartSpec(baseSpec) ? baseSpec.unit : "",
       secondaryUnit: baseSpec?.kind === "combo" ? baseSpec.secondaryUnit ?? "" : "",
+      valueAxisMin: baseSpec?.kind === "combo" ? baseSpec.valueAxisMin : undefined,
+      valueAxisMax: baseSpec?.kind === "combo" ? baseSpec.valueAxisMax : undefined,
       categories,
       series,
+      style: baseSpec?.kind === "combo" ? cloneChartNativeStyle(baseSpec.style) : undefined,
     };
   }
   return {
@@ -1805,8 +2018,11 @@ function dataTableToChartSpec(args: {
     subtitle: baseSpec?.subtitle ?? "",
     insight: baseSpec?.insight ?? "",
     unit: baseSpec && isSeriesChartSpec(baseSpec) ? baseSpec.unit : "",
+    valueAxisMin: baseSpec && isSeriesChartSpec(baseSpec) ? baseSpec.valueAxisMin : undefined,
+    valueAxisMax: baseSpec && isSeriesChartSpec(baseSpec) ? baseSpec.valueAxisMax : undefined,
     categories,
     series,
+    style: baseSpec && isSeriesChartSpec(baseSpec) ? cloneChartNativeStyle(baseSpec.style) : undefined,
   };
 }
 
@@ -1847,6 +2063,28 @@ function renderChartHeader(spec: HtmlChartSpec) {
   </div>`;
 }
 
+function svgDashArray(dash?: HtmlChartLineDash | "none") {
+  if (dash === "dash") {
+    return ` stroke-dasharray="10 8"`;
+  }
+  if (dash === "dot") {
+    return ` stroke-dasharray="2 7"`;
+  }
+  return "";
+}
+
+function chartAxisColor(spec: { style?: HtmlChartNativeStyle }, axis: "xAxis" | "yAxis", fallback: string) {
+  return spec.style?.[axis]?.lineColor || fallback;
+}
+
+function chartGridColor(spec: { style?: HtmlChartNativeStyle }, axis: "xAxis" | "yAxis", fallback: string) {
+  return spec.style?.[axis]?.gridColor || fallback;
+}
+
+function chartLabelColor(spec: { style?: HtmlChartNativeStyle }, axis: "xAxis" | "yAxis", fallback: string) {
+  return spec.style?.[axis]?.labelColor || fallback;
+}
+
 function renderBarLikeChart(spec: HtmlBasicChartSpec) {
   const width = 1160;
   const height = 460;
@@ -1865,8 +2103,8 @@ function renderBarLikeChart(spec: HtmlBasicChartSpec) {
     const ratio = index / 4;
     const y = bottom - ratio * plotHeight;
     const value = Math.round(ratio * maxValue);
-    return `<line x1="${left}" y1="${y}" x2="${right}" y2="${y}" stroke="#d9e5ef" stroke-width="1" />
-      <text x="${left - 12}" y="${y + 4}" text-anchor="end" font-size="12" fill="#7a8995">${escapeHtml(String(value))}</text>`;
+    return `<line x1="${left}" y1="${y}" x2="${right}" y2="${y}" stroke="${escapeHtml(chartGridColor(spec, "yAxis", "#d9e5ef"))}" stroke-width="${spec.style?.yAxis?.gridWidthPt ?? 1}"${svgDashArray(spec.style?.yAxis?.gridDash)} />
+      <text x="${left - 12}" y="${y + 4}" text-anchor="end" font-size="${spec.style?.yAxis?.labelFontSize ?? 12}" fill="${escapeHtml(chartLabelColor(spec, "yAxis", "#7a8995"))}">${escapeHtml(String(value))}</text>`;
   }).join("");
 
   let seriesMarkup = "";
@@ -1908,17 +2146,26 @@ function renderBarLikeChart(spec: HtmlBasicChartSpec) {
       seriesMarkup += `<text x="${x + barGroupWidth / 2}" y="${bottom + 26}" text-anchor="middle" font-size="12" fill="#465866">${escapeHtml(category)}</text>`;
     });
   } else if (spec.kind === "line") {
-    const points = spec.categories.map((_, categoryIndex) => {
-      const x = left + categoryIndex * slotWidth + slotWidth / 2;
-      const value = spec.series[0]?.values[categoryIndex] ?? 0;
-      const y = bottom - (value / maxValue) * plotHeight;
-      return { x, y, value };
-    });
-    seriesMarkup += `<path d="${points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ")}" fill="none" stroke="${escapeHtml(spec.series[0]?.color || DEFAULT_LINE_COLORS[0]!)}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />`;
-    points.forEach((point, index) => {
-      seriesMarkup += `<circle cx="${point.x}" cy="${point.y}" r="6" fill="${escapeHtml(spec.series[0]?.color || DEFAULT_LINE_COLORS[0]!)}" stroke="#fff" stroke-width="3" />`;
-      seriesMarkup += `<text x="${point.x}" y="${point.y - 12}" text-anchor="middle" font-size="12" font-weight="700" fill="#0f5160">${escapeHtml(String(point.value))}</text>`;
-      seriesMarkup += `<text x="${point.x}" y="${bottom + 26}" text-anchor="middle" font-size="12" fill="#465866">${escapeHtml(spec.categories[index]!)}</text>`;
+    spec.series.forEach((series, seriesIndex) => {
+      const color = series.color || DEFAULT_LINE_COLORS[seriesIndex % DEFAULT_LINE_COLORS.length]!;
+      const points = spec.categories.map((_, categoryIndex) => {
+        const x = left + categoryIndex * slotWidth + slotWidth / 2;
+        const value = series.values[categoryIndex] ?? 0;
+        const y = bottom - (value / maxValue) * plotHeight;
+        return { x, y, value };
+      });
+      seriesMarkup += `<path d="${points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ")}" fill="none" stroke="${escapeHtml(color)}" stroke-width="${series.style?.lineWidthPt ?? 4}" stroke-linecap="round" stroke-linejoin="round"${svgDashArray(series.style?.lineDash)} />`;
+      if (series.style?.marker !== "none") {
+        points.forEach((point) => {
+          seriesMarkup += `<circle cx="${point.x}" cy="${point.y}" r="6" fill="${escapeHtml(color)}" stroke="#fff" stroke-width="3" />`;
+        });
+      }
+      if (seriesIndex === 0) {
+        points.forEach((point, index) => {
+          seriesMarkup += `<text x="${point.x}" y="${point.y - 12}" text-anchor="middle" font-size="12" font-weight="700" fill="#0f5160">${escapeHtml(String(point.value))}</text>`;
+          seriesMarkup += `<text x="${point.x}" y="${bottom + 26}" text-anchor="middle" font-size="12" fill="${escapeHtml(chartLabelColor(spec, "xAxis", "#465866"))}">${escapeHtml(spec.categories[index]!)}</text>`;
+        });
+      }
     });
   } else {
     spec.categories.forEach((category, categoryIndex) => {
@@ -1929,7 +2176,7 @@ function renderBarLikeChart(spec: HtmlBasicChartSpec) {
         const y = bottom - barHeight;
         seriesMarkup += `<rect x="${x}" y="${y}" width="${Math.max(18, barWidth - 8)}" height="${barHeight}" rx="8" fill="${escapeHtml(series.color || pickColor(seriesIndex))}" />`;
         if (seriesIndex === 0) {
-          seriesMarkup += `<text x="${left + categoryIndex * slotWidth + slotWidth / 2}" y="${bottom + 26}" text-anchor="middle" font-size="12" fill="#465866">${escapeHtml(category)}</text>`;
+          seriesMarkup += `<text x="${left + categoryIndex * slotWidth + slotWidth / 2}" y="${bottom + 26}" text-anchor="middle" font-size="12" fill="${escapeHtml(chartLabelColor(spec, "xAxis", "#465866"))}">${escapeHtml(category)}</text>`;
         }
       });
     });
@@ -1937,8 +2184,8 @@ function renderBarLikeChart(spec: HtmlBasicChartSpec) {
 
   return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="display:block;">
     ${gridLines}
-    <line x1="${left}" y1="${bottom}" x2="${right}" y2="${bottom}" stroke="#9fb2c2" stroke-width="1.2" />
-    <line x1="${left}" y1="${top}" x2="${left}" y2="${bottom}" stroke="#c3d0da" stroke-width="1.2" />
+    <line x1="${left}" y1="${bottom}" x2="${right}" y2="${bottom}" stroke="${escapeHtml(chartAxisColor(spec, "xAxis", "#9fb2c2"))}" stroke-width="${spec.style?.xAxis?.lineWidthPt ?? 1.2}"${svgDashArray(spec.style?.xAxis?.lineDash)} />
+    <line x1="${left}" y1="${top}" x2="${left}" y2="${bottom}" stroke="${escapeHtml(chartAxisColor(spec, "yAxis", "#c3d0da"))}" stroke-width="${spec.style?.yAxis?.lineWidthPt ?? 1.2}"${svgDashArray(spec.style?.yAxis?.lineDash)} />
     ${seriesMarkup}
   </svg>`;
 }
@@ -1966,8 +2213,8 @@ function renderComboChart(spec: Extract<HtmlChartSpec, { kind: "combo" }>) {
     const ratio = index / 4;
     const y = bottom - ratio * plotHeight;
     const value = Math.round(ratio * primaryMax);
-    return `<line x1="${left}" y1="${y}" x2="${right}" y2="${y}" stroke="#d9e5ef" stroke-width="1" />
-      <text x="${left - 12}" y="${y + 4}" text-anchor="end" font-size="12" fill="#7a8995">${escapeHtml(String(value))}</text>`;
+    return `<line x1="${left}" y1="${y}" x2="${right}" y2="${y}" stroke="${escapeHtml(chartGridColor(spec, "yAxis", "#d9e5ef"))}" stroke-width="${spec.style?.yAxis?.gridWidthPt ?? 1}"${svgDashArray(spec.style?.yAxis?.gridDash)} />
+      <text x="${left - 12}" y="${y + 4}" text-anchor="end" font-size="${spec.style?.yAxis?.labelFontSize ?? 12}" fill="${escapeHtml(chartLabelColor(spec, "yAxis", "#7a8995"))}">${escapeHtml(String(value))}</text>`;
   }).join("");
   const secondaryLabels = Array.from({ length: 5 }, (_, index) => {
     const ratio = index / 4;
@@ -1985,7 +2232,7 @@ function renderComboChart(spec: Extract<HtmlChartSpec, { kind: "combo" }>) {
       const y = bottom - heightValue;
       return `<rect x="${x}" y="${y}" width="${Math.max(18, barWidth - 8)}" height="${heightValue}" rx="8" fill="${escapeHtml(series.color || pickColor(seriesIndex, "bar"))}" />`;
     }).join("");
-    return `${barMarkup}<text x="${left + categoryIndex * slotWidth + slotWidth / 2}" y="${bottom + 26}" text-anchor="middle" font-size="12" fill="#465866">${escapeHtml(category)}</text>`;
+    return `${barMarkup}<text x="${left + categoryIndex * slotWidth + slotWidth / 2}" y="${bottom + 26}" text-anchor="middle" font-size="12" fill="${escapeHtml(chartLabelColor(spec, "xAxis", "#465866"))}">${escapeHtml(category)}</text>`;
   }).join("");
 
   const lineMarkup = lineSeries.map((series, seriesIndex) => {
@@ -1995,16 +2242,21 @@ function renderComboChart(spec: Extract<HtmlChartSpec, { kind: "combo" }>) {
       const y = bottom - (Math.abs(value) / secondaryMax) * plotHeight;
       return { x, y, value };
     });
-    return `<path d="${points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ")}" fill="none" stroke="${escapeHtml(series.color || pickColor(seriesIndex, "line"))}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
-      ${points.map((point) => `<circle cx="${point.x}" cy="${point.y}" r="6" fill="${escapeHtml(series.color || pickColor(seriesIndex, "line"))}" stroke="#fff" stroke-width="3" />`).join("")}`;
+    const color = series.color || pickColor(seriesIndex, "line");
+    const markers =
+      series.style?.marker === "none"
+        ? ""
+        : points.map((point) => `<circle cx="${point.x}" cy="${point.y}" r="6" fill="${escapeHtml(color)}" stroke="#fff" stroke-width="3" />`).join("");
+    return `<path d="${points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ")}" fill="none" stroke="${escapeHtml(color)}" stroke-width="${series.style?.lineWidthPt ?? 4}" stroke-linecap="round" stroke-linejoin="round"${svgDashArray(series.style?.lineDash)} />
+      ${markers}`;
   }).join("");
 
   return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="display:block;">
     ${primaryGrid}
     ${secondaryLabels}
-    <line x1="${left}" y1="${bottom}" x2="${right}" y2="${bottom}" stroke="#9fb2c2" stroke-width="1.2" />
-    <line x1="${left}" y1="${top}" x2="${left}" y2="${bottom}" stroke="#c3d0da" stroke-width="1.2" />
-    <line x1="${right}" y1="${top}" x2="${right}" y2="${bottom}" stroke="#c3d0da" stroke-width="1.2" />
+    <line x1="${left}" y1="${bottom}" x2="${right}" y2="${bottom}" stroke="${escapeHtml(chartAxisColor(spec, "xAxis", "#9fb2c2"))}" stroke-width="${spec.style?.xAxis?.lineWidthPt ?? 1.2}"${svgDashArray(spec.style?.xAxis?.lineDash)} />
+    <line x1="${left}" y1="${top}" x2="${left}" y2="${bottom}" stroke="${escapeHtml(chartAxisColor(spec, "yAxis", "#c3d0da"))}" stroke-width="${spec.style?.yAxis?.lineWidthPt ?? 1.2}"${svgDashArray(spec.style?.yAxis?.lineDash)} />
+    <line x1="${right}" y1="${top}" x2="${right}" y2="${bottom}" stroke="${escapeHtml(spec.style?.secondaryYAxis?.lineColor || "#c3d0da")}" stroke-width="${spec.style?.secondaryYAxis?.lineWidthPt ?? 1.2}"${svgDashArray(spec.style?.secondaryYAxis?.lineDash)} />
     ${bars}
     ${lineMarkup}
   </svg>`;
@@ -2043,20 +2295,20 @@ function renderBubbleChart(spec: HtmlBubbleChartSpec) {
   });
 
   return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="display:block;">
-    <line x1="${left}" y1="${bottom}" x2="${right}" y2="${bottom}" stroke="#a9b8c4" stroke-width="1.2" />
-    <line x1="${left}" y1="${top}" x2="${left}" y2="${bottom}" stroke="#a9b8c4" stroke-width="1.2" />
+    <line x1="${left}" y1="${bottom}" x2="${right}" y2="${bottom}" stroke="${escapeHtml(chartAxisColor(spec, "xAxis", "#a9b8c4"))}" stroke-width="${spec.style?.xAxis?.lineWidthPt ?? 1.2}"${svgDashArray(spec.style?.xAxis?.lineDash)} />
+    <line x1="${left}" y1="${top}" x2="${left}" y2="${bottom}" stroke="${escapeHtml(chartAxisColor(spec, "yAxis", "#a9b8c4"))}" stroke-width="${spec.style?.yAxis?.lineWidthPt ?? 1.2}"${svgDashArray(spec.style?.yAxis?.lineDash)} />
     ${Array.from({ length: 5 }, (_, index) => {
       const ratio = index / 4;
       const y = bottom - ratio * plotHeight;
       const label = Math.round(yMin + ratio * (yMax - yMin));
-      return `<line x1="${left}" y1="${y}" x2="${right}" y2="${y}" stroke="#e1e9ef" stroke-width="1" />
-        <text x="${left - 12}" y="${y + 4}" text-anchor="end" font-size="12" fill="#7a8995">${escapeHtml(String(label))}</text>`;
+      return `<line x1="${left}" y1="${y}" x2="${right}" y2="${y}" stroke="${escapeHtml(chartGridColor(spec, "yAxis", "#e1e9ef"))}" stroke-width="${spec.style?.yAxis?.gridWidthPt ?? 1}"${svgDashArray(spec.style?.yAxis?.gridDash)} />
+        <text x="${left - 12}" y="${y + 4}" text-anchor="end" font-size="${spec.style?.yAxis?.labelFontSize ?? 12}" fill="${escapeHtml(chartLabelColor(spec, "yAxis", "#7a8995"))}">${escapeHtml(String(label))}</text>`;
     }).join("")}
     ${Array.from({ length: 5 }, (_, index) => {
       const ratio = index / 4;
       const x = left + ratio * plotWidth;
       const label = Math.round(xMin + ratio * (xMax - xMin));
-      return `<text x="${x}" y="${bottom + 26}" text-anchor="middle" font-size="12" fill="#7a8995">${escapeHtml(String(label))}</text>`;
+      return `<text x="${x}" y="${bottom + 26}" text-anchor="middle" font-size="${spec.style?.xAxis?.labelFontSize ?? 12}" fill="${escapeHtml(chartLabelColor(spec, "xAxis", "#7a8995"))}">${escapeHtml(String(label))}</text>`;
     }).join("")}
     ${points.map((point) => `
       <circle cx="${point.x}" cy="${point.y}" r="${point.radius}" fill="${escapeHtml(point.color || DEFAULT_BUBBLE_COLORS[0]!)}" opacity="0.82" stroke="rgba(255,255,255,0.88)" stroke-width="2.5" />

@@ -33,6 +33,8 @@ function defaultDiagnosticSeverity(diagnostic: Pick<PptExportDiagnostic, "code">
     case "html-report-missing":
     case "frame-missing":
     case "page-missing":
+    case "xml-package-invalid":
+    case "relationship-target-missing":
       return "fatal";
     case "block-missing":
     case "visual-missing":
@@ -43,10 +45,19 @@ function defaultDiagnosticSeverity(diagnostic: Pick<PptExportDiagnostic, "code">
     case "color-fallback":
       return "degraded";
     case "native-chart-exported":
+    case "native-chart-visible":
+    case "hidden-native-chart-data":
       return "success";
     case "hybrid-chart-exported":
     case "visual-clipped":
+    case "text-owned":
+    case "shape-owned":
+    case "dom-geometry-chart-visible":
+    case "container-text-suppressed":
+    case "hidden-placeholder-skipped":
       return "info";
+    case "ownership-conflict":
+      return "degraded";
     default:
       return "info";
   }
@@ -124,8 +135,19 @@ function textToIrNode(
     ...node,
     nodeType: "text",
     id: `p${pageNumber}-text-${index + 1}`,
-    sourceId: `text-${index + 1}`,
-    sourceKind: "block",
+    sourceId: node.sourceElementId ?? node.ownerId ?? `text-${index + 1}`,
+    sourceKind:
+      node.ownerKind === "chart" ||
+      node.ownerKind === "matrix" ||
+      node.ownerKind === "diagram" ||
+      node.ownerKind === "table" ||
+      node.ownerKind === "page" ||
+      node.ownerKind === "block"
+        ? node.ownerKind
+        : "block",
+    sourceOrder: node.sourceOrder,
+    zOrder: node.zOrder,
+    layerRole: node.layerRole ?? "text",
     boundsIn: boundsFromNode(node),
     editability: "native",
     qualityIssues: [],
@@ -141,8 +163,18 @@ function shapeToIrNode(
     ...node,
     nodeType: "shape",
     id: `p${pageNumber}-shape-${index + 1}`,
-    sourceId: node.role || `shape-${index + 1}`,
-    sourceKind: "visual",
+    sourceId: node.sourceElementId ?? node.ownerId ?? node.role ?? `shape-${index + 1}`,
+    sourceKind:
+      node.ownerKind === "chart" ||
+      node.ownerKind === "matrix" ||
+      node.ownerKind === "diagram" ||
+      node.ownerKind === "table" ||
+      node.ownerKind === "page"
+        ? node.ownerKind
+        : "visual",
+    sourceOrder: node.sourceOrder,
+    zOrder: node.zOrder,
+    layerRole: node.layerRole ?? "shape",
     boundsIn: boundsFromNode(node),
     editability: "native",
     qualityIssues: [],
@@ -179,8 +211,11 @@ function chartToIrNode(
     ...node,
     nodeType: "chart",
     id: `p${pageNumber}-chart-${index + 1}`,
-    sourceId: node.title || node.chartKind || `chart-${index + 1}`,
+    sourceId: node.sourceElementId ?? node.title ?? node.chartKind ?? `chart-${index + 1}`,
     sourceKind: "chart",
+    sourceOrder: node.sourceOrder,
+    zOrder: node.zOrder,
+    layerRole: node.layerRole ?? "chart",
     boundsIn: boundsFromNode(node),
     editability:
       node.renderMode === "native" ? "native" : node.renderMode === "hybrid" ? "hybrid" : "image",
@@ -211,8 +246,11 @@ function tableToIrNode(
     ...node,
     nodeType: "table",
     id: `p${pageNumber}-table-${index + 1}`,
-    sourceId: `table-${index + 1}`,
+    sourceId: node.sourceElementId ?? `table-${index + 1}`,
     sourceKind: "table",
+    sourceOrder: node.sourceOrder,
+    zOrder: node.zOrder,
+    layerRole: node.layerRole ?? "table",
     boundsIn: boundsFromNode(node),
     editability: node.renderMode === "native" ? "native" : "image",
     qualityIssues,
@@ -220,6 +258,19 @@ function tableToIrNode(
 }
 
 function slideToIr(slide: PptExportSlideModel): PptxExportSlide {
+  const nodes = [
+    ...slide.textNodes.map((node, index) => textToIrNode(node, slide.pageNumber, index)),
+    ...slide.shapeNodes.map((node, index) => shapeToIrNode(node, slide.pageNumber, index)),
+    ...slide.chartNodes.map((node, index) => chartToIrNode(node, slide.pageNumber, index)),
+    ...(slide.tableNodes ?? []).map((node, index) => tableToIrNode(node, slide.pageNumber, index)),
+  ].sort((left, right) => {
+    const zDelta = (left.zOrder ?? 0) - (right.zOrder ?? 0);
+    if (zDelta !== 0) {
+      return zDelta;
+    }
+    return (left.sourceOrder ?? 0) - (right.sourceOrder ?? 0);
+  });
+
   return {
     pageNumber: slide.pageNumber,
     title: slide.title,
@@ -229,12 +280,7 @@ function slideToIr(slide: PptExportSlideModel): PptxExportSlide {
       widthInches: PPT_LAYOUT.widthInches,
       heightInches: PPT_LAYOUT.heightInches,
     },
-    nodes: [
-      ...slide.textNodes.map((node, index) => textToIrNode(node, slide.pageNumber, index)),
-      ...slide.shapeNodes.map((node, index) => shapeToIrNode(node, slide.pageNumber, index)),
-      ...slide.chartNodes.map((node, index) => chartToIrNode(node, slide.pageNumber, index)),
-      ...(slide.tableNodes ?? []).map((node, index) => tableToIrNode(node, slide.pageNumber, index)),
-    ],
+    nodes,
   };
 }
 

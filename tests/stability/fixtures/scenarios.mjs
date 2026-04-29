@@ -1947,6 +1947,54 @@ const mckinseyChartTargetReport = {
   pageTitles: ["Chart Capability Demonstration"],
 };
 
+const exportedMckinseyChartRegressionReport = {
+  title: "Exported McKinsey chart regression",
+  html: readFixtureText("html/a-one-page-mckinsey-style-presentation-demonstrating-chart.html"),
+  pageCount: 1,
+  pageTitles: ["Chart Capability Demonstration"],
+};
+
+const observedFactsQ1RegressionReport = {
+  title: "Observed facts Q1 2026 regression",
+  html: readFixtureText("html/observed-facts-q1-2026-total-2.html"),
+  pageCount: 3,
+  pageTitles: [
+    "特斯拉投资判断：基本面修复已兑现，但估值弹性仍押注AI与Robotaxi",
+    "盈利与现金流修复已出现，但交付与利润质量仍偏混合",
+    "Migration Risks and Rollback",
+  ],
+};
+
+const textOwnershipRegressionReport = {
+  title: "PPTX text ownership regression",
+  html: buildReportDocument("PPTX text ownership regression", [
+    `
+      <section class="page" data-page-number="1" data-page-title="Filled visual containers keep child text single-source" style="width:1600px;height:900px;position:relative;overflow:hidden;background:#f7f4ec;color:#1f3045;" data-page-bg="#f7f4ec" data-surface-fill="#fbf8f1" data-divider-color="#d8cfbc">
+        <div data-html-block-id="ownership-title" data-html-block-kind="heading" data-html-fit-role="content" style="position:absolute;left:72px;top:58px;width:1180px;font-size:46px;line-height:1.12;font-weight:700;color:#17304b;">Ownership graph keeps card text single-source</div>
+        <div data-html-block-id="ownership-subtitle" data-html-block-kind="paragraph" data-html-fit-role="content" style="position:absolute;left:72px;top:128px;width:1240px;font-size:21px;line-height:1.35;color:#536171;">Each filled card is a visual shape. Its child blocks remain editable text, and the parent never exports its concatenated innerText as a second filled text box.</div>
+
+        <div data-html-visual-id="ownership-card-1" data-html-visual-kind="label-surface" data-export-role="label-surface" data-export-fill="#fbf8f1" data-export-border="#d8cfbc" data-export-border-width="1" data-export-radius="14" data-export-opacity="1" data-html-fit-role="content" style="position:absolute;left:88px;top:238px;width:420px;height:230px;background:#fbf8f1;border:1px solid #d8cfbc;border-radius:14px;padding:24px;box-sizing:border-box;">
+          <div data-html-block-id="ownership-card-1-title" data-html-block-kind="heading" data-html-fit-role="content" style="font-size:30px;line-height:1.1;font-weight:700;color:#17304b;">Key signal</div>
+          <div data-html-block-id="ownership-card-1-metric" data-html-block-kind="heading" data-html-fit-role="content" style="margin-top:18px;font-size:25px;line-height:1.2;font-weight:650;color:#b08a42;">Services revenue grew 42%</div>
+          <div data-html-block-id="ownership-card-1-body" data-html-block-kind="paragraph" data-html-fit-role="content" style="margin-top:14px;font-size:17px;line-height:1.45;color:#536171;">The parent card background should export as a shape while this paragraph remains the only editable text source for the body copy.</div>
+        </div>
+
+        <div data-html-visual-id="ownership-card-2" data-html-visual-kind="label-surface" data-export-role="label-surface" data-export-fill="#17304b" data-export-border="#9f8a5d" data-export-border-width="1" data-export-radius="0" data-export-opacity="1" data-html-fit-role="content" style="position:absolute;left:590px;top:238px;width:360px;height:230px;background:#17304b;border:1px solid #9f8a5d;padding:22px;box-sizing:border-box;color:#f8f4eb;">
+          <div data-html-block-id="ownership-card-2-title" data-html-block-kind="heading" data-html-fit-role="content" style="font-size:31px;line-height:1.1;font-weight:700;">Interpretation</div>
+          <div data-html-block-id="ownership-card-2-body" data-html-block-kind="paragraph" data-html-fit-role="content" style="margin-top:18px;font-size:18px;line-height:1.4;color:#efe4ce;">A dark filled parent should not become a late z-order text box that covers the separately exported child text.</div>
+        </div>
+
+        <div data-html-visual-id="ownership-card-3" data-html-visual-kind="label-surface" data-export-role="label-surface" data-export-fill="#d9c79f" data-export-border="#b59c66" data-export-border-width="1" data-export-radius="0" data-export-opacity="1" data-html-fit-role="content" style="position:absolute;left:1030px;top:238px;width:380px;height:230px;background:#d9c79f;border:1px solid #b59c66;padding:22px;box-sizing:border-box;color:#1f3045;">
+          <div data-html-block-id="ownership-card-3-title" data-html-block-kind="heading" data-html-fit-role="content" style="font-size:31px;line-height:1.1;font-weight:700;">Investment meaning</div>
+          <div data-html-block-id="ownership-card-3-body" data-html-block-kind="paragraph" data-html-fit-role="content" style="margin-top:18px;font-size:18px;line-height:1.4;">The ownership planner should choose leaf text and suppress the visual container's descendant text aggregate.</div>
+        </div>
+      </section>
+    `,
+  ]),
+  pageCount: 1,
+  pageTitles: ["Filled visual containers keep child text single-source"],
+};
+
 const tableExportPages = createSectionPages([
   {
     title: "Native table export should preserve the operating comparison as PowerPoint cells",
@@ -2192,6 +2240,11 @@ const bubbleExportSpec = {
     { id: "point-2", label: "Cohort B", x: 48, y: 58, size: 64, color: "#8aa1b5" },
     { id: "point-3", label: "Cohort C", x: 73, y: 69, size: 96, color: "#9ec7ff" },
   ],
+  style: {
+    bubbleScale: 70,
+    xAxis: { lineColor: "#5d7f9d", gridColor: "#d8e3ea", labelColor: "#536171", labelFontSize: 8 },
+    yAxis: { lineColor: "#b55638", gridColor: "#e6d6ca", gridDash: "dash", labelColor: "#536171", labelFontSize: 8 },
+  },
 };
 
 const bubbleExportPages = createSectionPages([
@@ -2207,6 +2260,82 @@ const bubbleExportPages = createSectionPages([
   },
 ]);
 const bubbleExportReport = createReport("Native bubble chart export fixture", bubbleExportPages);
+
+const lineStyleExportSpec = {
+  kind: "line",
+  title: "Scenario confidence keeps style semantics inside the native chart",
+  subtitle: "Native line style contract fixture",
+  insight: "Two observed paths should stay solid while the stretch case exports as a dashed editable series with chart XML styling.",
+  unit: "index",
+  categories: ["Q1", "Q2", "Q3", "Q4", "Q5"],
+  valueAxisMin: 40,
+  valueAxisMax: 100,
+  style: {
+    yAxis: {
+      lineColor: "#305c63",
+      lineWidthPt: 1.4,
+      gridColor: "#d8cfbc",
+      gridWidthPt: 0.8,
+      gridDash: "dash",
+      labelColor: "#536171",
+      labelFontSize: 8,
+    },
+    xAxis: {
+      lineColor: "#305c63",
+      lineWidthPt: 1.2,
+      labelColor: "#536171",
+      labelFontSize: 8,
+    },
+  },
+  series: [
+    {
+      id: "baseline-line",
+      label: "Baseline",
+      values: [54, 59, 63, 68, 72],
+      color: "#305c63",
+      role: "line",
+      axis: "primary",
+      style: { lineDash: "solid", lineWidthPt: 2.4, marker: "circle" },
+    },
+    {
+      id: "improved-line",
+      label: "Improved",
+      values: [57, 65, 72, 79, 86],
+      color: "#b55638",
+      role: "line",
+      axis: "primary",
+      style: { lineDash: "solid", lineWidthPt: 2.8, marker: "circle" },
+    },
+    {
+      id: "stretch-line",
+      label: "Stretch case",
+      values: [50, 61, 70, 84, 94],
+      color: "#7f9da1",
+      role: "line",
+      axis: "primary",
+      style: {
+        lineDash: "dash",
+        lineWidthPt: 2.6,
+        marker: "none",
+        shadow: { color: "#000000", opacity: 0.18, blurPt: 4, offsetPt: 1, angle: 45 },
+      },
+    },
+  ],
+};
+
+const lineStyleExportPages = createSectionPages([
+  {
+    title: "Line chart export should preserve native style contract",
+    eyebrow: "Export quality",
+    left: `
+      <h1>Line chart export should preserve dash, axis, grid, and shadow styling.</h1>
+      <p class="lede">This fixture forces per-series line styling and y-axis styling through the native PPTX chart XML path.</p>
+      ${chartSpecMarkup({ spec: lineStyleExportSpec })}
+    `,
+    right: "",
+  },
+]);
+const lineStyleExportReport = createReport("Native line style export fixture", lineStyleExportPages);
 
 const textListExportPages = createSectionPages([
   {
@@ -2280,6 +2409,257 @@ const nativeShapeExportPages = createSectionPages([
   },
 ]);
 const nativeShapeExportReport = createReport("Native visual shape export fixture", nativeShapeExportPages);
+
+const pressureComboSpec = {
+  kind: "combo",
+  title: "Pressure throughput and defect escape move on separate axes",
+  subtitle: "Native combo chart with DOM preview primitives underneath",
+  insight: "The visible chart must stay a PowerPoint chart while preview bars and lines are suppressed.",
+  unit: "tickets",
+  secondaryUnit: "%",
+  categories: ["T-3", "T-2", "T-1", "Launch"],
+  series: [
+    {
+      id: "pressure-volume",
+      label: "Queue volume",
+      values: [112, 94, 71, 49],
+      color: "#2f5d84",
+      role: "bar",
+      axis: "primary",
+    },
+    {
+      id: "pressure-quality",
+      label: "Quality gate pass",
+      values: [66, 72, 83, 91],
+      color: "#b55638",
+      role: "line",
+      axis: "secondary",
+    },
+  ],
+};
+
+const pressureWaterfallSpec = {
+  kind: "waterfall",
+  title: "Launch risk bridge isolates moving parts",
+  subtitle: "Native waterfall chart with absolute-positioned DOM bars",
+  insight: "The bridge should export as chart data, not a pile of rectangles.",
+  unit: "risk index",
+  categories: ["Start", "Demand", "Ops", "Fixes", "End"],
+  series: [
+    {
+      id: "pressure-risk",
+      label: "Risk movement",
+      values: [82, 21, 14, -29, 88],
+      color: "#b55638",
+      role: "bar",
+      axis: "primary",
+    },
+  ],
+};
+
+const pressureBubbleSpec = {
+  kind: "bubble",
+  title: "Prioritization bubbles keep editable point data",
+  subtitle: "Native bubble chart with absolute DOM bubbles suppressed",
+  insight: "Point labels remain text; circles should belong to the chart.",
+  xLabel: "Effort",
+  yLabel: "Impact",
+  sizeLabel: "Exposure",
+  points: [
+    { id: "p1", label: "A", x: 18, y: 82, size: 58, color: "#b55638" },
+    { id: "p2", label: "B", x: 41, y: 62, size: 38, color: "#2f5d84" },
+    { id: "p3", label: "C", x: 76, y: 42, size: 66, color: "#d08f73" },
+    { id: "p4", label: "D", x: 31, y: 28, size: 28, color: "#7f9da1" },
+  ],
+  style: {
+    bubbleScale: 70,
+    xAxis: { lineColor: "#a99d8e", gridColor: "#e7ded2", labelColor: "#6c6258", labelFontSize: 8 },
+    yAxis: { lineColor: "#a99d8e", gridColor: "#e7ded2", gridDash: "dash", labelColor: "#6c6258", labelFontSize: 8 },
+  },
+};
+
+const pressureMatrixSpec = {
+  kind: "matrix",
+  title: "Decision matrix must stay shape-native, not table-native",
+  subtitle: "Semantic matrix beside a real table",
+  insight: "Only the operating grid on the right is allowed to become a PowerPoint table.",
+  xLabel: "Implementation effort",
+  yLabel: "Strategic leverage",
+  xMinLabel: "Low effort",
+  xMaxLabel: "High effort",
+  yMinLabel: "Low leverage",
+  yMaxLabel: "High leverage",
+  plotBounds: { x: 0.08, y: 0.25, w: 0.68, h: 0.58 },
+  quadrants: [
+    { id: "q1", label: "Act", x: 0, y: 0, w: 0.5, h: 0.5, color: "#f3e2d9" },
+    { id: "q2", label: "Sequence", x: 0.5, y: 0, w: 0.5, h: 0.5, color: "#e4eef0" },
+    { id: "q3", label: "Observe", x: 0, y: 0.5, w: 0.5, h: 0.5, color: "#edf1e8" },
+    { id: "q4", label: "Defer", x: 0.5, y: 0.5, w: 0.5, h: 0.5, color: "#f6eee2" },
+  ],
+  items: [
+    { id: "m1", label: "Owner map", detail: "Fast lift", x: 0.1, y: 0.12, w: 0.3, h: 0.18, color: "#ffffff" },
+    { id: "m2", label: "Policy gate", detail: "Governance load", x: 0.56, y: 0.13, w: 0.34, h: 0.2, color: "#ffffff" },
+    { id: "m3", label: "Retry queue", detail: "Operational drag", x: 0.14, y: 0.62, w: 0.31, h: 0.18, color: "#ffffff" },
+    { id: "m4", label: "Legacy shim", detail: "Slow burn", x: 0.58, y: 0.64, w: 0.31, h: 0.18, color: "#ffffff" },
+  ],
+  callout: {
+    title: "Decision read",
+    body: "Ship owner mapping first; sequence policy gates behind evidence.",
+    x: 0.78,
+    y: 0.3,
+    w: 0.18,
+    h: 0.24,
+    color: "#fffaf3",
+    borderColor: "#d7c8b9",
+  },
+};
+
+function pressureSpecAttribute(spec) {
+  return escapeHtml(JSON.stringify(spec));
+}
+
+function pressureChartPreview(kind) {
+  if (kind === "waterfall") {
+    return `
+      <div style="position:relative;height:126px;border-bottom:2px solid #a99d8e;">
+        <div style="position:absolute;left:20px;bottom:0;width:46px;height:64px;background:#2f5d84;"></div>
+        <div style="position:absolute;left:92px;bottom:64px;width:46px;height:28px;background:#7f9da1;"></div>
+        <div style="position:absolute;left:164px;bottom:92px;width:46px;height:20px;background:#d08f73;"></div>
+        <div style="position:absolute;left:236px;bottom:56px;width:46px;height:36px;background:#b55638;"></div>
+        <div style="position:absolute;left:308px;bottom:0;width:46px;height:88px;background:#2f5d84;"></div>
+        <div style="position:absolute;left:67px;bottom:76px;width:24px;border-top:2px solid #9f9587;"></div>
+        <div style="position:absolute;left:139px;bottom:104px;width:24px;border-top:2px solid #9f9587;"></div>
+        <div style="position:absolute;left:211px;bottom:74px;width:24px;border-top:2px solid #9f9587;"></div>
+      </div>
+    `;
+  }
+  if (kind === "bubble") {
+    return `
+      <div style="position:relative;height:142px;border-left:2px solid #a99d8e;border-bottom:2px solid #a99d8e;background:linear-gradient(to right,transparent 49.5%,#e7ded2 49.5%,#e7ded2 50.5%,transparent 50.5%),linear-gradient(to bottom,transparent 49.5%,#e7ded2 49.5%,#e7ded2 50.5%,transparent 50.5%);">
+        <div style="position:absolute;left:42px;top:18px;width:50px;height:50px;border-radius:50%;background:rgba(181,86,56,0.86);display:grid;place-items:center;color:#fff;font-weight:700;">A</div>
+        <div style="position:absolute;left:146px;top:42px;width:36px;height:36px;border-radius:50%;background:rgba(47,93,132,0.84);display:grid;place-items:center;color:#fff;font-weight:700;">B</div>
+        <div style="position:absolute;left:258px;top:70px;width:58px;height:58px;border-radius:50%;background:rgba(208,143,115,0.84);display:grid;place-items:center;color:#fff;font-weight:700;">C</div>
+        <div style="position:absolute;left:96px;top:96px;width:30px;height:30px;border-radius:50%;background:rgba(127,157,161,0.9);display:grid;place-items:center;color:#fff;font-weight:700;">D</div>
+      </div>
+    `;
+  }
+  return `
+    <svg viewBox="0 0 560 150" style="display:block;width:100%;height:150px;overflow:visible;">
+      <line x1="24" y1="126" x2="536" y2="126" stroke="#d8cfbc" stroke-width="2" />
+      <rect x="54" y="42" width="54" height="84" rx="10" fill="#2f5d84" opacity="0.82" />
+      <rect x="178" y="58" width="54" height="68" rx="10" fill="#2f5d84" opacity="0.82" />
+      <rect x="302" y="74" width="54" height="52" rx="10" fill="#2f5d84" opacity="0.82" />
+      <rect x="426" y="92" width="54" height="34" rx="10" fill="#2f5d84" opacity="0.82" />
+      <path d="M81 84 L205 76 L329 55 L453 34" fill="none" stroke="#b55638" stroke-width="5" stroke-linecap="round" />
+      <circle cx="81" cy="84" r="7" fill="#b55638" />
+      <circle cx="205" cy="76" r="7" fill="#b55638" />
+      <circle cx="329" cy="55" r="7" fill="#b55638" />
+      <circle cx="453" cy="34" r="7" fill="#b55638" />
+    </svg>
+  `;
+}
+
+function pressureChartModule({ id, spec, left, top, width, height, layer = "content" }) {
+  return `
+    <div data-html-visual-id="${id}" data-html-visual-kind="chart-frame" data-html-module-kind="chart" data-html-module-label="Chart" data-html-fit-role="content" data-html-chart-spec="${pressureSpecAttribute(spec)}" data-html-canvas-layer="${layer}" style="position:absolute;left:${left}px;top:${top}px;width:${width}px;height:${height}px;background:#fcfaf6;border:1px solid #d8cfbc;border-radius:18px;padding:16px 18px;box-sizing:border-box;z-index:2;">
+      <div data-html-block-id="${id}-title" data-html-block-kind="heading" data-html-fit-role="content" style="font-size:18px;line-height:1.18;font-weight:750;color:#1d303a;">${escapeHtml(spec.title)}</div>
+      <div data-html-block-id="${id}-subtitle" data-html-block-kind="paragraph" data-html-fit-role="content" style="margin-top:5px;font-size:12px;line-height:1.35;color:#6c6258;">${escapeHtml(spec.subtitle)}</div>
+      <div data-html-visual-id="${id}-plot" data-html-visual-kind="surface" data-export-role="surface" data-export-fill="#ffffff" data-export-border="#d8cfbc" data-export-border-width="1" style="position:relative;margin-top:12px;height:${Math.max(118, height - 92)}px;background:#fffaf3;border:1px solid #e3d8ca;border-radius:12px;padding:10px;overflow:hidden;">
+        ${pressureChartPreview(spec.kind)}
+      </div>
+    </div>
+  `;
+}
+
+const pressureTableMarkup = tableMarkup({
+  columns: ["Gate", "Owner", "State", "Risk"],
+  rows: [
+    ["Chart XML parse", "Export", "Pass", "Low"],
+    ["Layer order", "Renderer", "Watch", "High"],
+    ["Matrix ownership", "Planner", "Pass", "Medium"],
+    ["Table promotion", "Collector", "Pass", "Low"],
+  ],
+});
+
+const pptxExportPressureReport = {
+  title: "PPTX export extreme pressure fixture",
+  html: buildReportDocument("PPTX export extreme pressure fixture", [
+    `
+      <section class="page" data-page-number="1" data-page-title="Native chart layer gauntlet" style="width:1600px;height:900px;position:relative;overflow:hidden;background:#f6f0e7;color:#1d303a;" data-page-bg="#f6f0e7" data-surface-fill="#fcfaf6" data-divider-color="#d8cfbc">
+        <div data-html-canvas-overlay-root="background" data-html-canvas-layer="background" style="position:absolute;inset:0;pointer-events:none;z-index:0;">
+          <div data-html-visual-id="pressure-p1-bg-slab" data-html-visual-kind="surface" data-export-role="surface" data-export-fill="#eadfce" style="position:absolute;left:56px;top:678px;width:1460px;height:44px;background:#eadfce;border-radius:22px;"></div>
+          <div data-html-visual-id="pressure-p1-bg-rule" data-html-visual-kind="divider" data-export-role="divider" data-export-fill="#b55638" style="position:absolute;left:0;top:0;width:1600px;height:12px;background:#b55638;"></div>
+        </div>
+        <div data-html-block-id="pressure-p1-kicker" data-html-block-kind="eyebrow" data-html-fit-role="content" style="position:absolute;left:72px;top:54px;font-size:14px;letter-spacing:1.4px;text-transform:uppercase;font-weight:800;color:#8a7967;">Extreme export pressure</div>
+        <div data-html-block-id="pressure-p1-title" data-html-block-kind="heading" data-html-fit-role="content" style="position:absolute;left:72px;top:82px;width:1180px;font-size:43px;line-height:1.08;font-weight:800;">Native charts must stay charts while DOM preview layers disappear</div>
+        <div data-html-block-id="pressure-p1-body" data-html-block-kind="paragraph" data-html-fit-role="content" style="position:absolute;left:72px;top:180px;width:1100px;font-size:18px;line-height:1.36;color:#52616b;">This page stacks combo, waterfall, and bubble chart contracts with visible preview geometry, background overlays, a hidden duplicate placeholder, and a foreground label.</div>
+        ${pressureChartModule({ id: "pressure-combo-chart", spec: pressureComboSpec, left: 72, top: 256, width: 860, height: 364 })}
+        ${pressureChartModule({ id: "pressure-waterfall-chart", spec: pressureWaterfallSpec, left: 968, top: 236, width: 540, height: 270 })}
+        ${pressureChartModule({ id: "pressure-bubble-chart", spec: pressureBubbleSpec, left: 968, top: 536, width: 540, height: 266 })}
+        <div data-html-canvas-placeholder="true" data-html-canvas-placeholder-for="pressure-combo-chart" data-html-chart-spec="${pressureSpecAttribute(pressureComboSpec)}" style="position:absolute;left:110px;top:314px;width:520px;height:180px;visibility:hidden;pointer-events:none;">Hidden duplicate chart should never create a fourth chart frame</div>
+        <div data-html-canvas-overlay-root="foreground" data-html-canvas-layer="foreground" style="position:absolute;inset:0;pointer-events:none;z-index:6;">
+          <div data-html-visual-id="pressure-p1-foreground-badge" data-html-visual-kind="badge" data-export-role="badge" data-export-fill="#1d303a" data-export-border="#b55638" data-export-border-width="2" data-export-radius="16" style="position:absolute;left:1126px;top:154px;width:300px;height:48px;background:#1d303a;border:2px solid #b55638;border-radius:16px;"></div>
+          <div data-html-block-id="pressure-p1-foreground-text" data-html-block-kind="heading" data-html-fit-role="content" style="position:absolute;left:1148px;top:168px;width:260px;font-size:15px;font-weight:800;color:#fffaf3;letter-spacing:.5px;">Escalation overlay stays on top</div>
+        </div>
+      </section>
+    `,
+    `
+      <section class="page" data-page-number="2" data-page-title="Matrix table and text ownership gauntlet" style="width:1600px;height:900px;position:relative;overflow:hidden;background:#f7f3eb;color:#1d303a;" data-page-bg="#f7f3eb" data-surface-fill="#fcfaf6" data-divider-color="#d8cfbc">
+        <div data-html-block-id="pressure-p2-title" data-html-block-kind="heading" data-html-fit-role="content" style="position:absolute;left:72px;top:58px;width:1180px;font-size:40px;line-height:1.1;font-weight:800;">Matrix, table, and filled containers all compete for ownership</div>
+        <div data-html-block-id="pressure-p2-subtitle" data-html-block-kind="paragraph" data-html-fit-role="content" style="position:absolute;left:72px;top:118px;width:1160px;font-size:18px;line-height:1.36;color:#52616b;">The matrix is a chart-owned shape system; the operating grid is the only native table; filled cards must not emit concatenated parent text.</div>
+        <div data-html-visual-id="pressure-matrix-module" data-html-visual-kind="chart-frame" data-html-module-kind="chart" data-html-module-label="Chart" data-html-fit-role="content" data-html-chart-spec="${pressureSpecAttribute(pressureMatrixSpec)}" style="position:absolute;left:72px;top:196px;width:840px;height:460px;background:#fcfaf6;border:1px solid #d8cfbc;border-radius:18px;padding:18px;box-sizing:border-box;">
+          <div data-html-block-id="pressure-matrix-decoy-label" data-html-block-kind="heading" data-html-fit-role="content" style="font-size:17px;font-weight:800;color:#1d303a;">Decision matrix visual preview below must not become a table</div>
+          <div style="position:relative;margin-top:18px;height:350px;background:linear-gradient(to right,transparent 49.5%,#e0d5c5 49.5%,#e0d5c5 50.5%,transparent 50.5%),linear-gradient(to bottom,transparent 49.5%,#e0d5c5 49.5%,#e0d5c5 50.5%,transparent 50.5%);border:1px solid #d8cfbc;border-radius:12px;">
+            <div style="position:absolute;left:44px;top:48px;width:170px;height:74px;background:#fff;border:1px solid #d8cfbc;border-radius:12px;padding:12px;">Owner map</div>
+            <div style="position:absolute;left:460px;top:56px;width:190px;height:78px;background:#fff;border:1px solid #d8cfbc;border-radius:12px;padding:12px;">Policy gate</div>
+            <div style="position:absolute;left:76px;top:236px;width:170px;height:74px;background:#fff;border:1px solid #d8cfbc;border-radius:12px;padding:12px;">Retry queue</div>
+            <div style="position:absolute;left:486px;top:242px;width:170px;height:74px;background:#fff;border:1px solid #d8cfbc;border-radius:12px;padding:12px;">Legacy shim</div>
+          </div>
+        </div>
+        <div style="position:absolute;left:960px;top:196px;width:520px;">
+          ${pressureTableMarkup}
+        </div>
+        <div data-html-visual-id="pressure-card-alpha" data-html-visual-kind="label-surface" data-export-role="label-surface" data-export-fill="#fcfaf6" data-export-border="#d8cfbc" data-export-border-width="1" data-export-radius="14" style="position:absolute;left:86px;top:700px;width:390px;height:118px;background:#fcfaf6;border:1px solid #d8cfbc;border-radius:14px;padding:18px;">
+          <div data-html-block-id="pressure-card-alpha-title" data-html-block-kind="heading" data-html-fit-role="content" style="font-size:23px;font-weight:800;">Alpha containment</div>
+          <div data-html-block-id="pressure-card-alpha-body" data-html-block-kind="paragraph" data-html-fit-role="content" style="margin-top:8px;font-size:15px;line-height:1.36;color:#52616b;">Parent fill exports as shape; child text remains single-source.</div>
+        </div>
+        <div data-html-visual-id="pressure-card-beta" data-html-visual-kind="label-surface" data-export-role="label-surface" data-export-fill="#1d303a" data-export-border="#b55638" data-export-border-width="1" data-export-radius="0" style="position:absolute;left:520px;top:700px;width:390px;height:118px;background:#1d303a;border:1px solid #b55638;padding:18px;color:#fffaf3;">
+          <div data-html-block-id="pressure-card-beta-title" data-html-block-kind="heading" data-html-fit-role="content" style="font-size:23px;font-weight:800;">Beta containment</div>
+          <div data-html-block-id="pressure-card-beta-body" data-html-block-kind="paragraph" data-html-fit-role="content" style="margin-top:8px;font-size:15px;line-height:1.36;color:#f1e7d7;">Dark parent must not cover its child text later in z-order.</div>
+        </div>
+        <div data-html-visual-id="pressure-card-gamma" data-html-visual-kind="label-surface" data-export-role="label-surface" data-export-fill="#d08f73" data-export-border="#9c5e45" data-export-border-width="1" data-export-radius="0" style="position:absolute;left:954px;top:700px;width:390px;height:118px;background:#d08f73;border:1px solid #9c5e45;padding:18px;color:#1d303a;">
+          <div data-html-block-id="pressure-card-gamma-title" data-html-block-kind="heading" data-html-fit-role="content" style="font-size:23px;font-weight:800;">Gamma containment</div>
+          <div data-html-block-id="pressure-card-gamma-body" data-html-block-kind="paragraph" data-html-fit-role="content" style="margin-top:8px;font-size:15px;line-height:1.36;">Filled parent text aggregation should be suppressed.</div>
+        </div>
+      </section>
+    `,
+    `
+      <section class="page" data-page-number="3" data-page-title="Layer ordering and hidden placeholder gauntlet" style="width:1600px;height:900px;position:relative;overflow:hidden;background:#f5efe4;color:#1d303a;" data-page-bg="#f5efe4" data-surface-fill="#fcfaf6" data-divider-color="#d8cfbc">
+        <div data-html-canvas-overlay-root="background" data-html-canvas-layer="background" data-html-canvas-layer-order="0" style="position:absolute;inset:0;pointer-events:none;z-index:0;">
+          <div data-html-visual-id="pressure-z-bg-slab" data-html-visual-kind="surface" data-export-role="surface" data-export-fill="#e3d5c0" style="position:absolute;left:62px;top:692px;width:1458px;height:38px;background:#e3d5c0;border-radius:19px;"></div>
+          <div data-html-visual-id="pressure-z-bg-panel" data-html-visual-kind="surface" data-export-role="surface" data-export-fill="#fffaf3" data-export-border="#d8cfbc" data-export-border-width="1" style="position:absolute;left:74px;top:214px;width:760px;height:390px;background:#fffaf3;border:1px solid #d8cfbc;border-radius:18px;"></div>
+        </div>
+        <div data-html-block-id="pressure-p3-title" data-html-block-kind="heading" data-html-fit-role="content" style="position:absolute;left:72px;top:58px;width:1080px;font-size:42px;line-height:1.1;font-weight:800;">Background layers, foreground badges, and hidden placeholders must not reorder the page</div>
+        <div data-html-block-id="pressure-p3-copy" data-html-block-kind="paragraph" data-html-fit-role="content" style="position:absolute;left:72px;top:156px;width:1180px;font-size:18px;line-height:1.4;color:#52616b;">The export plan should keep background shapes behind content, foreground audit stamps above content, and hidden placeholders out of text and shape collectors.</div>
+        <div data-html-visual-id="pressure-p3-primary-card" data-html-visual-kind="surface" data-export-role="surface" data-export-fill="#fcfaf6" data-export-border="#d8cfbc" data-export-border-width="1" style="position:absolute;left:106px;top:252px;width:680px;height:286px;background:#fcfaf6;border:1px solid #d8cfbc;border-radius:16px;padding:24px;">
+          <div data-html-block-id="pressure-p3-primary-title" data-html-block-kind="heading" data-html-fit-role="content" style="font-size:30px;line-height:1.1;font-weight:800;">Visible content remains above the background panel</div>
+          <div data-html-block-id="pressure-p3-primary-body" data-html-block-kind="paragraph" data-html-fit-role="content" style="margin-top:18px;font-size:18px;line-height:1.48;color:#52616b;">This copy intentionally sits inside a filled surface while a larger background panel is underneath. Export order should preserve the visible reading order.</div>
+        </div>
+        <div data-html-canvas-placeholder="true" data-html-canvas-placeholder-for="pressure-hidden-copy" style="position:absolute;left:128px;top:332px;width:420px;height:80px;visibility:hidden;pointer-events:none;">Hidden placeholder text must not leak into PowerPoint text runs.</div>
+        <div data-html-canvas-overlay-root="foreground" data-html-canvas-layer="foreground" data-html-canvas-layer-order="2" style="position:absolute;inset:0;pointer-events:none;z-index:7;">
+          <div data-html-visual-id="pressure-z-foreground-stamp" data-html-visual-kind="badge" data-export-role="badge" data-export-fill="#b55638" data-export-border="#1d303a" data-export-border-width="2" data-export-radius="18" style="position:absolute;left:1210px;top:118px;width:270px;height:58px;background:#b55638;border:2px solid #1d303a;border-radius:18px;"></div>
+          <div data-html-block-id="pressure-z-foreground-text" data-html-block-kind="heading" data-html-fit-role="content" style="position:absolute;left:1234px;top:136px;width:228px;font-size:16px;font-weight:900;color:#fffaf3;">Foreground audit stamp</div>
+        </div>
+      </section>
+    `,
+  ]),
+  pageCount: 3,
+  pageTitles: [
+    "Native chart layer gauntlet",
+    "Matrix table and text ownership gauntlet",
+    "Layer ordering and hidden placeholder gauntlet",
+  ],
+};
 
 function deepClone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -2498,6 +2878,27 @@ const scenarioMap = {
     report: mckinseyChartTargetReport,
     reviseReports: [],
   },
+  "exported-mckinsey-chart-regression-1page": {
+    id: "exported-mckinsey-chart-regression-1page",
+    prompt:
+      "Load the exported one-page McKinsey chart regression fixture.",
+    report: exportedMckinseyChartRegressionReport,
+    reviseReports: [],
+  },
+  "observed-facts-q1-regression-3page": {
+    id: "observed-facts-q1-regression-3page",
+    prompt:
+      "Load the observed facts Q1 2026 regression fixture.",
+    report: observedFactsQ1RegressionReport,
+    reviseReports: [],
+  },
+  "text-ownership-regression-1page": {
+    id: "text-ownership-regression-1page",
+    prompt:
+      "Create a 1-page PPTX export regression fixture with filled card containers and child text blocks.",
+    report: textOwnershipRegressionReport,
+    reviseReports: [],
+  },
   "table-export-1page": {
     id: "table-export-1page",
     prompt:
@@ -2547,6 +2948,13 @@ const scenarioMap = {
     report: bubbleExportReport,
     reviseReports: [],
   },
+  "line-style-export-1page": {
+    id: "line-style-export-1page",
+    prompt:
+      "Create a 1-page export-quality fixture with a structured line chart that carries native chart style contract fields.",
+    report: lineStyleExportReport,
+    reviseReports: [],
+  },
   "text-list-export-1page": {
     id: "text-list-export-1page",
     prompt:
@@ -2573,6 +2981,13 @@ const scenarioMap = {
     prompt:
       "Create a 1-page export-quality fixture with native divider rail and badge visual shapes.",
     report: nativeShapeExportReport,
+    reviseReports: [],
+  },
+  "pptx-extreme-pressure-3page": {
+    id: "pptx-extreme-pressure-3page",
+    prompt:
+      "Load the 3-page PPTX export extreme pressure fixture with native charts, matrix, table, ownership, z-order, and hidden placeholder traps.",
+    report: pptxExportPressureReport,
     reviseReports: [],
   },
   "freeform-edit-export": {

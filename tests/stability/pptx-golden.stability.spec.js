@@ -11,6 +11,10 @@ function firstSlideXml(pptx) {
   return pptx.slideXml[0]?.xml ?? "";
 }
 
+function combinedSlideXml(pptx) {
+  return pptx.slideXml.map((entry) => entry.xml).join("\n");
+}
+
 function combinedChartXml(pptx) {
   return pptx.slideRelationships
     .flatMap((entry) => entry.chartXmlEntries ?? [])
@@ -26,6 +30,16 @@ function countTextOccurrences(text, needle) {
   return text.split(needle).length - 1;
 }
 
+function countTextOccurrencesCaseInsensitive(text, needle) {
+  return countTextOccurrences(text.toLowerCase(), needle.toLowerCase());
+}
+
+function expectChartLabel(chartXml, label) {
+  expect(
+    chartXml.includes(`<C:V>${label}</C:V>`) || chartXml.includes(`<A:T>${label}</A:T>`),
+  ).toBeTruthy();
+}
+
 function expectShapesInsideSlide(pptx) {
   for (const bounds of allShapeBounds(pptx)) {
     expect(bounds.x).toBeGreaterThanOrEqual(-0.01);
@@ -33,6 +47,19 @@ function expectShapesInsideSlide(pptx) {
     expect(bounds.x + bounds.w).toBeLessThanOrEqual(13.343);
     expect(bounds.y + bounds.h).toBeLessThanOrEqual(7.51);
   }
+}
+
+function diagonalLineBounds(slideObject) {
+  return (slideObject?.shapeBounds ?? []).filter(
+    (bounds) =>
+      bounds.preset === "line" &&
+      Math.abs(bounds.w) > 0.2 &&
+      Math.abs(bounds.h) > 0.02,
+  );
+}
+
+function textShapeBounds(slideObject, text) {
+  return (slideObject?.shapeBounds ?? []).find((bounds) => bounds.text === text);
 }
 
 test.describe("PPTX export golden matrix", () => {
@@ -66,7 +93,29 @@ test.describe("PPTX export golden matrix", () => {
     expect(pptx.combinedText.toLowerCase()).toContain("dense reranking network");
     expect(pptx.combinedText.toLowerCase()).toContain("input layer");
     expect(pptx.objectCounts.textRunCount).toBeGreaterThan(4);
-    expect(pptx.objectCounts.connectorCount + pptx.objectCounts.ellipseCount).toBeGreaterThan(0);
+    expect(countTextOccurrencesCaseInsensitive(pptx.combinedText, "Input layer")).toBe(1);
+    expect(countTextOccurrencesCaseInsensitive(pptx.combinedText, "Hidden 1")).toBe(1);
+    expect(countTextOccurrencesCaseInsensitive(pptx.combinedText, "Hidden 2")).toBe(1);
+    expect(
+      countTextOccurrencesCaseInsensitive(
+        pptx.combinedText,
+        "Output score for final document order",
+      ),
+    ).toBe(1);
+    expect(
+      countTextOccurrences(
+        pptx.combinedText,
+        "Input features bundle lexical overlap, retrieval score, and context-quality signals.",
+      ),
+    ).toBe(1);
+    expect(
+      countTextOccurrences(
+        pptx.combinedText,
+        "A dense reranking MLP concentrates the method page into one editable figure",
+      ),
+    ).toBe(1);
+    expect(pptx.objectCounts.connectorCount).toBeGreaterThanOrEqual(40);
+    expect(pptx.objectCounts.ellipseCount).toBeGreaterThanOrEqual(15);
     expect(pptx.objectCounts.imageRelCount).toBe(0);
   });
 
@@ -119,6 +168,12 @@ test.describe("PPTX export golden matrix", () => {
     expect(pptx.combinedText).toContain("High effort");
     expect(pptx.combinedText).toContain("A = quick win");
     expect(countTextOccurrences(pptx.combinedText, "A = quick win")).toBe(1);
+    expect(
+      countTextOccurrences(
+        pptx.combinedText,
+        "Illustrative demand pathways show divergence across scenarios",
+      ),
+    ).toBe(1);
     expect(pptx.combinedText).toContain("WHAT THIS DEMONSTRATES");
     expect(pptx.combinedText).toContain("EXECUTIVE STRUCTURING");
     expect(pptx.combinedText).toContain("DESIGN LANGUAGE");
@@ -129,19 +184,21 @@ test.describe("PPTX export golden matrix", () => {
       slide.chartFrameBounds.map((bounds) => bounds.h),
     );
     expect(chartFrameHeights).toHaveLength(3);
-    expect(Math.min(...chartFrameHeights)).toBeGreaterThan(1);
+    expect(Math.min(...chartFrameHeights)).toBeGreaterThan(0.8);
+    expect(slideXml).not.toContain('HIDDEN="1"');
+    expect(slideXml).not.toContain('DESCR=""/ HIDDEN');
     expect(pptx.objectCounts.lineChartCount).toBeGreaterThan(0);
     expect(pptx.objectCounts.barChartCount).toBeGreaterThan(0);
     expect(pptx.objectCounts.bubbleChartCount).toBeGreaterThan(0);
-    expect(pptx.objectCounts.connectorCount).toBeGreaterThanOrEqual(20);
-    expect(pptx.objectCounts.ellipseCount).toBeGreaterThanOrEqual(7);
+    expect(pptx.objectCounts.connectorCount).toBe(0);
+    expect(pptx.objectCounts.ellipseCount).toBe(0);
     expect(pptx.objectCounts.axisMinCount).toBeGreaterThan(0);
     expect(pptx.objectCounts.axisMaxCount).toBeGreaterThan(0);
-    expect(chartXml).toContain("<C:V>A</C:V>");
-    expect(chartXml).toContain("<C:V>D</C:V>");
+    expectChartLabel(chartXml, "A");
+    expectChartLabel(chartXml, "D");
     expect(slideXml).toContain('TYPEFACE="TIMES"');
     expect(pptx.combinedText).toContain("Impact");
-    expect(slideXml.indexOf('NAME="CHART 0"')).toBeLessThan(
+    expect(slideXml.indexOf('NAME="CHART 0"')).toBeGreaterThan(
       slideXml.indexOf('NAME="P1-SHAPE-1"'),
     );
     expect(packageXml).toContain("B55638");
@@ -151,7 +208,48 @@ test.describe("PPTX export golden matrix", () => {
     await expect(page.getByText("gradient-flattened")).toHaveCount(0);
   });
 
-  test("Tesla-style quadrant matrix exports as semantic editable shapes without overflow", async ({ page }) => {
+  test("exported McKinsey chart HTML remains exportable", async ({ page }) => {
+    const fixture = await installStudioFixtureRoutes(page, "exported-mckinsey-chart-regression-1page");
+
+    await generateDeckFromPrompt(page, fixture.scenario.prompt);
+
+    const pptxDownload = await downloadFromActions(page, "action-export-pptx");
+    const pptx = await readDownloadedPptx(pptxDownload);
+    const combinedUpper = pptx.combinedText.toUpperCase();
+
+    expect(pptx.slideCount).toBe(1);
+    expect(pptx.combinedText).toContain("Complex quantitative stories");
+    expect(combinedUpper).toContain("USE CASE");
+    expect(pptx.combinedText).toContain("Illustrative demand pathways");
+    expect(pptx.combinedText).toContain("Illustrative value bridge");
+    expect(pptx.combinedText).toContain("Prioritization matrix");
+    expect(combinedUpper).toContain("LINE + AREA CHART");
+    expect(combinedUpper).toContain("WATERFALL");
+    expect(combinedUpper).toContain("BUBBLE MATRIX");
+    expect(pptx.objectCounts.textRunCount).toBeGreaterThan(12);
+    expect(pptx.objectCounts.shapeCount).toBeGreaterThan(20);
+    expect(pptx.objectCounts.imageRelCount).toBe(0);
+    expect(pptx.objectCounts.chartRelCount).toBe(3);
+    expect(pptx.objectCounts.lineChartCount).toBeGreaterThan(0);
+    expect(pptx.objectCounts.barChartCount).toBeGreaterThan(0);
+    expect(pptx.objectCounts.bubbleChartCount).toBeGreaterThan(0);
+    expect(pptx.slideObjects[0].chartFrameBounds).toHaveLength(3);
+    expect(Math.min(...pptx.slideObjects[0].chartFrameBounds.map((bounds) => bounds.h))).toBeGreaterThan(0.8);
+    expect(textShapeBounds(pptx.slideObjects[0], "Volume")?.w ?? 0).toBeGreaterThan(0.42);
+    expect(textShapeBounds(pptx.slideObjects[0], "+29")?.w ?? 0).toBeGreaterThan(0.28);
+    expect(textShapeBounds(pptx.slideObjects[0], "Impact")?.w ?? 0).toBeGreaterThan(0.35);
+    const decorativePageFrame = (pptx.slideObjects[0]?.shapeBounds ?? []).find(
+      (bounds) => bounds.x < 0.45 && bounds.y < 0.35 && bounds.w > 12 && bounds.h > 6.5,
+    );
+    expect(decorativePageFrame).toBeTruthy();
+    expect(decorativePageFrame?.fillTransparency ?? 0).toBeGreaterThanOrEqual(95);
+    expect(combinedChartXml(pptx).toUpperCase()).toContain("ACCELERATED ADOPTION");
+    expectChartLabel(combinedChartXml(pptx).toUpperCase(), "A");
+    expect(firstSlideXml(pptx).toUpperCase()).not.toContain('DESCR=""/ HIDDEN');
+    expect(firstSlideXml(pptx).toUpperCase()).not.toContain('HIDDEN="1"');
+  });
+
+  test("Tesla-style quadrant matrix exports DOM-geometry editable shapes without overflow", async ({ page }) => {
     const fixture = await installStudioFixtureRoutes(page, "tesla-quadrant-export-1page");
 
     await generateDeckFromPrompt(page, fixture.scenario.prompt);
@@ -164,12 +262,59 @@ test.describe("PPTX export golden matrix", () => {
     expect(pptx.combinedText).toContain("Tesla operating quadrant");
     expect(pptx.combinedText).toContain("Charging density");
     expect(pptx.combinedText).toContain("Right conclusion box");
+    expect(countTextOccurrences(pptx.combinedText, "Charging density")).toBe(1);
+    expect(countTextOccurrences(pptx.combinedText, "Right conclusion box")).toBe(1);
+    expect(countTextOccurrences(pptx.combinedText, "High complexity")).toBe(1);
+    expect(countTextOccurrences(pptx.combinedText, "Low complexity")).toBe(1);
     expect(pptx.objectCounts.chartRelCount).toBe(0);
     expect(pptx.objectCounts.imageRelCount).toBe(0);
     expect(pptx.mediaFiles).toHaveLength(0);
     expect(pptx.objectCounts.roundRectCount).toBeGreaterThanOrEqual(6);
     expectShapesInsideSlide(pptx);
     await expect(page.getByText(/Downloaded editable PPTX, quality (9\d|100)/)).toBeVisible();
+  });
+
+  test("observed facts Q1 matrix stays DOM geometry instead of native table", async ({ page }) => {
+    const fixture = await installStudioFixtureRoutes(page, "observed-facts-q1-regression-3page");
+
+    await generateDeckFromPrompt(page, fixture.scenario.prompt);
+
+    const pptxDownload = await downloadFromActions(page, "action-export-pptx");
+    const pptx = await readDownloadedPptx(pptxDownload);
+    const slide3Text = pptx.slideTexts[2]?.text ?? "";
+    const slide3Objects = pptx.slideObjects[2];
+
+    expect(pptx.slideCount).toBe(3);
+    expect(slide3Text).toContain("Robotaxi / AI 软件平台");
+    expect(slide3Text).toContain("FSD 订阅扩张");
+    expect(slide3Text).toContain("Cortex 1");
+    expect(slide3Objects?.tableCount ?? 0).toBe(0);
+    expect(slide3Objects?.shapeCount ?? 0).toBeGreaterThan(8);
+    expect(pptx.objectCounts.imageRelCount).toBe(0);
+  });
+
+  test("filled visual containers suppress parent text overlays", async ({ page }) => {
+    const fixture = await installStudioFixtureRoutes(page, "text-ownership-regression-1page");
+
+    await generateDeckFromPrompt(page, fixture.scenario.prompt);
+
+    const pptxDownload = await downloadFromActions(page, "action-export-pptx");
+    const pptx = await readDownloadedPptx(pptxDownload);
+
+    expect(pptx.slideCount).toBe(1);
+    expect(pptx.layoutSize?.aspectRatio ?? 0).toBeCloseTo(16 / 9, 2);
+    expect(pptx.objectCounts.imageRelCount).toBe(0);
+    expect(pptx.objectCounts.shapeCount).toBeGreaterThanOrEqual(3);
+    expect(countTextOccurrences(pptx.combinedText, "Key signal")).toBe(1);
+    expect(countTextOccurrences(pptx.combinedText, "Services revenue grew 42%")).toBe(1);
+    expect(countTextOccurrences(pptx.combinedText, "Interpretation")).toBe(1);
+    expect(countTextOccurrences(pptx.combinedText, "Investment meaning")).toBe(1);
+    expect(
+      countTextOccurrences(
+        pptx.combinedText,
+        "The ownership planner should choose leaf text",
+      ),
+    ).toBe(1);
   });
 
   test("div-built waterfall chart is promoted to a native editable chart", async ({ page }) => {
@@ -185,6 +330,8 @@ test.describe("PPTX export golden matrix", () => {
     expect(pptx.combinedText).toContain("Illustrative value bridge");
     expect(pptx.objectCounts.chartRelCount).toBeGreaterThan(0);
     expect(pptx.objectCounts.barChartCount).toBeGreaterThan(0);
+    expect(pptx.objectCounts.imageRelCount).toBe(0);
+    expect(pptx.objectCounts.shapeCount).toBeGreaterThanOrEqual(8);
   });
 
   test("small div-built bubble matrix is promoted to a native bubble chart", async ({ page }) => {
@@ -200,6 +347,10 @@ test.describe("PPTX export golden matrix", () => {
     expect(pptx.combinedText).toContain("Prioritization matrix");
     expect(pptx.objectCounts.chartRelCount).toBeGreaterThan(0);
     expect(pptx.objectCounts.bubbleChartCount).toBeGreaterThan(0);
+    expect(pptx.objectCounts.imageRelCount).toBe(0);
+    expect(pptx.objectCounts.ellipseCount).toBe(0);
+    expect(pptx.slideObjects[0].chartFrameBounds.length).toBeGreaterThan(0);
+    expect(Math.max(...pptx.slideObjects[0].chartFrameBounds.map((bounds) => bounds.h))).toBeGreaterThan(1);
   });
 
   test("structured combo chart exports native bar and line chart parts", async ({ page }) => {
@@ -237,6 +388,34 @@ test.describe("PPTX export golden matrix", () => {
     expect(pptx.combinedText).toContain("Scientific segmentation");
     expect(pptx.objectCounts.chartRelCount).toBeGreaterThan(0);
     expect(pptx.objectCounts.bubbleChartCount).toBeGreaterThan(0);
+    expect(pptx.objectCounts.bubbleSeriesCount).toBe(1);
+    expect(pptx.objectCounts.chartBubbleScaleCount).toBeGreaterThan(0);
+    expect(pptx.objectCounts.chartDataPointCount).toBeGreaterThanOrEqual(3);
+    expect(pptx.objectCounts.chartEmptyValueCount).toBe(0);
+    expect(combinedChartXml(pptx).toUpperCase()).toContain("COHORT A");
+    expect(combinedChartXml(pptx).toUpperCase()).toContain("20D3FF");
+  });
+
+  test("structured line chart preserves native dash axis grid and shadow styling", async ({ page }) => {
+    const fixture = await installStudioFixtureRoutes(page, "line-style-export-1page");
+
+    await generateDeckFromPrompt(page, fixture.scenario.prompt);
+
+    const pptxDownload = await downloadFromActions(page, "action-export-pptx");
+    const pptx = await readDownloadedPptx(pptxDownload);
+    const chartXml = combinedChartXml(pptx).toUpperCase();
+
+    expect(pptx.slideCount).toBe(1);
+    expect(pptx.layoutSize?.aspectRatio ?? 0).toBeCloseTo(16 / 9, 2);
+    expect(pptx.combinedText).toContain("Scenario confidence");
+    expect(pptx.objectCounts.chartRelCount).toBeGreaterThan(0);
+    expect(pptx.objectCounts.lineChartCount).toBeGreaterThan(0);
+    expect(pptx.objectCounts.chartDashCount).toBeGreaterThan(0);
+    expect(pptx.objectCounts.chartOuterShadowCount).toBeGreaterThan(0);
+    expect(chartXml).toContain('PRSTDASH VAL="DASH"');
+    expect(chartXml).toContain('SYMBOL VAL="NONE"');
+    expect(chartXml).toContain("305C63");
+    expect(chartXml).toContain("D8CFBC");
   });
 
   test("text and list export preserves editable paragraph spacing and bullets", async ({ page }) => {
@@ -312,6 +491,57 @@ test.describe("PPTX export golden matrix", () => {
     expect(pptx.combinedText).toContain("Native visual shape export");
     expect(pptx.objectCounts.connectorCount).toBeGreaterThan(0);
     expect(pptx.objectCounts.roundRectCount).toBeGreaterThan(0);
+  });
+
+  test("extreme pressure fixture preserves chart table ownership and layer order", async ({ page }) => {
+    const fixture = await installStudioFixtureRoutes(page, "pptx-extreme-pressure-3page");
+
+    await generateDeckFromPrompt(page, fixture.scenario.prompt);
+
+    const pptxDownload = await downloadFromActions(page, "action-export-pptx");
+    const pptx = await readDownloadedPptx(pptxDownload);
+    const slideXml = combinedSlideXml(pptx).toUpperCase();
+    const chartXml = combinedChartXml(pptx).toUpperCase();
+    const slide3Shapes = pptx.slideObjects[2]?.shapeBounds ?? [];
+    const backgroundSlab = slide3Shapes.find(
+      (bounds) => bounds.x < 0.7 && bounds.y > 5.5 && bounds.w > 11 && bounds.h < 0.5,
+    );
+    const foregroundStamp = slide3Shapes.find(
+      (bounds) => bounds.x > 9.8 && bounds.y < 1.3 && bounds.w > 2 && bounds.h < 0.7,
+    );
+
+    expect(pptx.slideCount).toBe(3);
+    expect(pptx.layoutSize?.aspectRatio ?? 0).toBeCloseTo(16 / 9, 2);
+    expect(pptx.objectCounts.imageRelCount).toBe(0);
+    expect(pptx.objectCounts.chartRelCount).toBeGreaterThanOrEqual(3);
+    expect(pptx.objectCounts.lineChartCount).toBeGreaterThan(0);
+    expect(pptx.objectCounts.barChartCount).toBeGreaterThan(1);
+    expect(pptx.objectCounts.bubbleChartCount).toBeGreaterThan(0);
+    expect(pptx.objectCounts.bubbleSeriesCount).toBe(1);
+    expect(pptx.objectCounts.chartBubbleScaleCount).toBeGreaterThan(0);
+    expect(pptx.objectCounts.chartDataPointCount).toBeGreaterThanOrEqual(4);
+    expect(pptx.objectCounts.chartEmptyValueCount).toBe(0);
+    expect(pptx.slideObjects[0]?.chartFrameBounds ?? []).toHaveLength(3);
+    expect(Math.min(...pptx.slideObjects[0].chartFrameBounds.map((bounds) => bounds.h))).toBeGreaterThan(0.8);
+    expect(pptx.slideObjects[1]?.tableCount ?? 0).toBe(1);
+    expect(pptx.slideObjects[1]?.chartFrameBounds ?? []).toHaveLength(0);
+    expect(pptx.slideObjects[1]?.shapeCount ?? 0).toBeGreaterThan(12);
+    expect(chartXml).toContain("QUEUE VOLUME");
+    expect(chartXml).toContain("QUALITY GATE PASS");
+    expect(chartXml).toContain("FIXES");
+    expectChartLabel(chartXml, "A");
+    expect(countTextOccurrences(pptx.combinedText, "Alpha containment")).toBe(1);
+    expect(countTextOccurrences(pptx.combinedText, "Beta containment")).toBe(1);
+    expect(countTextOccurrences(pptx.combinedText, "Gamma containment")).toBe(1);
+    expect(countTextOccurrences(pptx.combinedText, "Escalation overlay stays on top")).toBe(1);
+    expect(pptx.combinedText).toContain("Foreground audit stamp");
+    expect(pptx.combinedText).not.toContain("Hidden duplicate chart should never");
+    expect(pptx.combinedText).not.toContain("Hidden placeholder text must not leak");
+    expect(slideXml).not.toContain('DESCR=""/ HIDDEN');
+    expect(slideXml).not.toContain('HIDDEN="1"');
+    expect(backgroundSlab).toBeTruthy();
+    expect(foregroundStamp).toBeTruthy();
+    expect(backgroundSlab.order).toBeLessThan(foregroundStamp.order);
   });
 
   test("long deck export preserves page count and object inventory", async ({ page }) => {

@@ -53,20 +53,67 @@ function parseChartFrameBounds(xml) {
     });
 }
 
+function parseShapeText(shapeXml) {
+  return Array.from(shapeXml.matchAll(/<a:t>([\s\S]*?)<\/a:t>/g))
+    .map((match) => decodeXmlEntities(match[1] ?? ""))
+    .join(" ");
+}
+
+function parseShapeFill(shapeXml) {
+  if (/<a:noFill\s*\/>/i.test(shapeXml)) {
+    return {
+      fillType: "none",
+      fillColor: "",
+      fillTransparency: 100,
+    };
+  }
+
+  if (/<a:gradFill\b/i.test(shapeXml)) {
+    return {
+      fillType: "gradient",
+      fillColor: "",
+      fillTransparency: 0,
+    };
+  }
+
+  const solidFill = shapeXml.match(/<a:solidFill\b[\s\S]*?<\/a:solidFill>/i)?.[0] ?? "";
+  const color = solidFill.match(/<a:srgbClr\b[^>]*val="([^"]*)"/i)?.[1] ?? "";
+  const alphaRaw = solidFill.match(/<a:alpha\b[^>]*val="(\d+)"/i)?.[1];
+  const alpha = alphaRaw ? Number(alphaRaw) : 100000;
+  if (!color) {
+    return {
+      fillType: "unknown",
+      fillColor: "",
+      fillTransparency: 100,
+    };
+  }
+
+  return {
+    fillType: "solid",
+    fillColor: color.toUpperCase(),
+    fillTransparency: Number.isFinite(alpha) ? Math.round(100 - alpha / 1000) : 0,
+  };
+}
+
 function parseShapeBounds(xml) {
-  return Array.from(xml.matchAll(/<p:sp\b[\s\S]*?<\/p:sp>/g)).map((match) => {
+  return Array.from(xml.matchAll(/<p:(sp|cxnSp)\b[\s\S]*?<\/p:\1>/g)).map((match, index) => {
     const shapeXml = match[0] ?? "";
     const off = shapeXml.match(/<a:off\b[^>]*x="(-?\d+)"[^>]*y="(-?\d+)"/i);
-    const ext = shapeXml.match(/<a:ext\b[^>]*cx="(\d+)"[^>]*cy="(\d+)"/i);
+    const ext = shapeXml.match(/<a:ext\b[^>]*cx="(-?\d+)"[^>]*cy="(-?\d+)"/i);
     const name = shapeXml.match(/<p:cNvPr\b[^>]*name="([^"]*)"/i)?.[1] ?? "";
     const preset = shapeXml.match(/<a:prstGeom\b[^>]*prst="([^"]*)"/i)?.[1] ?? "";
+    const fill = parseShapeFill(shapeXml);
     return {
+      order: index + 1,
+      kind: match[1] ?? "sp",
       name,
       preset,
       x: emuToInches(off?.[1]),
       y: emuToInches(off?.[2]),
       w: emuToInches(ext?.[1]),
       h: emuToInches(ext?.[2]),
+      text: parseShapeText(shapeXml),
+      ...fill,
     };
   });
 }
@@ -79,6 +126,9 @@ function resolveRelationshipTarget(slideName, target) {
 }
 
 function inspectChartXml(xml) {
+  const bubbleChartBlocks = Array.from(xml.matchAll(/<c:bubbleChart\b[\s\S]*?<\/c:bubbleChart>/g)).map(
+    (match) => match[0] ?? "",
+  );
   return {
     barChartCount: countMatches(xml, /<c:barChart\b/g),
     lineChartCount: countMatches(xml, /<c:lineChart\b/g),
@@ -86,6 +136,15 @@ function inspectChartXml(xml) {
     scatterChartCount: countMatches(xml, /<c:scatterChart\b/g),
     axisMinCount: countMatches(xml, /<c:min\b/g),
     axisMaxCount: countMatches(xml, /<c:max\b/g),
+    chartDashCount: countMatches(xml, /<a:prstDash\b[^>]*val="(?:dash|dot)"/g),
+    chartOuterShadowCount: countMatches(xml, /<a:outerShdw\b/g),
+    chartBubbleScaleCount: countMatches(xml, /<c:bubbleScale\b/g),
+    chartDataPointCount: countMatches(xml, /<c:dPt\b/g),
+    chartEmptyValueCount: countMatches(xml, /<c:v>\s*<\/c:v>/g),
+    bubbleSeriesCount: bubbleChartBlocks.reduce(
+      (sum, block) => sum + countMatches(block, /<c:ser\b/g),
+      0,
+    ),
   };
 }
 
@@ -102,6 +161,12 @@ function inspectSlideXml(xml, relationships, chartXmlEntries) {
         scatterChartCount: accumulator.scatterChartCount + counts.scatterChartCount,
         axisMinCount: accumulator.axisMinCount + counts.axisMinCount,
         axisMaxCount: accumulator.axisMaxCount + counts.axisMaxCount,
+        chartDashCount: accumulator.chartDashCount + counts.chartDashCount,
+        chartOuterShadowCount: accumulator.chartOuterShadowCount + counts.chartOuterShadowCount,
+        chartBubbleScaleCount: accumulator.chartBubbleScaleCount + counts.chartBubbleScaleCount,
+        chartDataPointCount: accumulator.chartDataPointCount + counts.chartDataPointCount,
+        chartEmptyValueCount: accumulator.chartEmptyValueCount + counts.chartEmptyValueCount,
+        bubbleSeriesCount: accumulator.bubbleSeriesCount + counts.bubbleSeriesCount,
       };
     },
     {
@@ -111,6 +176,12 @@ function inspectSlideXml(xml, relationships, chartXmlEntries) {
       scatterChartCount: 0,
       axisMinCount: 0,
       axisMaxCount: 0,
+      chartDashCount: 0,
+      chartOuterShadowCount: 0,
+      chartBubbleScaleCount: 0,
+      chartDataPointCount: 0,
+      chartEmptyValueCount: 0,
+      bubbleSeriesCount: 0,
     },
   );
   return {
@@ -229,6 +300,12 @@ export async function readDownloadedPptx(download) {
       axisMinCount: accumulator.axisMinCount + slide.axisMinCount,
       axisMaxCount: accumulator.axisMaxCount + slide.axisMaxCount,
       ellipseCount: accumulator.ellipseCount + slide.ellipseCount,
+      chartDashCount: accumulator.chartDashCount + slide.chartDashCount,
+      chartOuterShadowCount: accumulator.chartOuterShadowCount + slide.chartOuterShadowCount,
+      chartBubbleScaleCount: accumulator.chartBubbleScaleCount + slide.chartBubbleScaleCount,
+      chartDataPointCount: accumulator.chartDataPointCount + slide.chartDataPointCount,
+      chartEmptyValueCount: accumulator.chartEmptyValueCount + slide.chartEmptyValueCount,
+      bubbleSeriesCount: accumulator.bubbleSeriesCount + slide.bubbleSeriesCount,
     }),
     {
       shapeCount: 0,
@@ -253,6 +330,12 @@ export async function readDownloadedPptx(download) {
       axisMinCount: 0,
       axisMaxCount: 0,
       ellipseCount: 0,
+      chartDashCount: 0,
+      chartOuterShadowCount: 0,
+      chartBubbleScaleCount: 0,
+      chartDataPointCount: 0,
+      chartEmptyValueCount: 0,
+      bubbleSeriesCount: 0,
     },
   );
   const sizeMatch = presentationXml?.match(/<p:sldSz[^>]*cx="(\d+)"[^>]*cy="(\d+)"/i);

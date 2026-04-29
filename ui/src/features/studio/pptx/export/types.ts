@@ -19,10 +19,20 @@ export type PptExportDiagnosticCode =
   | "gradient-flattened"
   | "native-chart-exported"
   | "hybrid-chart-exported"
+  | "text-owned"
+  | "shape-owned"
+  | "dom-geometry-chart-visible"
+  | "hidden-native-chart-data"
+  | "native-chart-visible"
   | "chart-native-unsupported"
   | "chart-image-fallback"
   | "table-native-unsupported"
-  | "visual-clipped";
+  | "visual-clipped"
+  | "xml-package-invalid"
+  | "relationship-target-missing"
+  | "ownership-conflict"
+  | "container-text-suppressed"
+  | "hidden-placeholder-skipped";
 
 export type PptExportWarningCode = PptExportDiagnosticCode;
 
@@ -34,7 +44,16 @@ export type PptExportDiagnostic = {
   message: string;
   pageNumber?: number;
   sourceId?: string;
-  sourceKind?: "deck" | "page" | "block" | "visual" | "chart" | "table" | "fallback";
+  sourceKind?:
+    | "deck"
+    | "page"
+    | "block"
+    | "visual"
+    | "chart"
+    | "matrix"
+    | "diagram"
+    | "table"
+    | "fallback";
   renderMode?: PptxExportEditability;
   countsAgainstQuality?: boolean;
 };
@@ -64,8 +83,26 @@ export type PptExportPaint =
   | PptExportSolidPaint
   | PptExportLinearGradientPaint;
 
+export type PptExportOwnerKind = "page" | "block" | "chart" | "matrix" | "diagram" | "table";
+
+export type PptExportLayerRole =
+  | "native-chart-data"
+  | "background"
+  | "shape"
+  | "chart"
+  | "table"
+  | "text"
+  | "foreground";
+
 export type PptExportTextNode = {
   kind: "text";
+  sourceElementId?: string;
+  ownerId?: string;
+  ownerKind?: PptExportOwnerKind;
+  sourceOrder?: number;
+  zIndex?: number;
+  zOrder?: number;
+  layerRole?: PptExportLayerRole;
   x: number;
   y: number;
   w: number;
@@ -93,6 +130,13 @@ export type PptExportTextNode = {
 
 export type PptExportVisualNode = {
   kind: "shape";
+  sourceElementId?: string;
+  ownerId?: string;
+  ownerKind?: PptExportOwnerKind;
+  sourceOrder?: number;
+  zIndex?: number;
+  zOrder?: number;
+  layerRole?: PptExportLayerRole;
   role: string;
   x: number;
   y: number;
@@ -140,12 +184,50 @@ export type PptExportChartThemeTokens = {
   chartPalette: string[];
 };
 
+export type PptExportChartLineDash = "solid" | "dash" | "dot";
+
+export type PptExportChartShadowStyle = {
+  color?: string | null;
+  opacity?: number;
+  blurPt?: number;
+  offsetPt?: number;
+  angle?: number;
+};
+
+export type PptExportChartAxisStyle = {
+  lineColor?: string | null;
+  lineWidthPt?: number;
+  lineDash?: PptExportChartLineDash | "none";
+  gridColor?: string | null;
+  gridWidthPt?: number;
+  gridDash?: PptExportChartLineDash | "none";
+  labelColor?: string | null;
+  labelFontSize?: number;
+};
+
+export type PptExportChartNativeStyle = {
+  xAxis?: PptExportChartAxisStyle;
+  yAxis?: PptExportChartAxisStyle;
+  secondaryYAxis?: PptExportChartAxisStyle;
+  chartShadow?: PptExportChartShadowStyle | null;
+  plotShadow?: PptExportChartShadowStyle | null;
+  bubbleScale?: number;
+};
+
+export type PptExportChartSeriesStyle = {
+  lineDash?: PptExportChartLineDash;
+  lineWidthPt?: number;
+  marker?: "circle" | "none";
+  shadow?: PptExportChartShadowStyle | null;
+};
+
 export type PptExportChartSeries = {
   name: string;
   values: number[];
   color?: string;
   role?: "bar" | "line";
   axis?: "primary" | "secondary";
+  style?: PptExportChartSeriesStyle;
 };
 
 export type PptExportBubblePoint = {
@@ -231,6 +313,11 @@ export type PptExportSemanticChartSpec =
 
 export type PptExportChartModel = {
   kind: "chart";
+  sourceElementId?: string;
+  sourceOrder?: number;
+  zIndex?: number;
+  zOrder?: number;
+  layerRole?: PptExportLayerRole;
   renderMode: "native" | "hybrid" | "image";
   x: number;
   y: number;
@@ -261,13 +348,20 @@ export type PptExportChartModel = {
   valueAxisMin?: number;
   valueAxisMax?: number;
   colors: string[];
+  style?: PptExportChartNativeStyle;
   showInlineHeading?: boolean;
+  showNativeVisual?: boolean;
   themeTokens: PptExportChartThemeTokens;
   fallbackAsset?: PptExportFallbackAsset;
 };
 
 export type PptExportTableModel = {
   kind: "table";
+  sourceElementId?: string;
+  sourceOrder?: number;
+  zIndex?: number;
+  zOrder?: number;
+  layerRole?: PptExportLayerRole;
   renderMode: "native" | "image";
   x: number;
   y: number;
@@ -337,7 +431,10 @@ export type PptxExportQualityIssue = {
 export type PptxExportNodeBase = {
   id: string;
   sourceId: string;
-  sourceKind: "block" | "visual" | "chart" | "table" | "fallback";
+  sourceKind: "page" | "block" | "visual" | "chart" | "matrix" | "diagram" | "table" | "fallback";
+  sourceOrder?: number;
+  zOrder?: number;
+  layerRole?: PptExportLayerRole;
   boundsIn: PptxExportBounds;
   editability: PptxExportEditability;
   qualityIssues: PptxExportQualityIssue[];

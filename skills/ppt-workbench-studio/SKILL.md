@@ -70,6 +70,18 @@ Shape prompts around these seven pieces:
 - `Anti-patterns`
 - `Source constraint`
 
+For source-to-deck work, `Page plan` must be a **page-by-page blueprint**, not a loose topic list. Before launching Studio, specify for every page:
+
+- exact page title or title direction
+- one-sentence story claim
+- required evidence / numbers / source facts
+- required layout pattern
+- primary visual object
+- required on-slide text or labels when precision matters
+- what the page must not become
+
+Use this stricter page blueprint whenever the user asks to turn a PDF, URL, research note, memo, financial analysis, consulting material, or other source document into a PPT. A weak plan like “page 1 thesis, page 2 drivers, page 3 risks” is not enough; make the model’s page-level decisions before opening Studio.
+
 Read `references/prompt-shaping.md` when you need the detailed rules for what helps the engine and what only adds noise.
 
 ## Visual quality rule
@@ -128,6 +140,7 @@ Visual thesis: the page should read like a role-by-stage operating map, not a he
 The current engine responds well to:
 
 - explicit page count
+- per-page storylines with exact page roles, claims, evidence, layout, and primary visual
 - each page having a clear role
 - one main claim per page
 - structure cues like `chart`, `matrix`, `quadrant`, `figure`, `timeline`, `swimlane flowchart`, `phase bands`, `lane headers`
@@ -139,6 +152,7 @@ The current engine responds well to:
 The current engine does **not** benefit much from:
 
 - pasting the full article or PDF
+- vague page plans that leave the model to invent each page's story, chart, and layout
 - repeating that the result should be editable
 - repeating iframe/export/tooling details
 - vague quality adjectives like `premium`, `top-tier`, `more advanced`

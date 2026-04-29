@@ -1,5 +1,4 @@
 import { extractHtmlPageVisualStyle } from "@/features/studio/html-report-visuals";
-import JSZip from "jszip";
 import {
   HTML_CHART_SPEC_ATTRIBUTE,
   HTML_TABLE_SPEC_ATTRIBUTE,
@@ -33,24 +32,72 @@ import {
   type ExportPageFrame,
 } from "./export/collector";
 import {
+  findChartContractElement,
+  findChartPlotElement,
+  hasStructuredChartContract,
+  hasUnstructuredChartPrimitives,
+} from "./export/recognition/chart";
+import {
   buildPptxExportDocument,
   buildPptxExportQualityReport,
   filterPptxWarnings,
   normalizePptxDiagnostics,
 } from "./export/quality";
 import { renderExportDocumentToPptx } from "./export/renderer";
+import { layerZOrder, numericZIndex, readExportCanvasLayer, type ExportCanvasLayer } from "./export/layers";
+import {
+  claimExportOwnership,
+  dedupeOwners,
+  recordForElement,
+  resolveOwnerForElement,
+  type ExportElementRecord,
+  type ExportElementRegistry,
+  type ExportOwner,
+  type ExportPagePlan,
+  type RectPx,
+} from "./export/ownership";
+import { patchPptxPackageXml, validatePptxPackageBlob } from "./export/package-patch";
+import {
+  DEFAULT_ACCENT,
+  DEFAULT_BACKGROUND,
+  DEFAULT_BODY,
+  DEFAULT_DIVIDER,
+  DEFAULT_SURFACE_FILL,
+  DEFAULT_TEXT,
+  alphaIsVisible,
+  clamp,
+  createLinearGradientSvg,
+  nonePaint,
+  normalizeChartNativeStyle,
+  normalizeChartSeriesStyle,
+  paintFromCssPaint,
+  parseCssColor,
+  parseCssPaint,
+  parseNumericValue,
+  primaryFontFamily,
+  readElementFillPaint,
+  resolveBorderRadiusPx,
+  resolveBoxShadow,
+  resolveComputedBorderPaint,
+  resolveLineDash,
+  splitCssTopLevelList,
+  toTransparency,
+  type ParsedCssPaint,
+  type ParsedSolidPaint,
+} from "./export/style";
 import {
   PPT_LAYOUT,
   PX_PER_INCH,
   type PptExportBubblePoint,
   type PptExportChartModel,
+  type PptExportChartNativeStyle,
   type PptExportChartSeries,
   type PptExportChartThemeTokens,
-  type PptExportDiagnostic,
   type PptExportMatrixCallout,
   type PptExportMatrixItem,
   type PptExportMatrixQuadrant,
-  type PptExportPaint,
+  type PptExportLayerRole,
+  type PptExportOwnerKind,
   type PptExportSemanticChartSpec,
   type PptExportSlideModel,
   type PptExportTableModel,
@@ -59,8 +106,6 @@ import {
   type PptExportVisualNode,
   type PptExportWarning,
   type PptExportResult,
-  type PptxExportDocument,
-  type PptxExportShapeNode,
 } from "./export/types";
 
 export type {
@@ -71,13 +116,6 @@ export type {
   PptExportWarning,
   PptxExportQualityReport,
 } from "./export/types";
-
-const DEFAULT_BACKGROUND = "FBF8F2";
-const DEFAULT_SURFACE_FILL = "FFFFFF";
-const DEFAULT_DIVIDER = "D8D0C2";
-const DEFAULT_TEXT = "102838";
-const DEFAULT_BODY = "5B6B77";
-const DEFAULT_ACCENT = "C6994A";
 
 type ChartFrameCandidate = {
   visualId: string;
@@ -95,7 +133,7 @@ type ChartCollectionResult = {
   skipVisualIds: Set<string>;
   skipTextElements: HTMLElement[];
   skipPrimitiveWithinElements: HTMLElement[];
-  ownedTextNodes: PptExportTextNode[];
+  owners: ExportOwner[];
 };
 
 type TableCollectionResult = {
@@ -103,6 +141,7 @@ type TableCollectionResult = {
   skipVisualIds: Set<string>;
   skipTextElements: HTMLElement[];
   skipPrimitiveWithinElements: HTMLElement[];
+  owners: ExportOwner[];
 };
 
 type ParsedExportChartData = {
@@ -114,6 +153,7 @@ type ParsedExportChartData = {
     value?: number;
     color?: string;
     label?: string;
+    style?: unknown;
   }>;
   title?: string;
   subtitle?: string;
@@ -123,21 +163,7 @@ type ParsedExportChartData = {
   yAxisTitle?: string;
   valueAxisMin?: number;
   valueAxisMax?: number;
-};
-
-type ParsedDiagramSpec = {
-  title?: string;
-  caption?: string;
-  topLabel?: string;
-  bottomLabel?: string;
-  layers?: Array<{
-    label?: string;
-    nodeCount?: number;
-  }>;
-  sideNotes?: Array<{
-    text?: string;
-    side?: "left" | "right" | string;
-  }>;
+  style?: unknown;
 };
 
 type SupportedNativeChartKind = Extract<
@@ -159,6 +185,7 @@ type NormalizedChartContract = {
   valueAxisMin?: number;
   valueAxisMax?: number;
   colors: string[];
+  style?: PptExportChartNativeStyle;
   showInlineHeading?: boolean;
   bubblePoints?: PptExportBubblePoint[];
   renderMode: "native" | "hybrid";
@@ -171,20 +198,6 @@ type NormalizedChartContract = {
     | "hybrid-waterfall";
   semanticSpec?: PptExportSemanticChartSpec;
 };
-
-type ParsedSolidPaint = {
-  type: "solid";
-  hex: string;
-  alpha: number;
-};
-
-type ParsedGradientPaint = {
-  type: "linear-gradient";
-  angle: number;
-  stops: Array<ParsedSolidPaint & { position?: number }>;
-};
-
-type ParsedCssPaint = ParsedSolidPaint | ParsedGradientPaint;
 
 type CollectExportAnnotationsResult = {
   theme: PptExportThemeSnapshot;
@@ -244,10 +257,6 @@ function pxLineToPoints(value: number) {
   return Number(Math.max(0.5, (value / PX_PER_INCH) * 72).toFixed(1));
 }
 
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
-}
-
 function normalizeText(value: string) {
   return value.replace(/\s+/g, " ").trim();
 }
@@ -260,40 +269,12 @@ function normalizeMultilineText(value: string) {
     .join("\n");
 }
 
-function stripQuotes(value: string) {
-  return value.replace(/^['"]+|['"]+$/g, "").trim();
-}
-
-function primaryFontFamily(fontFamily?: string | null) {
-  if (!fontFamily) {
-    return undefined;
-  }
-
-  const family = fontFamily
-    .split(",")
-    .map((item) => stripQuotes(item))
-    .find(Boolean);
-  return family || undefined;
-}
-
 function selectorEscape(value: string) {
   if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
     return CSS.escape(value);
   }
 
   return value.replace(/["\\]/g, "\\$&");
-}
-
-function toTransparency(alpha?: number | null) {
-  if (alpha === null || alpha === undefined) {
-    return undefined;
-  }
-
-  return clamp(Math.round((1 - alpha) * 100), 0, 100);
-}
-
-function pxToPoints(value: number) {
-  return Number(Math.max(0, (value / PX_PER_INCH) * 72).toFixed(1));
 }
 
 function normalizeAlign(value?: string | null) {
@@ -343,11 +324,23 @@ function resolvePptTextBoxWidthPx(args: {
   rect: { w: number; h: number };
   measurement: ReturnType<typeof measurePptTextLayout>;
   lineHeightPx: number;
+  fontSizePx: number;
+  text?: string;
   rotate?: number;
 }) {
+  const compactText = normalizeText(args.text ?? "");
+  const singleLineSafetyWidth =
+    compactText && !compactText.includes(" ")
+      ? Math.min(320, compactText.length * args.fontSizePx * 0.72 + 18)
+      : 0;
   const normalizedRotation = Math.abs(args.rotate ?? 0) % 180;
   if (normalizedRotation > 1) {
-    return Math.max(args.rect.w, args.rect.h + 12, args.measurement.maxLineWidth + 16);
+    return Math.max(
+      args.rect.w,
+      args.rect.h + 12,
+      args.measurement.maxLineWidth + 16,
+      singleLineSafetyWidth,
+    );
   }
 
   const singleLineBox = args.measurement.lineCount <= 1 || args.rect.h <= args.lineHeightPx * 1.45;
@@ -355,13 +348,7 @@ function resolvePptTextBoxWidthPx(args: {
     return args.rect.w;
   }
 
-  return Math.max(args.rect.w, args.measurement.maxLineWidth + 6);
-}
-
-function parseNumericValue(value: string) {
-  const normalized = value.replace(/[^0-9.\-]/g, "");
-  const parsed = Number.parseFloat(normalized);
-  return Number.isFinite(parsed) ? parsed : 0;
+  return Math.max(args.rect.w, args.measurement.maxLineWidth + 10, singleLineSafetyWidth);
 }
 
 function resolveComputedLineHeightPx(computed: CSSStyleDeclaration, fontSizePx: number) {
@@ -459,224 +446,6 @@ function measurePptTextLayout(args: {
   });
 }
 
-function splitCssTopLevelList(value: string) {
-  const parts: string[] = [];
-  let current = "";
-  let depth = 0;
-
-  for (const char of value) {
-    if (char === "(") {
-      depth += 1;
-    } else if (char === ")") {
-      depth = Math.max(0, depth - 1);
-    }
-
-    if (char === "," && depth === 0) {
-      parts.push(current.trim());
-      current = "";
-      continue;
-    }
-
-    current += char;
-  }
-
-  if (current.trim()) {
-    parts.push(current.trim());
-  }
-
-  return parts;
-}
-
-let cssColorCanvasContext: CanvasRenderingContext2D | null | undefined;
-
-function parseCssColor(value?: string | null): ParsedSolidPaint | null {
-  if (!value) {
-    return null;
-  }
-
-  const next = value.trim();
-  if (!next || next === "transparent" || next === "inherit" || next === "currentColor") {
-    return null;
-  }
-
-  const hexMatch = next.match(/^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i);
-  if (hexMatch) {
-    const raw = hexMatch[1];
-    const expanded =
-      raw.length === 3 || raw.length === 4
-        ? raw
-            .split("")
-            .map((char) => char + char)
-            .join("")
-        : raw;
-    const alpha =
-      expanded.length === 8
-        ? clamp(Number.parseInt(expanded.slice(6, 8), 16) / 255, 0, 1)
-        : 1;
-    return {
-      type: "solid",
-      hex: expanded.slice(0, 6).toUpperCase(),
-      alpha,
-    } satisfies ParsedSolidPaint;
-  }
-
-  const rgbMatch = next.match(
-    /^rgba?\(\s*([0-9.]+%?)[,\s]+([0-9.]+%?)[,\s]+([0-9.]+%?)(?:[\/,\s]+([0-9.]+%?))?\s*\)$/i,
-  );
-  if (rgbMatch) {
-    const parseChannel = (raw: string) =>
-      raw.includes("%")
-        ? clamp((Number.parseFloat(raw) / 100) * 255, 0, 255)
-        : clamp(Number.parseFloat(raw), 0, 255);
-    const parseAlpha = (raw?: string) => {
-      if (raw === undefined) {
-        return 1;
-      }
-      return raw.includes("%")
-        ? clamp(Number.parseFloat(raw) / 100, 0, 1)
-        : clamp(Number.parseFloat(raw), 0, 1);
-    };
-
-    const red = parseChannel(rgbMatch[1] ?? "0");
-    const green = parseChannel(rgbMatch[2] ?? "0");
-    const blue = parseChannel(rgbMatch[3] ?? "0");
-    const alpha = parseAlpha(rgbMatch[4]);
-    const hex = [red, green, blue]
-      .map((channel) => Math.round(channel).toString(16).padStart(2, "0").toUpperCase())
-      .join("");
-
-    return { type: "solid", hex, alpha } satisfies ParsedSolidPaint;
-  }
-
-  if (typeof document !== "undefined") {
-    cssColorCanvasContext ??= document.createElement("canvas").getContext("2d");
-    if (cssColorCanvasContext) {
-      cssColorCanvasContext.fillStyle = "#000000";
-      cssColorCanvasContext.fillStyle = next;
-      const normalized = cssColorCanvasContext.fillStyle;
-      if (normalized && normalized !== next && normalized !== "#000000") {
-        return parseCssColor(normalized);
-      }
-      if (/^black$/i.test(next)) {
-        return { type: "solid", hex: "000000", alpha: 1 };
-      }
-    }
-  }
-
-  return null;
-}
-
-function parseLinearGradient(value?: string | null): ParsedGradientPaint | null {
-  if (!value) {
-    return null;
-  }
-
-  const next = value.trim();
-  const gradientMatch = next.match(/^linear-gradient\((.*)\)$/i);
-  if (!gradientMatch?.[1]) {
-    return null;
-  }
-
-  const parts = splitCssTopLevelList(gradientMatch[1]);
-  if (parts.length < 2) {
-    return null;
-  }
-
-  let angle = 180;
-  let stopParts = parts;
-  const firstPart = parts[0]?.toLowerCase() ?? "";
-  if (firstPart.startsWith("to ")) {
-    stopParts = parts.slice(1);
-    const direction = firstPart.replace(/^to\s+/, "").trim();
-    const hasTop = direction.includes("top");
-    const hasBottom = direction.includes("bottom");
-    const hasLeft = direction.includes("left");
-    const hasRight = direction.includes("right");
-    if (hasTop && hasRight) {
-      angle = 45;
-    } else if (hasBottom && hasRight) {
-      angle = 135;
-    } else if (hasBottom && hasLeft) {
-      angle = 225;
-    } else if (hasTop && hasLeft) {
-      angle = 315;
-    } else if (hasRight) {
-      angle = 90;
-    } else if (hasBottom) {
-      angle = 180;
-    } else if (hasLeft) {
-      angle = 270;
-    } else if (hasTop) {
-      angle = 0;
-    }
-  } else {
-    const angleMatch = firstPart.match(/^(-?[0-9.]+)(deg|rad|turn|grad)$/i);
-    if (angleMatch?.[1] && angleMatch[2]) {
-      stopParts = parts.slice(1);
-      const rawAngle = Number.parseFloat(angleMatch[1]);
-      const unit = angleMatch[2].toLowerCase();
-      if (Number.isFinite(rawAngle)) {
-        if (unit === "rad") {
-          angle = (rawAngle * 180) / Math.PI;
-        } else if (unit === "turn") {
-          angle = rawAngle * 360;
-        } else if (unit === "grad") {
-          angle = rawAngle * 0.9;
-        } else {
-          angle = rawAngle;
-        }
-      }
-    }
-  }
-
-  const parsedStops: Array<ParsedSolidPaint & { position?: number }> = [];
-  for (const part of stopParts) {
-    const colorMatch = part.match(
-      /^\s*(#[0-9a-f]{3,8}|rgba?\([^)]*\)|[a-z]+)\s*(.*)$/i,
-    );
-    const color = parseCssColor(colorMatch?.[1] ?? "");
-    if (!color) {
-      continue;
-    }
-    const positionMatch = colorMatch?.[2]?.match(/(-?[0-9.]+)%/);
-    const position = positionMatch?.[1]
-      ? clamp(Math.round(Number.parseFloat(positionMatch[1]) * 1000), 0, 100000)
-      : undefined;
-    parsedStops.push(position === undefined ? color : { ...color, position });
-  }
-
-  if (parsedStops.length < 2) {
-    return null;
-  }
-
-  const stops = parsedStops.map((stop, index) => {
-    const fallbackPosition =
-      parsedStops.length <= 1
-        ? 0
-        : Math.round((index / Math.max(1, parsedStops.length - 1)) * 100000);
-    return {
-      type: "solid" as const,
-      hex: stop.hex,
-      alpha: stop.alpha,
-      position: stop.position ?? fallbackPosition,
-    };
-  });
-
-  return {
-    type: "linear-gradient",
-    angle: ((angle % 360) + 360) % 360,
-    stops,
-  };
-}
-
-function parseCssPaint(value?: string | null): ParsedCssPaint | null {
-  return parseLinearGradient(value) ?? parseCssColor(value);
-}
-
-function alphaIsVisible(paint: ParsedSolidPaint | null) {
-  return Boolean(paint && paint.alpha > 0);
-}
-
 function readAttribute(element: Element, ...names: string[]) {
   for (const name of names) {
     const value = element.getAttribute(name)?.trim();
@@ -696,106 +465,6 @@ function readNumericAttribute(element: Element, ...names: string[]) {
   const parsed = Number.parseFloat(raw);
   return Number.isFinite(parsed) ? parsed : undefined;
 }
-
-function encodeBase64Utf8(value: string) {
-  const bytes = new TextEncoder().encode(value);
-  let binary = "";
-  bytes.forEach((byte) => {
-    binary += String.fromCharCode(byte);
-  });
-  return btoa(binary);
-}
-
-function createSvgDataUri(svg: string) {
-  return `data:image/svg+xml;base64,${encodeBase64Utf8(svg)}`;
-}
-
-function createLinearGradientSvg(args: {
-  width: number;
-  height: number;
-  gradient: ParsedGradientPaint;
-  radius?: number;
-}) {
-  const { width, height, gradient } = args;
-  const svgAngle = ((450 - gradient.angle) % 360 + 360) % 360;
-  const radians = (svgAngle * Math.PI) / 180;
-  const x1 = 50 - Math.cos(radians) * 50;
-  const y1 = 50 + Math.sin(radians) * 50;
-  const x2 = 50 + Math.cos(radians) * 50;
-  const y2 = 50 - Math.sin(radians) * 50;
-  const radius = Math.max(0, args.radius ?? 0);
-
-  return createSvgDataUri(`
-    <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
-      <defs>
-        <linearGradient id="g" x1="${x1}%" y1="${y1}%" x2="${x2}%" y2="${y2}%">
-          <stop offset="0%" stop-color="#${gradient.stops[0].hex}" stop-opacity="${gradient.stops[0].alpha}" />
-          <stop offset="100%" stop-color="#${gradient.stops[1].hex}" stop-opacity="${gradient.stops[1].alpha}" />
-        </linearGradient>
-      </defs>
-      <rect width="${width}" height="${height}" rx="${radius}" ry="${radius}" fill="url(#g)" />
-    </svg>
-  `);
-}
-
-function readElementFillPaint(args: {
-  element: HTMLElement;
-  computed: CSSStyleDeclaration;
-}) {
-  const backgroundImage = args.computed.backgroundImage;
-  if (backgroundImage && backgroundImage !== "none") {
-    const gradient = parseLinearGradient(backgroundImage);
-    if (gradient) {
-      return gradient;
-    }
-  }
-
-  const computedColor = parseCssColor(args.computed.backgroundColor);
-  if (alphaIsVisible(computedColor)) {
-    return computedColor;
-  }
-
-  return computedColor;
-}
-
-function nonePaint(): PptExportPaint {
-  return { type: "none" };
-}
-
-function paintFromCssPaint(paint: ParsedCssPaint | null, opacity: number): PptExportPaint {
-  if (!paint) {
-    return nonePaint();
-  }
-
-  if (paint.type === "solid") {
-    return {
-      type: "solid",
-      color: paint.hex,
-      transparency: toTransparency(paint.alpha * opacity),
-    };
-  }
-
-  return {
-    type: "linearGradient",
-    angle: paint.angle,
-    stops: paint.stops.map((stop, index) => ({
-      color: stop.hex,
-      transparency: toTransparency(stop.alpha * opacity),
-      position:
-        stop.position ??
-        (paint.stops.length <= 1
-          ? 0
-          : Math.round((index / Math.max(1, paint.stops.length - 1)) * 100000)),
-    })),
-  };
-}
-
-type RectPx = {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-};
 
 function rectsDiffer(left: RectPx, right: RectPx) {
   return (
@@ -852,16 +521,319 @@ function measureElementRect(pageElement: HTMLElement, element: Element, clipBoun
   };
 }
 
+function elementPathWithinPage(pageElement: HTMLElement, element: Element) {
+  const parts: string[] = [];
+  let current: Element | null = element;
+  while (current && current !== pageElement) {
+    const parent: HTMLElement | null = current.parentElement;
+    if (!parent) {
+      break;
+    }
+    const index = Array.from(parent.children).indexOf(current);
+    parts.push(`${current.tagName.toLowerCase()}-${Math.max(0, index)}`);
+    current = parent;
+  }
+  return parts.reverse().join("/");
+}
+
+function sourceElementIdForElement(pageElement: HTMLElement, element: Element, fallbackPrefix = "dom") {
+  if (isHtmlElementNode(element)) {
+    const explicit =
+      element.getAttribute("data-html-block-id") ??
+      element.getAttribute("data-html-visual-id") ??
+      element.getAttribute("data-html-layout-id") ??
+      element.getAttribute("data-html-module-label") ??
+      element.id;
+    if (explicit) {
+      return explicit;
+    }
+  }
+
+  return `${fallbackPrefix}:${elementPathWithinPage(pageElement, element)}`;
+}
+
+function createDomOrderResolver(pageElement: HTMLElement) {
+  const order = new Map<Element, number>();
+  Array.from(pageElement.querySelectorAll("*")).forEach((element, index) => {
+    order.set(element, index + 1);
+  });
+  return (element: Element) => order.get(element) ?? 0;
+}
+
+function closestExportPlaceholder(element: Element, pageElement: HTMLElement) {
+  let current: Element | null = element;
+  while (current && current !== pageElement.parentElement) {
+    if (current.getAttribute("data-html-canvas-placeholder") === "true") {
+      return current;
+    }
+    if (current === pageElement) {
+      break;
+    }
+    current = current.parentElement;
+  }
+  return null;
+}
+
+function isHiddenForExport(args: {
+  element: Element;
+  pageElement: HTMLElement;
+  view: Window;
+}) {
+  let current: Element | null = args.element;
+  while (current && current !== args.pageElement.parentElement) {
+    const computed = args.view.getComputedStyle(current);
+    if (current.getAttribute("data-html-canvas-placeholder") === "true") {
+      return { hidden: true, placeholder: current };
+    }
+    if (
+      computed.display === "none" ||
+      computed.visibility === "hidden" ||
+      Number.parseFloat(computed.opacity || "1") <= 0
+    ) {
+      return { hidden: true, placeholder: null };
+    }
+    if (current === args.pageElement) {
+      break;
+    }
+    current = current.parentElement;
+  }
+  return { hidden: false, placeholder: null };
+}
+
+function buildExportElementRegistry(args: {
+  pageElement: HTMLElement;
+  pageNumber: number;
+  warnings: PptExportWarning[];
+}): ExportElementRegistry | null {
+  const view = args.pageElement.ownerDocument.defaultView;
+  if (!view) {
+    return null;
+  }
+
+  const byElement = new Map<HTMLElement, ExportElementRecord>();
+  const records = Array.from(args.pageElement.querySelectorAll<HTMLElement>("*")).map((element, index) => {
+    const hidden = isHiddenForExport({
+      element,
+      pageElement: args.pageElement,
+      view,
+    });
+    const bounds = measureElementRect(args.pageElement, element);
+    const canvasLayer = readExportCanvasLayer(element, args.pageElement);
+    const record: ExportElementRecord = {
+      element,
+      elementId: sourceElementIdForElement(args.pageElement, element),
+      bounds,
+      sourceOrder: index + 1,
+      zIndex: numericZIndex(view, element, args.pageElement),
+      canvasLayer: canvasLayer.canvasLayer,
+      canvasLayerOrder: canvasLayer.canvasLayerOrder,
+      visible: !hidden.hidden,
+      hiddenByPlaceholder: Boolean(hidden.placeholder),
+      text: normalizeMultilineText(element.innerText || element.textContent || ""),
+      visualId: element.getAttribute("data-html-visual-id") ?? undefined,
+      visualKind: element.getAttribute("data-html-visual-kind") ?? undefined,
+      exportRole: readAttribute(element, "data-export-role") ?? undefined,
+      blockId: element.getAttribute("data-html-block-id") ?? undefined,
+      blockKind: element.getAttribute("data-html-block-kind") ?? undefined,
+    };
+    byElement.set(element, record);
+    return record;
+  });
+
+  return {
+    pageElement: args.pageElement,
+    view,
+    records,
+    byElement,
+    placeholderWarnings: new Set(),
+  };
+}
+
+function createExportPagePlan(args: {
+  pageElement: HTMLElement;
+  pageNumber: number;
+  warnings: PptExportWarning[];
+}): ExportPagePlan | null {
+  const registry = buildExportElementRegistry(args);
+  return registry
+    ? {
+        registry,
+        pageNumber: args.pageNumber,
+        warnings: args.warnings,
+        owners: [],
+      }
+    : null;
+}
+
+function warnHiddenPlaceholder(plan: ExportPagePlan, element: HTMLElement) {
+  const placeholder = closestExportPlaceholder(element, plan.registry.pageElement);
+  if (!placeholder || plan.registry.placeholderWarnings.has(placeholder)) {
+    return;
+  }
+  plan.registry.placeholderWarnings.add(placeholder);
+  plan.warnings.push({
+    code: "hidden-placeholder-skipped",
+    severity: "info",
+    countsAgainstQuality: false,
+    pageNumber: plan.pageNumber,
+    sourceId: sourceElementIdForElement(plan.registry.pageElement, placeholder, "placeholder"),
+    sourceKind: "visual",
+    message: `Hidden canvas placeholder on page ${plan.pageNumber} was skipped by the PPTX ownership planner.`,
+  });
+}
+
+function isVisualContainerElement(element: HTMLElement) {
+  const role = readAttribute(element, "data-export-role", "data-html-visual-kind");
+  return Boolean(
+    role ||
+      element.getAttribute("data-html-visual-id") ||
+      element.getAttribute("data-html-module-kind") ||
+      element.classList.contains("surface-card"),
+  );
+}
+
+function isExplicitTextElement(element: HTMLElement) {
+  return Boolean(element.getAttribute("data-html-block-id") || element.matches("ul,ol"));
+}
+
+function suppressContainerTextIfNeeded(plan: ExportPagePlan | null | undefined, element: HTMLElement) {
+  if (!plan || !isVisualContainerElement(element)) {
+    return false;
+  }
+  if (!hasMultipleReadableTextChildren(element) && !hasReadableStructuralTextChild(element)) {
+    return false;
+  }
+  claimExportOwnership({
+    plan,
+    element,
+    ownership: recordForElement(plan, element)?.ownership ?? "visual-shape",
+    reason: "container-text",
+  });
+  const record = recordForElement(plan, element);
+  if (record?.suppressedTextReason !== "container-text-warned") {
+    if (record) {
+      record.suppressedTextReason = "container-text-warned";
+    }
+    plan.warnings.push({
+      code: "container-text-suppressed",
+      severity: "info",
+      countsAgainstQuality: false,
+      pageNumber: plan.pageNumber,
+      sourceId: sourceElementIdForElement(plan.registry.pageElement, element, "container"),
+      sourceKind: "visual",
+      message: `Container text on page ${plan.pageNumber} was suppressed so child text remains the single editable source.`,
+    });
+  }
+  return true;
+}
+
+function textElementBelongsToOtherOwner(args: {
+  element: HTMLElement;
+  owner?: ExportOwner;
+  owners?: ExportOwner[];
+}) {
+  const owner = resolveOwnerForElement(args.element, args.owners);
+  if (!owner) {
+    return false;
+  }
+  return args.owner?.id !== owner.id;
+}
+
+function canEmitTextElement(args: {
+  plan?: ExportPagePlan | null;
+  element: HTMLElement;
+  owner?: ExportOwner;
+  owners?: ExportOwner[];
+}) {
+  const record = recordForElement(args.plan, args.element);
+  if (record && !record.visible) {
+    if (record.hiddenByPlaceholder && args.plan) {
+      warnHiddenPlaceholder(args.plan, args.element);
+    }
+    return false;
+  }
+  if (
+    textElementBelongsToOtherOwner({
+      element: args.element,
+      owner: args.owner,
+      owners: args.owners ?? args.plan?.owners,
+    })
+  ) {
+    return false;
+  }
+  if (suppressContainerTextIfNeeded(args.plan, args.element)) {
+    return false;
+  }
+  if (isExplicitTextElement(args.element)) {
+    return true;
+  }
+  return !hasReadableStructuralTextChild(args.element);
+}
+
+function allowTextFillForElement(args: {
+  plan?: ExportPagePlan | null;
+  element: HTMLElement;
+}) {
+  if (hasReadableStructuralTextChild(args.element) || hasReadableTextChild(args.element)) {
+    return false;
+  }
+  const role = readAttribute(args.element, "data-export-role", "data-html-visual-kind") ?? "";
+  return role === "badge" || role === "label-surface";
+}
+
+function nodeOrderingForElement(args: {
+  plan?: ExportPagePlan | null;
+  element: HTMLElement;
+  layerRole: PptExportLayerRole;
+  offset?: number;
+}) {
+  const record = recordForElement(args.plan, args.element);
+  const sourceOrder =
+    record?.sourceOrder ?? createDomOrderResolver(args.plan?.registry.pageElement ?? args.element)(args.element);
+  const zIndex = record?.zIndex ?? 0;
+  const canvasLayer = record?.canvasLayer ?? "content";
+  const canvasLayerOrder = record?.canvasLayerOrder ?? 0;
+  return {
+    sourceOrder,
+    zIndex,
+    layerRole: args.layerRole,
+    zOrder: layerZOrder({
+      layerRole: args.layerRole,
+      sourceOrder,
+      zIndex,
+      canvasLayer,
+      canvasLayerOrder,
+      offset: args.offset,
+    }),
+  };
+}
+
 function dedupeTextNodes(nodes: PptExportTextNode[]) {
   const seen = new Set<string>();
   const deduped: PptExportTextNode[] = [];
 
   for (const node of nodes) {
-    const key = `${node.x}:${node.y}:${node.w}:${node.h}:${node.text}:${node.items?.join("|") ?? ""}`;
-    if (seen.has(key)) {
+    const normalizedText = normalizeMultilineText(node.items?.join("\n") ?? node.text);
+    const sourceKey = node.sourceElementId
+      ? `source:${node.sourceElementId}:${normalizedText}`
+      : "";
+    const geometryKey = [
+      "geom",
+      node.ownerId ?? "",
+      node.ownerKind ?? "",
+      Math.round(node.x * 1000),
+      Math.round(node.y * 1000),
+      Math.round(node.w * 1000),
+      Math.round(node.h * 1000),
+      normalizedText,
+    ].join(":");
+    if ((sourceKey && seen.has(sourceKey)) || seen.has(geometryKey)) {
       continue;
     }
-    seen.add(key);
+    if (sourceKey) {
+      seen.add(sourceKey);
+    }
+    seen.add(geometryKey);
     deduped.push(node);
   }
 
@@ -926,6 +898,7 @@ function normalizeChartContractFromParsed(args: {
         name: normalizeText(item.name ?? item.label ?? `Series ${index + 1}`) || `Series ${index + 1}`,
         values,
         color: parseCssColor(item.color)?.hex,
+        style: normalizeChartSeriesStyle(item.style),
       } satisfies PptExportChartSeries;
     })
     .filter((item) => item.values.length > 0);
@@ -965,6 +938,7 @@ function normalizeChartContractFromParsed(args: {
     valueAxisMin: args.parsed.valueAxisMin,
     valueAxisMax: args.parsed.valueAxisMax,
     colors: clippedSeries.map((item) => item.color).filter((item): item is string => Boolean(item)),
+    style: normalizeChartNativeStyle(args.parsed.style),
     renderMode: "native",
     fallbackMode: kind === "waterfall" ? "native-waterfall-chart" : "native-chart",
   } satisfies NormalizedChartContract;
@@ -1063,6 +1037,7 @@ function normalizeChartContractFromSpec(args: {
       yAxisTitle: normalizeText(args.spec.yLabel) || undefined,
       sizeAxisTitle: normalizeText(args.spec.sizeLabel) || undefined,
       colors: points.map((point) => point.color).filter((item): item is string => Boolean(item)),
+      style: normalizeChartNativeStyle(args.spec.style),
       renderMode: "native",
       fallbackMode: "native-bubble-chart",
     } satisfies NormalizedChartContract;
@@ -1167,6 +1142,7 @@ function normalizeChartContractFromSpec(args: {
         color: parseCssColor(item.color)?.hex,
         role,
         axis,
+        style: normalizeChartSeriesStyle(item.style),
       };
     })
     .filter((item) => item.values.length > 0);
@@ -1193,6 +1169,7 @@ function normalizeChartContractFromSpec(args: {
     valueAxisMin: args.spec.valueAxisMin,
     valueAxisMax: args.spec.valueAxisMax,
     colors: series.map((item) => item.color).filter((item): item is string => Boolean(item)),
+    style: normalizeChartNativeStyle(args.spec.style),
     renderMode: "native",
     fallbackMode:
       args.spec.kind === "waterfall"
@@ -1266,36 +1243,20 @@ function inferChartLayoutRole(frame: ChartFrameCandidate) {
   return "chart-panel" as const;
 }
 
-function collectChartSupportRoots(frame: ChartFrameCandidate) {
-  const roots: HTMLElement[] = [];
-  const pageBody = frame.element.closest<HTMLElement>("[data-page-body]");
-  const frameParent = frame.element.parentElement;
-
-  if (pageBody) {
-    for (const child of Array.from(pageBody.children)) {
-      if (!isHtmlElementNode(child) || child.contains(frame.element)) {
-        continue;
-      }
-      roots.push(child);
-    }
-  }
-
-  if (frameParent) {
-    for (const child of Array.from(frameParent.children)) {
-      if (!isHtmlElementNode(child) || child === frame.element) {
-        continue;
-      }
-      roots.push(child);
-    }
-  }
-
-  return roots.filter((root, index) => roots.indexOf(root) === index);
-}
-
 function buildTextNodeFromElement(args: {
   pageElement: HTMLElement;
   element: HTMLElement;
   view: Window;
+  owner?: ExportOwner;
+  sourceElementId?: string;
+  useFixedBounds?: boolean;
+  allowFill?: boolean;
+  ordering?: {
+    sourceOrder?: number;
+    zIndex?: number;
+    zOrder?: number;
+    layerRole?: PptExportLayerRole;
+  };
 }) {
   const rect = measureElementRect(args.pageElement, args.element);
   if (!rect.w || !rect.h) {
@@ -1313,11 +1274,11 @@ function buildTextNodeFromElement(args: {
         .map((item) => normalizeText(item.textContent ?? ""))
         .filter(Boolean)
     : undefined;
-  const text = normalizeText(args.element.innerText ?? "");
+  const text = normalizeMultilineText(args.element.innerText ?? args.element.textContent ?? "");
   if (!text) {
     return null;
   }
-  const measurement = measurePptTextLayout({
+  const baseMeasurement = measurePptTextLayout({
     widthPx: Math.max(24, rect.w),
     fontSizePx,
     fontFamily: primaryFontFamily(computed.fontFamily) || "Arial",
@@ -1329,27 +1290,59 @@ function buildTextNodeFromElement(args: {
     whiteSpace: resolveElementTextLayoutWhiteSpace(args.element),
   });
   const isList = Boolean(items?.length);
+  const allowedLines = Math.max(1, Math.floor(Math.max(rect.h, lineHeightPx) / Math.max(lineHeightPx, 1)));
+  const overflowRatio =
+    baseMeasurement.lineCount > allowedLines ? allowedLines / Math.max(baseMeasurement.lineCount, 1) : 1;
+  const adjustedFontSizePx =
+    overflowRatio < 1 ? fontSizePx * Math.max(0.66, overflowRatio) : fontSizePx;
+  const adjustedLineHeightPx = Math.max(1, lineHeightPx * (adjustedFontSizePx / Math.max(fontSizePx, 1)));
+  const measurement =
+    adjustedFontSizePx === fontSizePx
+      ? baseMeasurement
+      : measurePptTextLayout({
+          widthPx: Math.max(24, rect.w),
+          fontSizePx: adjustedFontSizePx,
+          fontFamily: primaryFontFamily(computed.fontFamily) || "Arial",
+          fontWeight: computed.fontWeight || "400",
+          fontStyle: computed.fontStyle || "normal",
+          lineHeightPx: adjustedLineHeightPx,
+          text,
+          items,
+          whiteSpace: resolveElementTextLayoutWhiteSpace(args.element),
+        });
   const rotate = resolveElementRotationDegrees(args.element);
   const textBoxWidthPx = resolvePptTextBoxWidthPx({
     rect,
     measurement,
-    lineHeightPx,
+    lineHeightPx: adjustedLineHeightPx,
+    fontSizePx: adjustedFontSizePx,
+    text,
     rotate,
   });
   const textBoxHeightPx =
     Math.abs(rotate ?? 0) % 180 > 1
-      ? Math.max(lineHeightPx + 8, Math.min(Math.max(rect.h, measurement.height), lineHeightPx * 1.35 + 8))
+      ? Math.max(
+          adjustedLineHeightPx + 8,
+          Math.min(Math.max(rect.h, measurement.height), adjustedLineHeightPx * 1.35 + 8),
+        )
       : Math.max(rect.h, measurement.height) + 8;
 
   return {
     kind: "text",
+    sourceElementId: args.sourceElementId ?? sourceElementIdForElement(args.pageElement, args.element, "text"),
+    ownerId: args.owner?.id,
+    ownerKind: args.owner?.kind ?? (args.element.matches("[data-html-block-id]") ? "block" : undefined),
+    sourceOrder: args.ordering?.sourceOrder,
+    zIndex: args.ordering?.zIndex,
+    zOrder: args.ordering?.zOrder,
+    layerRole: args.ordering?.layerRole ?? "text",
     x: pxToInches(rect.x),
     y: pxToInches(rect.y),
-    w: pxToInches(textBoxWidthPx),
-    h: pxToInches(textBoxHeightPx),
+    w: pxToInches(args.useFixedBounds ? Math.max(rect.w, textBoxWidthPx) : textBoxWidthPx),
+    h: pxToInches(args.useFixedBounds ? Math.max(rect.h, textBoxHeightPx) : textBoxHeightPx),
     text,
     items,
-    fontSize: pxFontToPoints(fontSizePx),
+    fontSize: pxFontToPoints(adjustedFontSizePx),
     fontFamily: primaryFontFamily(computed.fontFamily),
     color,
     bold: Number.parseInt(computed.fontWeight || "400", 10) >= 600,
@@ -1357,11 +1350,11 @@ function buildTextNodeFromElement(args: {
     align: normalizeAlign(computed.textAlign),
     valign: normalizeVerticalAlign(computed),
     rotate,
-    fillColor: fillColor?.alpha && fillColor.alpha > 0 ? fillColor.hex : null,
-    lineSpacingMultiple: toLineSpacingMultiple(lineHeightPx, fontSizePx),
+    fillColor: args.allowFill && fillColor?.alpha && fillColor.alpha > 0 ? fillColor.hex : null,
+    lineSpacingMultiple: toLineSpacingMultiple(adjustedLineHeightPx, adjustedFontSizePx),
     paraSpaceAfterPt: resolveParagraphSpacingAfterPt({
       computed,
-      lineHeightPx,
+      lineHeightPx: adjustedLineHeightPx,
       isList,
     }),
     paraSpaceBeforePt: resolveParagraphSpacingBeforePt(computed),
@@ -1369,132 +1362,32 @@ function buildTextNodeFromElement(args: {
       ? resolveListStyle({
           element: args.element,
           computed,
-          fontSizePx,
+          fontSizePx: adjustedFontSizePx,
         })
       : undefined,
   } satisfies PptExportTextNode;
 }
 
-function collectChartSupportTextNodes(args: {
-  pageElement: HTMLElement;
-  frame: ChartFrameCandidate;
-}) {
-  const view = args.pageElement.ownerDocument.defaultView;
-  if (!view) {
-    return [];
-  }
-
-  const roots = collectChartSupportRoots(args.frame);
-  const collected: PptExportTextNode[] = [];
-  const seenElements = new Set<HTMLElement>();
-
-  for (const root of roots) {
-    const listContainers = Array.from(root.querySelectorAll<HTMLElement>("ul,ol"));
-    for (const list of listContainers) {
-      if (list.closest('[data-html-visual-kind="chart-frame"]') || list.closest("[data-html-block-id]")) {
-        continue;
-      }
-      if (seenElements.has(list)) {
-        continue;
-      }
-      seenElements.add(list);
-      const rect = measureElementRect(args.pageElement, list);
-      const items = Array.from(list.querySelectorAll(":scope li"))
-        .map((item) => normalizeText(item.textContent ?? ""))
-        .filter(Boolean);
-      if (!rect.w || !rect.h || items.length === 0) {
-        continue;
-      }
-      const computed = view.getComputedStyle(list);
-      const fillColor = parseCssColor(computed.backgroundColor);
-      const computedFontSize = Number.parseFloat(computed.fontSize || "");
-      const fontSizePx = Number.isFinite(computedFontSize) ? computedFontSize : 16;
-      const lineHeightPx = resolveComputedLineHeightPx(computed, fontSizePx);
-      const measurement = measurePptTextLayout({
-        widthPx: Math.max(24, rect.w),
-        fontSizePx,
-        fontFamily: primaryFontFamily(computed.fontFamily) || "Arial",
-        fontWeight: computed.fontWeight || "400",
-        fontStyle: computed.fontStyle || "normal",
-        lineHeightPx,
-        items,
-        whiteSpace: resolveElementTextLayoutWhiteSpace(list),
-      });
-      collected.push({
-        kind: "text",
-        x: pxToInches(rect.x),
-        y: pxToInches(rect.y),
-        w: pxToInches(rect.w),
-        h: pxToInches(Math.max(rect.h, measurement.height) + 8),
-        text: items.join("\n"),
-        items,
-        fontSize: pxFontToPoints(fontSizePx),
-        fontFamily: primaryFontFamily(computed.fontFamily),
-        color: parseCssColor(computed.color)?.hex ?? DEFAULT_TEXT,
-        bold: Number.parseInt(computed.fontWeight || "400", 10) >= 600,
-        italic: computed.fontStyle === "italic",
-        align: normalizeAlign(computed.textAlign),
-        fillColor: fillColor?.alpha && fillColor.alpha > 0 ? fillColor.hex : null,
-        lineSpacingMultiple: toLineSpacingMultiple(lineHeightPx, fontSizePx),
-        paraSpaceAfterPt: resolveParagraphSpacingAfterPt({
-          computed,
-          lineHeightPx,
-          isList: true,
-        }),
-        paraSpaceBeforePt: resolveParagraphSpacingBeforePt(computed),
-        listStyle: resolveListStyle({
-          element: list,
-          computed,
-          fontSizePx,
-        }),
-      });
-    }
-
-    const candidates = Array.from(
-      root.querySelectorAll<HTMLElement>(
-        'h1,h2,h3,h4,h5,h6,p,[data-html-visual-kind="rail"],[data-html-visual-kind="annotation"],[data-html-visual-kind="badge"],div',
-      ),
-    );
-
-    for (const element of candidates) {
-      if (seenElements.has(element)) {
-        continue;
-      }
-      if (element.closest('[data-html-visual-kind="chart-frame"]') || element.closest("[data-html-block-id]")) {
-        continue;
-      }
-      if (element.matches("div") && element.querySelector("ul,ol,h1,h2,h3,h4,h5,h6,p,[data-html-visual-kind]")) {
-        continue;
-      }
-      const node = buildTextNodeFromElement({
-        pageElement: args.pageElement,
-        element,
-        view,
-      });
-      if (!node) {
-        continue;
-      }
-      seenElements.add(element);
-      collected.push(node);
-    }
-  }
-
-  return dedupeTextNodes(collected);
-}
-
-function isCircleLikeElement(element: HTMLElement) {
-  const width = parseNumericValue(element.style.width || "");
-  const height = parseNumericValue(element.style.height || "");
-  const radius = normalizeText(element.style.borderRadius || "");
-  return width >= 12 && Math.abs(width - height) <= 18 && radius.includes("50%");
-}
-
 function hasReadableTextChild(element: HTMLElement) {
   return Array.from(element.children).some(
     (child) =>
-      child instanceof HTMLElement &&
-      normalizeText(child.innerText || child.textContent || "").length > 0,
+      normalizeText((child instanceof HTMLElement ? child.innerText : child.textContent) || "").length > 0,
   );
+}
+
+function hasMultipleReadableTextChildren(element: HTMLElement) {
+  let readableChildCount = 0;
+  for (const child of Array.from(element.children)) {
+    const text = normalizeText((child instanceof HTMLElement ? child.innerText : child.textContent) || "");
+    if (!text) {
+      continue;
+    }
+    readableChildCount += 1;
+    if (readableChildCount > 1) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function hasReadableStructuralTextChild(element: HTMLElement) {
@@ -1561,60 +1454,12 @@ function isStructuralTextOwner(element: HTMLElement) {
   );
 }
 
-function collectChartInternalSupportTextNodes(args: {
-  pageElement: HTMLElement;
-  frame: ChartFrameCandidate;
-  includeTextPattern?: RegExp;
-}) {
-  const view = args.pageElement.ownerDocument.defaultView;
-  if (!view) {
-    return [];
-  }
-
-  const collected: PptExportTextNode[] = [];
-  const candidates = Array.from(
-    args.frame.element.querySelectorAll<HTMLElement>("div,span,p,h1,h2,h3,h4,h5,h6"),
-  );
-
-  for (const element of candidates) {
-    if (element.closest("[data-html-block-id]")) {
-      continue;
-    }
-    if (hasReadableTextChild(element)) {
-      continue;
-    }
-
-    const text = normalizeMultilineText(element.innerText || element.textContent || "");
-    if (!text) {
-      continue;
-    }
-    if (args.includeTextPattern && !args.includeTextPattern.test(text)) {
-      continue;
-    }
-
-    const node = buildTextNodeFromElement({
-      pageElement: args.pageElement,
-      element,
-      view,
-    });
-    if (!node) {
-      continue;
-    }
-
-    collected.push({
-      ...node,
-      text,
-    });
-  }
-
-  return dedupeTextNodes(collected);
-}
-
 function collectBlockTextNodes(args: {
   pageElement: HTMLElement;
   warnings: PptExportWarning[];
   pageNumber: number;
   skipTextWithinElements?: HTMLElement[];
+  plan?: ExportPagePlan | null;
 }) {
   const textNodes: PptExportTextNode[] = [];
   const view = args.pageElement.ownerDocument.defaultView;
@@ -1628,6 +1473,15 @@ function collectBlockTextNodes(args: {
 
   for (const element of blockElements) {
     if (args.skipTextWithinElements?.some((container) => container.contains(element))) {
+      continue;
+    }
+    if (
+      !canEmitTextElement({
+        plan: args.plan,
+        element,
+        owners: args.plan?.owners,
+      })
+    ) {
       continue;
     }
 
@@ -1699,6 +1553,8 @@ function collectBlockTextNodes(args: {
       rect,
       measurement: adjustedMeasurement,
       lineHeightPx: adjustedLineHeightPx,
+      fontSizePx: adjustedFontSizePx,
+      text,
       rotate: resolveElementRotationDegrees(element),
     });
     const rotate = resolveElementRotationDegrees(element);
@@ -1715,6 +1571,15 @@ function collectBlockTextNodes(args: {
 
     textNodes.push({
       kind: "text",
+      sourceElementId: sourceElementIdForElement(args.pageElement, element, "block"),
+      ownerId: blockId,
+      ownerKind: "block",
+      ...nodeOrderingForElement({
+        plan: args.plan,
+        element,
+        layerRole: "text",
+        offset: 5,
+      }),
       x: pxToInches(rect.x),
       y: pxToInches(rect.y),
       w: pxToInches(textBoxWidthPx),
@@ -1729,7 +1594,10 @@ function collectBlockTextNodes(args: {
       align: normalizeAlign(computed.textAlign),
       valign: normalizeVerticalAlign(computed),
       rotate,
-      fillColor: fillColor?.alpha && fillColor.alpha > 0 ? fillColor.hex : null,
+      fillColor:
+        allowTextFillForElement({ plan: args.plan, element }) && fillColor?.alpha && fillColor.alpha > 0
+          ? fillColor.hex
+          : null,
       lineSpacingMultiple: toLineSpacingMultiple(adjustedLineHeightPx, adjustedFontSizePx),
       paraSpaceAfterPt: resolveParagraphSpacingAfterPt({
         computed,
@@ -1753,6 +1621,7 @@ function collectBlockTextNodes(args: {
 function collectLooseContentTextNodes(args: {
   pageElement: HTMLElement;
   skipTextWithinElements?: HTMLElement[];
+  plan?: ExportPagePlan | null;
 }) {
   const view = args.pageElement.ownerDocument.defaultView;
   if (!view) {
@@ -1770,6 +1639,16 @@ function collectLooseContentTextNodes(args: {
         "[data-html-diagram-spec] h5",
         "[data-html-diagram-spec] h6",
         "[data-html-diagram-spec] p",
+        ".surface-card h1",
+        ".surface-card h2",
+        ".surface-card h3",
+        ".surface-card h4",
+        ".surface-card h5",
+        ".surface-card h6",
+        ".surface-card p",
+        ".page-footer",
+        ".eyebrow",
+        ".lede",
       ].join(","),
     ),
   );
@@ -1783,6 +1662,15 @@ function collectLooseContentTextNodes(args: {
       continue;
     }
     if (args.skipTextWithinElements?.some((container) => container.contains(element))) {
+      continue;
+    }
+    if (
+      !canEmitTextElement({
+        plan: args.plan,
+        element,
+        owners: args.plan?.owners,
+      })
+    ) {
       continue;
     }
 
@@ -1819,6 +1707,14 @@ function collectLooseContentTextNodes(args: {
       pageElement: args.pageElement,
       element,
       view,
+      useFixedBounds: true,
+      allowFill: allowTextFillForElement({ plan: args.plan, element }),
+      ordering: nodeOrderingForElement({
+        plan: args.plan,
+        element,
+        layerRole: "text",
+        offset: 5,
+      }),
     });
     if (!node) {
       continue;
@@ -1833,344 +1729,219 @@ function collectLooseContentTextNodes(args: {
   return dedupeTextNodes(textNodes);
 }
 
-function parseDiagramSpecFromElement(element: HTMLElement): ParsedDiagramSpec | null {
-  const raw = element.getAttribute("data-html-diagram-spec");
-  if (!raw) {
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as ParsedDiagramSpec;
-    return parsed && typeof parsed === "object" ? parsed : null;
-  } catch {
-    return null;
-  }
+function collectDiagramElements(pageElement: HTMLElement) {
+  return Array.from(pageElement.querySelectorAll<HTMLElement>("[data-html-diagram-spec]"));
 }
 
-function createSyntheticDiagramTextNode(args: {
-  rect: RectPx;
-  text: string;
-  fontSizePt: number;
-  color?: string;
-  align?: "left" | "center" | "right";
+function createExportOwner(args: {
+  pageElement: HTMLElement;
+  element: HTMLElement;
+  kind: PptExportOwnerKind;
+  idPrefix?: string;
+  index: number;
+  ownsText?: boolean;
+  ownsShapes?: boolean;
+  ownsSvg?: boolean;
+}): ExportOwner {
+  return {
+    id: `${args.idPrefix ?? args.kind}-${sourceElementIdForElement(args.pageElement, args.element, args.kind)}-${
+      args.index + 1
+    }`,
+    kind: args.kind,
+    element: args.element,
+    bounds: measureElementRect(args.pageElement, args.element),
+    ownsText: args.ownsText ?? true,
+    ownsShapes: args.ownsShapes ?? true,
+    ownsSvg: args.ownsSvg ?? true,
+  };
+}
+
+function collectDiagramOwners(pageElement: HTMLElement) {
+  return collectDiagramElements(pageElement).map((element, index) =>
+    createExportOwner({
+      pageElement,
+      element,
+      kind: "diagram",
+      index,
+    }),
+  );
+}
+
+function buildSvgTextNodeFromElement(args: {
+  pageElement: HTMLElement;
+  element: SVGTextElement;
+  view: Window;
+  owner?: ExportOwner;
 }) {
+  const rect = measureElementRect(args.pageElement, args.element);
+  if (!rect.w || !rect.h) {
+    return null;
+  }
+
+  const text = normalizeMultilineText(args.element.textContent ?? "");
+  if (!text) {
+    return null;
+  }
+
+  const computed = args.view.getComputedStyle(args.element);
+  const fontSizePx = Number.parseFloat(computed.fontSize || "") || 14;
+  const lineHeightPx = resolveComputedLineHeightPx(computed, fontSizePx);
+  const fillColor =
+    parseCssColor(args.element.getAttribute("fill") ?? computed.getPropertyValue("fill")) ??
+    parseCssColor(computed.color);
+  const anchor = args.element.getAttribute("text-anchor") ?? computed.getPropertyValue("text-anchor");
+  const transform = args.element.getAttribute("transform") || "";
+  const rotateMatch = transform.match(/rotate\(\s*(-?[0-9.]+)/i);
+
   return {
     kind: "text",
-    x: pxToInches(args.rect.x),
-    y: pxToInches(args.rect.y),
-    w: pxToInches(args.rect.w),
-    h: pxToInches(args.rect.h),
-    text: args.text,
-    fontSize: args.fontSizePt,
-    fontFamily: "Inter",
-    color: args.color ?? DEFAULT_BODY,
-    bold: false,
-    align: args.align ?? "left",
+    sourceElementId: sourceElementIdForElement(args.pageElement, args.element, "svg-text"),
+    ownerId: args.owner?.id,
+    ownerKind: args.owner?.kind,
+    x: pxToInches(rect.x),
+    y: pxToInches(rect.y),
+    w: pxToInches(Math.max(rect.w, 8)),
+    h: pxToInches(Math.max(rect.h, lineHeightPx + 4)),
+    text,
+    fontSize: pxFontToPoints(fontSizePx),
+    fontFamily: primaryFontFamily(computed.fontFamily),
+    color: fillColor?.hex ?? DEFAULT_TEXT,
+    bold: Number.parseInt(computed.fontWeight || "400", 10) >= 600,
+    italic: computed.fontStyle === "italic",
+    align: anchor === "middle" ? "center" : anchor === "end" ? "right" : "left",
+    rotate: rotateMatch ? Number.parseFloat(rotateMatch[1] ?? "0") : undefined,
     fillColor: null,
+    lineSpacingMultiple: toLineSpacingMultiple(lineHeightPx, fontSizePx),
   } satisfies PptExportTextNode;
 }
 
-function collectDiagramTextNodes(args: { pageElement: HTMLElement }) {
+function shouldUseOwnedTextElement(element: HTMLElement) {
+  if (element.matches("script,style,svg")) {
+    return false;
+  }
+  if (element.matches("ul,ol")) {
+    return true;
+  }
+  if (element.closest("ul,ol") && element.matches("li")) {
+    return false;
+  }
+  return !hasReadableStructuralTextChild(element) && !hasReadableTextChild(element);
+}
+
+function collectOwnedTextNodes(args: {
+  pageElement: HTMLElement;
+  owners: ExportOwner[];
+  plan?: ExportPagePlan | null;
+}) {
   const view = args.pageElement.ownerDocument.defaultView;
   if (!view) {
     return [];
   }
 
   const textNodes: PptExportTextNode[] = [];
-  const diagramElements = Array.from(args.pageElement.querySelectorAll<HTMLElement>("[data-html-diagram-spec]"));
+  for (const owner of args.owners) {
+    if (!owner.ownsText) {
+      continue;
+    }
 
-  for (const diagramElement of diagramElements) {
-    const measuredTextElements = Array.from(
-      diagramElement.querySelectorAll<HTMLElement>(
+    const candidates = Array.from(
+      owner.element.querySelectorAll<HTMLElement>(
         [
-          ".scientific-diagram-layer-label",
-          ".scientific-diagram-bottom-label",
-          ".scientific-diagram-side-note",
-          ".scientific-diagram-caption",
-          ".scientific-diagram-title",
-          ".scientific-diagram-top-label",
+          "ul",
+          "ol",
+          "[data-html-block-id]",
+          '[data-html-fit-role="content"]',
+          "h1",
+          "h2",
+          "h3",
+          "h4",
+          "h5",
+          "h6",
+          "p",
+          "li",
+          "span",
+          "div",
         ].join(","),
       ),
     );
 
-    for (const element of measuredTextElements) {
+    for (const element of candidates) {
+      if (element !== owner.element && resolveOwnerForElement(element, args.owners)?.id !== owner.id) {
+        continue;
+      }
+      if (!shouldUseOwnedTextElement(element)) {
+        continue;
+      }
+      if (
+        !canEmitTextElement({
+          plan: args.plan,
+          element,
+          owner,
+          owners: args.owners,
+        })
+      ) {
+        continue;
+      }
+      const computed = view.getComputedStyle(element);
+      if (
+        computed.display === "none" ||
+        computed.visibility === "hidden" ||
+        Number.parseFloat(computed.opacity || "1") <= 0
+      ) {
+        continue;
+      }
+      const text = normalizeMultilineText(element.innerText || element.textContent || "");
+      if (!text) {
+        continue;
+      }
       const node = buildTextNodeFromElement({
         pageElement: args.pageElement,
         element,
         view,
+        owner,
+        useFixedBounds: true,
+        allowFill: allowTextFillForElement({ plan: args.plan, element }),
+        ordering: nodeOrderingForElement({
+          plan: args.plan,
+          element,
+          layerRole: "text",
+          offset: 5,
+        }),
       });
       if (node) {
-        textNodes.push(node);
-      }
-    }
-
-    const spec = parseDiagramSpecFromElement(diagramElement);
-    const frame = measureElementRect(args.pageElement, diagramElement);
-    if (!spec || !frame.w || !frame.h) {
-      continue;
-    }
-
-    const seenText = new Set(textNodes.map((node) => normalizeText(node.text).toLowerCase()));
-    const addIfMissing = (node: PptExportTextNode) => {
-      const key = normalizeText(node.text).toLowerCase();
-      if (!key || seenText.has(key)) {
-        return;
-      }
-      seenText.add(key);
-      textNodes.push(node);
-    };
-
-    const layers = (spec.layers ?? [])
-      .map((layer) => normalizeText(layer.label ?? ""))
-      .filter(Boolean);
-    const plotLeft = frame.x + frame.w * 0.2;
-    const plotRight = frame.x + frame.w * 0.8;
-    const plotWidth = Math.max(1, plotRight - plotLeft);
-    layers.forEach((label, index) => {
-      const x =
-        layers.length > 1
-          ? plotLeft + (index / Math.max(1, layers.length - 1)) * plotWidth
-          : frame.x + frame.w / 2;
-      addIfMissing(
-        createSyntheticDiagramTextNode({
-          rect: {
-            x: x - 70,
-            y: frame.y + frame.h * 0.36,
-            w: 140,
-            h: 24,
-          },
-          text: label,
-          fontSizePt: 8,
-          color: DEFAULT_BODY,
-          align: "center",
-        }),
-      );
-    });
-
-    const bottomLabel = normalizeText(spec.bottomLabel ?? "");
-    if (bottomLabel) {
-      addIfMissing(
-        createSyntheticDiagramTextNode({
-          rect: {
-            x: frame.x + frame.w * 0.28,
-            y: frame.y + frame.h * 0.77,
-            w: frame.w * 0.44,
-            h: 26,
-          },
-          text: bottomLabel,
-          fontSizePt: 8.5,
-          color: DEFAULT_BODY,
-          align: "center",
-        }),
-      );
-    }
-
-    for (const note of spec.sideNotes ?? []) {
-      const text = normalizeText(note.text ?? "");
-      if (!text) {
-        continue;
-      }
-      const isRight = note.side === "right";
-      addIfMissing(
-        createSyntheticDiagramTextNode({
-          rect: {
-            x: isRight ? frame.x + frame.w - 185 : frame.x + 32,
-            y: frame.y + (isRight ? frame.h * 0.42 : frame.h * 0.32),
-            w: 150,
-            h: 78,
-          },
+        textNodes.push({
+          ...node,
           text,
-          fontSizePt: 8,
-          color: DEFAULT_BODY,
-        }),
-      );
+        });
+      }
+    }
+
+    for (const element of Array.from(owner.element.querySelectorAll<SVGTextElement>("svg text"))) {
+      const node = buildSvgTextNodeFromElement({
+        pageElement: args.pageElement,
+        element,
+        view,
+        owner,
+      });
+      if (node) {
+        textNodes.push({
+          ...node,
+          ...nodeOrderingForElement({
+            plan: args.plan,
+            element: owner.element,
+            layerRole: "text",
+            offset: 5,
+          }),
+        });
+      }
     }
   }
 
   return dedupeTextNodes(textNodes);
 }
 
-function collectDiagramElements(pageElement: HTMLElement) {
-  return Array.from(pageElement.querySelectorAll<HTMLElement>("[data-html-diagram-spec]"));
-}
-
-function collectDiagramShapeNodes(args: { pageElement: HTMLElement }) {
-  const nodes: PptExportVisualNode[] = [];
-  const diagramElements = collectDiagramElements(args.pageElement);
-
-  for (const diagramElement of diagramElements) {
-    const spec = parseDiagramSpecFromElement(diagramElement);
-    const layers = (spec?.layers ?? [])
-      .map((layer) => ({
-        label: normalizeText(layer.label ?? ""),
-        nodeCount: Math.max(1, Math.min(8, Math.round(Number(layer.nodeCount) || 1))),
-      }))
-      .filter((layer) => layer.label);
-    if (layers.length < 2) {
-      continue;
-    }
-
-    const frame = measureElementRect(args.pageElement, diagramElement);
-    if (!frame.w || !frame.h) {
-      continue;
-    }
-
-    const network = {
-      x: frame.x + frame.w * 0.2,
-      y: frame.y + frame.h * 0.42,
-      w: frame.w * 0.6,
-      h: frame.h * 0.24,
-    };
-    const layerNodes = layers.map((layer, layerIndex) => {
-      const x =
-        layers.length > 1
-          ? network.x + (layerIndex / Math.max(1, layers.length - 1)) * network.w
-          : network.x + network.w / 2;
-      const yStep = layer.nodeCount > 1 ? network.h / (layer.nodeCount - 1) : 0;
-      const radius = Math.max(8, Math.min(14, 16 - Math.max(0, layer.nodeCount - 4)));
-      return Array.from({ length: layer.nodeCount }, (_, nodeIndex) => ({
-        x,
-        y: layer.nodeCount === 1 ? network.y + network.h / 2 : network.y + yStep * nodeIndex,
-        radius,
-      }));
-    });
-
-    for (let layerIndex = 0; layerIndex + 1 < layerNodes.length; layerIndex += 1) {
-      for (const sourceNode of layerNodes[layerIndex] ?? []) {
-        for (const targetNode of layerNodes[layerIndex + 1] ?? []) {
-          nodes.push({
-            kind: "shape",
-            role: "diagram-connector",
-            x: pxToInches(sourceNode.x),
-            y: pxToInches(sourceNode.y),
-            w: pxToInches(targetNode.x - sourceNode.x),
-            h: pxToInches(targetNode.y - sourceNode.y),
-            shape: "line",
-            paint: nonePaint(),
-            lineColor: "2F5D84",
-            lineTransparency: 62,
-            lineWidthPt: pxLineToPoints(2.2),
-          });
-        }
-      }
-    }
-
-    for (const node of layerNodes.flat()) {
-      nodes.push({
-        kind: "shape",
-        role: "diagram-node",
-        x: pxToInches(node.x - node.radius),
-        y: pxToInches(node.y - node.radius),
-        w: pxToInches(node.radius * 2),
-        h: pxToInches(node.radius * 2),
-        shape: "ellipse",
-        paint: {
-          type: "solid",
-          color: "DFE8EE",
-          transparency: 0,
-        },
-        lineColor: "2F5D84",
-        lineTransparency: 18,
-        lineWidthPt: pxLineToPoints(3),
-      });
-    }
-  }
-
-  return nodes;
-}
-
 function shouldRenderVisualAsLine(role: string, rect: { w: number; h: number }) {
   return role === "divider" || role === "rail" || rect.h <= 4 || rect.w <= 4;
-}
-
-function resolveComputedBorderPaint(computed: CSSStyleDeclaration) {
-  const width = Number.parseFloat(computed.borderWidth || "0");
-  if (!Number.isFinite(width) || width <= 0 || computed.borderStyle === "none") {
-    return null;
-  }
-
-  return parseCssColor(computed.borderColor);
-}
-
-function resolveLineDash(computed: CSSStyleDeclaration): PptExportVisualNode["lineDash"] {
-  if (computed.borderStyle === "dotted") {
-    return "sysDot";
-  }
-  if (computed.borderStyle === "dashed") {
-    return "dash";
-  }
-  return "solid";
-}
-
-function extractShadowColorToken(value: string) {
-  const matches = Array.from(value.matchAll(/#[0-9a-f]{3,8}|rgba?\([^)]*\)|\b[a-z]+\b/gi));
-  for (const match of matches) {
-    const token = match[0];
-    const color = parseCssColor(token);
-    if (color) {
-      return { token, color };
-    }
-  }
-  return null;
-}
-
-function resolveBoxShadow(computed: CSSStyleDeclaration, opacity: number): PptExportVisualNode["shadow"] {
-  const rawShadow = computed.boxShadow;
-  if (!rawShadow || rawShadow === "none") {
-    return undefined;
-  }
-
-  for (const layer of splitCssTopLevelList(rawShadow)) {
-    if (/\binset\b/i.test(layer)) {
-      continue;
-    }
-
-    const colorToken = extractShadowColorToken(layer);
-    if (!colorToken || colorToken.color.alpha <= 0) {
-      continue;
-    }
-
-    const numericPart = layer.replace(colorToken.token, "").replace(/\binset\b/gi, "");
-    const lengths = Array.from(numericPart.matchAll(/(-?[0-9.]+)px/gi)).map((match) =>
-      Number.parseFloat(match[1] ?? "0"),
-    );
-    const offsetX = lengths[0] ?? 0;
-    const offsetY = lengths[1] ?? 0;
-    const blurPx = Math.max(0, lengths[2] ?? 0);
-    const distancePx = Math.sqrt(offsetX * offsetX + offsetY * offsetY);
-    const effectiveOpacity = clamp(colorToken.color.alpha * opacity, 0, 1);
-    if (effectiveOpacity <= 0 || (blurPx <= 0 && distancePx <= 0)) {
-      continue;
-    }
-
-    const rawAngle = (Math.atan2(offsetY, offsetX) * 180) / Math.PI;
-    const angle = Math.round(((rawAngle % 360) + 360) % 360);
-    return {
-      type: "outer",
-      color: colorToken.color.hex,
-      opacity: effectiveOpacity,
-      blurPt: pxToPoints(blurPx),
-      offsetPt: pxToPoints(distancePx),
-      angle,
-    };
-  }
-
-  return undefined;
-}
-
-function resolveBorderRadiusPx(computed: CSSStyleDeclaration, rect: { w: number; h: number }) {
-  const raw = computed.borderTopLeftRadius || computed.borderRadius || "0";
-  const first = raw.split(/\s+/)[0] ?? "0";
-  const parsed = Number.parseFloat(first);
-  if (!Number.isFinite(parsed)) {
-    return 0;
-  }
-
-  if (first.includes("%")) {
-    return (Math.min(rect.w, rect.h) * parsed) / 100;
-  }
-
-  return parsed;
 }
 
 function resolveVisualShapeKind(args: {
@@ -2299,43 +2070,49 @@ function readSvgSolidPaint(args: {
   return parseCssColor(normalized);
 }
 
-function collectSvgLineSegmentNode(args: {
+function collectPageLineSegmentNode(args: {
   pageElement: HTMLElement;
-  viewport: SvgViewport;
+  sourceElement: SVGElement;
   start: { x: number; y: number };
   end: { x: number; y: number };
   strokePaint: ParsedSolidPaint | null;
   strokeOpacity: number;
   strokeWidth: number;
   dashArray?: string | null;
+  owner?: ExportOwner;
+  sourceOrder?: number;
+  zIndex?: number;
+  canvasLayer?: ExportCanvasLayer;
+  canvasLayerOrder?: number;
 }): PptExportVisualNode | null {
   if (!args.strokePaint || args.strokeOpacity <= 0) {
     return null;
   }
 
-  const start = mapSvgPointToPagePx({
-    pageElement: args.pageElement,
-    viewport: args.viewport,
-    x: args.start.x,
-    y: args.start.y,
-  });
-  const end = mapSvgPointToPagePx({
-    pageElement: args.pageElement,
-    viewport: args.viewport,
-    x: args.end.x,
-    y: args.end.y,
-  });
-  const width = end.x - start.x;
-  const height = end.y - start.y;
+  const width = args.end.x - args.start.x;
+  const height = args.end.y - args.start.y;
   if (Math.abs(width) < 0.5 && Math.abs(height) < 0.5) {
     return null;
   }
 
   return {
     kind: "shape",
+    sourceElementId: sourceElementIdForElement(args.pageElement, args.sourceElement, "svg-line"),
+    ownerId: args.owner?.id,
+    ownerKind: args.owner?.kind,
+    sourceOrder: args.sourceOrder,
+    zIndex: args.zIndex,
+    zOrder: layerZOrder({
+      layerRole: "shape",
+      sourceOrder: args.sourceOrder,
+      zIndex: args.zIndex,
+      canvasLayer: args.canvasLayer,
+      canvasLayerOrder: args.canvasLayerOrder,
+    }),
+    layerRole: "shape",
     role: "svg-line",
-    x: pxToInches(start.x),
-    y: pxToInches(start.y),
+    x: pxToInches(args.start.x),
+    y: pxToInches(args.start.y),
     w: pxToInches(width),
     h: pxToInches(height),
     shape: "line",
@@ -2347,7 +2124,63 @@ function collectSvgLineSegmentNode(args: {
   };
 }
 
-function collectSvgPrimitiveNodes(args: { pageElement: HTMLElement; skipWithinElements?: HTMLElement[] }) {
+function collectSvgLineSegmentNode(args: {
+  pageElement: HTMLElement;
+  sourceElement: SVGElement;
+  viewport: SvgViewport;
+  start: { x: number; y: number };
+  end: { x: number; y: number };
+  strokePaint: ParsedSolidPaint | null;
+  strokeOpacity: number;
+  strokeWidth: number;
+  dashArray?: string | null;
+  owner?: ExportOwner;
+  sourceOrder?: number;
+  zIndex?: number;
+  canvasLayer?: ExportCanvasLayer;
+  canvasLayerOrder?: number;
+}): PptExportVisualNode | null {
+  return collectPageLineSegmentNode({
+    ...args,
+    start: mapSvgPointToPagePx({
+      pageElement: args.pageElement,
+      viewport: args.viewport,
+      x: args.start.x,
+      y: args.start.y,
+    }),
+    end: mapSvgPointToPagePx({
+      pageElement: args.pageElement,
+      viewport: args.viewport,
+      x: args.end.x,
+      y: args.end.y,
+    }),
+  });
+}
+
+function withDefaultShapeOrdering(node: PptExportVisualNode) {
+  if (node.zOrder !== undefined && node.layerRole) {
+    return node;
+  }
+  const layerRole: PptExportLayerRole = node.layerRole ?? "shape";
+  return {
+    ...node,
+    layerRole,
+    zOrder: layerZOrder({
+      layerRole,
+      sourceOrder: node.sourceOrder,
+      zIndex: node.zIndex,
+      canvasLayer: "content",
+      canvasLayerOrder: 0,
+    }),
+  };
+}
+
+function collectSvgPrimitiveNodes(args: {
+  pageElement: HTMLElement;
+  skipWithinElements?: HTMLElement[];
+  owners?: ExportOwner[];
+  orderForElement?: (element: Element) => number;
+}) {
   const view = args.pageElement.ownerDocument.defaultView;
   if (!view) {
     return [];
@@ -2355,18 +2188,34 @@ function collectSvgPrimitiveNodes(args: { pageElement: HTMLElement; skipWithinEl
 
   const nodes: PptExportVisualNode[] = [];
   const svgs = Array.from(args.pageElement.querySelectorAll<SVGSVGElement>("svg")).filter(
-    (svg) => !args.skipWithinElements?.some((container) => container.contains(svg)),
+    (svg) =>
+      !args.skipWithinElements?.some((container) => container.contains(svg)) &&
+      !isHiddenForExport({
+        element: svg,
+        pageElement: args.pageElement,
+        view,
+      }).hidden,
   );
   for (const svg of svgs) {
     const viewport = readSvgViewport(svg);
     if (!viewport) {
       continue;
     }
+    const owner = resolveOwnerForElement(svg, args.owners);
 
     const primitives = Array.from(
-      svg.querySelectorAll<SVGElement>("polygon,polyline,line,circle,rect"),
+      svg.querySelectorAll<SVGElement>("polygon,polyline,path,line,circle,rect"),
     );
     for (const primitive of primitives) {
+      if (
+        isHiddenForExport({
+          element: primitive,
+          pageElement: args.pageElement,
+          view,
+        }).hidden
+      ) {
+        continue;
+      }
       const computed = view.getComputedStyle(primitive);
       const fillPaint = readSvgSolidPaint({
         element: primitive,
@@ -2387,6 +2236,9 @@ function collectSvgPrimitiveNodes(args: { pageElement: HTMLElement; skipWithinEl
       const dashArray =
         primitive.getAttribute("stroke-dasharray") ?? computed.getPropertyValue("stroke-dasharray");
       const tagName = primitive.tagName.toLowerCase();
+      const primitiveOrder = args.orderForElement?.(primitive);
+      const primitiveZIndex = numericZIndex(view, primitive, args.pageElement);
+      const primitiveCanvasLayer = readExportCanvasLayer(primitive, args.pageElement);
 
       if (tagName === "polyline" || tagName === "polygon") {
         const rawPoints = parseSvgPoints(primitive.getAttribute("points"));
@@ -2394,6 +2246,7 @@ function collectSvgPrimitiveNodes(args: { pageElement: HTMLElement; skipWithinEl
           for (let index = 0; index + 1 < rawPoints.length; index += 1) {
             const node = collectSvgLineSegmentNode({
               pageElement: args.pageElement,
+              sourceElement: primitive,
               viewport,
               start: rawPoints[index]!,
               end: rawPoints[index + 1]!,
@@ -2401,6 +2254,11 @@ function collectSvgPrimitiveNodes(args: { pageElement: HTMLElement; skipWithinEl
               strokeOpacity,
               strokeWidth,
               dashArray,
+              owner,
+              sourceOrder: primitiveOrder,
+      zIndex: primitiveZIndex,
+              canvasLayer: primitiveCanvasLayer.canvasLayer,
+              canvasLayerOrder: primitiveCanvasLayer.canvasLayerOrder,
             });
             if (node) {
               nodes.push(node);
@@ -2433,6 +2291,19 @@ function collectSvgPrimitiveNodes(args: { pageElement: HTMLElement; skipWithinEl
 
         nodes.push({
           kind: "shape",
+          sourceElementId: sourceElementIdForElement(args.pageElement, primitive, "svg-polygon"),
+          ownerId: owner?.id,
+          ownerKind: owner?.kind,
+          sourceOrder: primitiveOrder,
+          zIndex: primitiveZIndex,
+          zOrder: layerZOrder({
+            layerRole: "shape",
+            sourceOrder: primitiveOrder,
+            zIndex: primitiveZIndex,
+            canvasLayer: primitiveCanvasLayer.canvasLayer,
+            canvasLayerOrder: primitiveCanvasLayer.canvasLayerOrder,
+          }),
+          layerRole: "shape",
           role: "svg-polygon",
           x: pxToInches(minX),
           y: pxToInches(minY),
@@ -2455,6 +2326,7 @@ function collectSvgPrimitiveNodes(args: { pageElement: HTMLElement; skipWithinEl
       if (tagName === "line") {
         const node = collectSvgLineSegmentNode({
           pageElement: args.pageElement,
+          sourceElement: primitive,
           viewport,
           start: {
             x: parseSvgNumber(primitive.getAttribute("x1")),
@@ -2468,9 +2340,104 @@ function collectSvgPrimitiveNodes(args: { pageElement: HTMLElement; skipWithinEl
           strokeOpacity,
           strokeWidth,
           dashArray,
+          owner,
+          sourceOrder: primitiveOrder,
+          zIndex: primitiveZIndex,
+          canvasLayer: primitiveCanvasLayer.canvasLayer,
+          canvasLayerOrder: primitiveCanvasLayer.canvasLayerOrder,
         });
         if (node) {
           nodes.push(node);
+        }
+        continue;
+      }
+
+      if (tagName === "path") {
+        const pathElement = primitive as SVGPathElement;
+        let totalLength = 0;
+        try {
+          totalLength =
+            typeof pathElement.getTotalLength === "function" ? pathElement.getTotalLength() : 0;
+        } catch {
+          totalLength = 0;
+        }
+        if (!Number.isFinite(totalLength) || totalLength <= 0) {
+          continue;
+        }
+        const sampleCount = Math.max(2, Math.min(48, Math.ceil(totalLength / 18)));
+        const pagePoints = Array.from({ length: sampleCount + 1 }, (_, index) => {
+          const point = pathElement.getPointAtLength((index / sampleCount) * totalLength);
+          return mapSvgPointToPagePx({
+            pageElement: args.pageElement,
+            viewport,
+            x: point.x,
+            y: point.y,
+          });
+        });
+        if (fillPaint && fillOpacity > 0 && pagePoints.length >= 3) {
+          const minX = Math.min(...pagePoints.map((point) => point.x));
+          const minY = Math.min(...pagePoints.map((point) => point.y));
+          const maxX = Math.max(...pagePoints.map((point) => point.x));
+          const maxY = Math.max(...pagePoints.map((point) => point.y));
+          const width = maxX - minX;
+          const height = maxY - minY;
+          if (width > 0 && height > 0) {
+            nodes.push({
+              kind: "shape",
+              sourceElementId: sourceElementIdForElement(args.pageElement, primitive, "svg-path"),
+              ownerId: owner?.id,
+              ownerKind: owner?.kind,
+              sourceOrder: primitiveOrder,
+              zIndex: primitiveZIndex,
+              zOrder: layerZOrder({
+                layerRole: "shape",
+                sourceOrder: primitiveOrder,
+                zIndex: primitiveZIndex,
+                canvasLayer: primitiveCanvasLayer.canvasLayer,
+                canvasLayerOrder: primitiveCanvasLayer.canvasLayerOrder,
+              }),
+              layerRole: "shape",
+              role: "svg-path",
+              x: pxToInches(minX),
+              y: pxToInches(minY),
+              w: pxToInches(width),
+              h: pxToInches(height),
+              shape: "freeform",
+              paint: paintFromCssPaint(fillPaint, fillOpacity),
+              freeformPoints: pagePoints.map((point) => ({
+                x: Math.round(((point.x - minX) / width) * 100000),
+                y: Math.round(((point.y - minY) / height) * 100000),
+              })),
+              lineColor: strokePaint?.hex ?? null,
+              lineTransparency: strokePaint ? toTransparency(strokePaint.alpha * strokeOpacity) : 100,
+              lineWidthPt: strokePaint && strokeWidth > 0 ? pxLineToPoints(strokeWidth) : 0,
+              lineDash: dashArray && dashArray !== "none" ? "dash" : "solid",
+            });
+          }
+          continue;
+        }
+
+        for (let index = 0; index + 1 < pagePoints.length; index += 1) {
+          const startPoint = pagePoints[index]!;
+          const endPoint = pagePoints[index + 1]!;
+          const node = collectPageLineSegmentNode({
+            pageElement: args.pageElement,
+            sourceElement: primitive,
+            start: startPoint,
+            end: endPoint,
+            strokePaint,
+            strokeOpacity,
+            strokeWidth,
+            dashArray,
+            owner,
+            sourceOrder: primitiveOrder,
+            zIndex: primitiveZIndex,
+            canvasLayer: primitiveCanvasLayer.canvasLayer,
+            canvasLayerOrder: primitiveCanvasLayer.canvasLayerOrder,
+          });
+          if (node) {
+            nodes.push(node);
+          }
         }
         continue;
       }
@@ -2500,6 +2467,19 @@ function collectSvgPrimitiveNodes(args: { pageElement: HTMLElement; skipWithinEl
 
         nodes.push({
           kind: "shape",
+          sourceElementId: sourceElementIdForElement(args.pageElement, primitive, "svg-circle"),
+          ownerId: owner?.id,
+          ownerKind: owner?.kind,
+          sourceOrder: primitiveOrder,
+          zIndex: primitiveZIndex,
+          zOrder: layerZOrder({
+            layerRole: "shape",
+            sourceOrder: primitiveOrder,
+            zIndex: primitiveZIndex,
+            canvasLayer: primitiveCanvasLayer.canvasLayer,
+            canvasLayerOrder: primitiveCanvasLayer.canvasLayerOrder,
+          }),
+          layerRole: "shape",
           role: "svg-circle",
           x: pxToInches(topLeft.x),
           y: pxToInches(topLeft.y),
@@ -2541,6 +2521,19 @@ function collectSvgPrimitiveNodes(args: { pageElement: HTMLElement; skipWithinEl
 
         nodes.push({
           kind: "shape",
+          sourceElementId: sourceElementIdForElement(args.pageElement, primitive, "svg-rect"),
+          ownerId: owner?.id,
+          ownerKind: owner?.kind,
+          sourceOrder: primitiveOrder,
+          zIndex: primitiveZIndex,
+          zOrder: layerZOrder({
+            layerRole: "shape",
+            sourceOrder: primitiveOrder,
+            zIndex: primitiveZIndex,
+            canvasLayer: primitiveCanvasLayer.canvasLayer,
+            canvasLayerOrder: primitiveCanvasLayer.canvasLayerOrder,
+          }),
+          layerRole: "shape",
           role: "svg-rect",
           x: pxToInches(topLeft.x),
           y: pxToInches(topLeft.y),
@@ -2556,7 +2549,7 @@ function collectSvgPrimitiveNodes(args: { pageElement: HTMLElement; skipWithinEl
     }
   }
 
-  return nodes;
+  return nodes.map(withDefaultShapeOrdering);
 }
 
 function collectVisualShapeElements(pageElement: HTMLElement, skipVisualIds: Set<string>) {
@@ -2565,9 +2558,14 @@ function collectVisualShapeElements(pageElement: HTMLElement, skipVisualIds: Set
       [
         "[data-html-visual-id]",
         "[data-export-role]",
+        '[data-html-visual-kind="chart-frame"]',
+        '[data-html-visual-kind="surface"]',
+        '[data-html-visual-kind="highlight"]',
+        '[data-html-module-kind="scientific-diagram"]',
         '[data-html-visual-kind="divider"]',
         '[data-html-visual-kind="rail"]',
         '[data-html-visual-kind="badge"]',
+        ".surface-card",
       ].join(","),
     ),
   );
@@ -2577,90 +2575,103 @@ function collectVisualShapeElements(pageElement: HTMLElement, skipVisualIds: Set
   });
 }
 
-function hasStructuredChartContract(element: Element) {
-  return Boolean(
-    parseHtmlChartSpec(element.getAttribute(HTML_CHART_SPEC_ATTRIBUTE)) ||
-      element.getAttribute("data-export-chart"),
-  );
-}
-
-function hasSvgChartPrimitives(element: HTMLElement) {
-  if (element.querySelector("svg,canvas")) {
-    return true;
+function hasVisibleComputedShapePaint(args: {
+  pageElement: HTMLElement;
+  element: HTMLElement;
+  view: Window;
+}) {
+  if (args.element.closest("svg")) {
+    return false;
+  }
+  if (readAttribute(args.element, "data-export-omit") === "true") {
+    return false;
   }
 
-  return false;
-}
+  const computed = args.view.getComputedStyle(args.element);
+  if (
+    computed.display === "none" ||
+    computed.visibility === "hidden" ||
+    Number.parseFloat(computed.opacity || "1") <= 0
+  ) {
+    return false;
+  }
 
-function hasAbsoluteBarPrimitives(element: HTMLElement) {
-  const absoluteBars = Array.from(
-    element.querySelectorAll<HTMLElement>("[style*='position:absolute'],[style*='position: absolute']"),
-  ).filter((candidate) => {
-    const width = parseNumericValue(candidate.style.width || "");
-    const height = parseNumericValue(candidate.style.height || "");
-    const bottom = candidate.style.bottom;
-    const background = candidate.style.backgroundColor || candidate.style.background;
-    return Boolean(bottom && background && width >= 16 && height >= 8 && Math.abs(width - height) > 8);
-  });
-
-  return absoluteBars.length >= 3;
-}
-
-function hasBubblePointPrimitives(element: HTMLElement) {
-  const bubblePoints = Array.from(
-    element.querySelectorAll<HTMLElement>("[style*='border-radius:50%'],[style*='border-radius: 50%']"),
-  ).filter((candidate) => {
-    const width = parseNumericValue(candidate.style.width || "");
-    const height = parseNumericValue(candidate.style.height || "");
-    return width >= 20 && Math.abs(width - height) <= 18;
-  });
-
-  return bubblePoints.length >= 3;
-}
-
-function hasAxisScaffold(element: HTMLElement) {
-  const style = element.style;
-  const borderLeft = style.borderLeft || style.border;
-  const borderBottom = style.borderBottom || style.border;
-  return Boolean(borderLeft && borderBottom && parseNumericValue(style.height || "") >= 80);
-}
-
-function hasUnstructuredChartPrimitives(element: HTMLElement) {
-  return (
-    hasSvgChartPrimitives(element) ||
-    hasAbsoluteBarPrimitives(element) ||
-    hasBubblePointPrimitives(element)
+  const rect = measureElementRect(
+    args.pageElement,
+    args.element,
+    resolveShapeClipBounds(args.pageElement, args.element),
   );
+  if (!rect.w || !rect.h) {
+    return false;
+  }
+
+  const fillPaint = readElementFillPaint({
+    element: args.element,
+    computed,
+  });
+  const borderPaint = resolveComputedBorderPaint(computed);
+  const borderWidth = Number.parseFloat(computed.borderWidth || "0");
+  return alphaIsVisible(fillPaint) || Boolean(borderPaint && borderWidth > 0);
 }
 
-function findChartPlotElement(frame: HTMLElement) {
-  const candidates = Array.from(
-    frame.querySelectorAll<HTMLElement>("[style*='position:relative'],[style*='position: relative']"),
-  )
-    .filter((candidate) => candidate !== frame)
-    .map((candidate) => {
-      const rect = candidate.getBoundingClientRect();
-      const primitiveScore =
-        (hasSvgChartPrimitives(candidate) ? 3 : 0) +
-        (hasAbsoluteBarPrimitives(candidate) ? 3 : 0) +
-        (hasBubblePointPrimitives(candidate) ? 3 : 0) +
-        (hasAxisScaffold(candidate) ? 1 : 0);
-      return {
-        element: candidate,
-        rect,
-        primitiveScore,
-        area: rect.width * rect.height,
-      };
-    })
-    .filter((candidate) => candidate.rect.width >= 140 && candidate.rect.height >= 70 && candidate.primitiveScore > 0)
-    .sort((left, right) => {
-      if (right.primitiveScore !== left.primitiveScore) {
-        return right.primitiveScore - left.primitiveScore;
-      }
-      return left.area - right.area;
-    });
+function collectOwnerPrimitiveShapeElements(args: {
+  pageElement: HTMLElement;
+  owners?: ExportOwner[];
+  view: Window;
+  existingElements: HTMLElement[];
+  plan?: ExportPagePlan | null;
+}) {
+  const seen = new Set(args.existingElements);
+  const collected: HTMLElement[] = [];
+  for (const owner of args.owners ?? []) {
+    if (!owner.ownsShapes) {
+      continue;
+    }
 
-  return candidates[0]?.element ?? null;
+    const candidates = Array.from(
+      owner.element.querySelectorAll<HTMLElement>(
+        [
+          "article",
+          "aside",
+          "section",
+          "figure",
+          "div",
+          "span",
+          "p",
+          "li",
+        ].join(","),
+      ),
+    );
+
+    for (const element of candidates) {
+      if (seen.has(element)) {
+        continue;
+      }
+      const record = recordForElement(args.plan, element);
+      if (record && !record.visible) {
+        if (record.hiddenByPlaceholder && args.plan) {
+          warnHiddenPlaceholder(args.plan, element);
+        }
+        continue;
+      }
+      if (resolveOwnerForElement(element, args.owners)?.id !== owner.id) {
+        continue;
+      }
+      if (
+        !hasVisibleComputedShapePaint({
+          pageElement: args.pageElement,
+          element,
+          view: args.view,
+        })
+      ) {
+        continue;
+      }
+      seen.add(element);
+      collected.push(element);
+    }
+  }
+
+  return collected;
 }
 
 function resolveChartRenderRect(pageElement: HTMLElement, frame: ChartFrameCandidate) {
@@ -2709,22 +2720,52 @@ function resolveShapeClipBounds(pageElement: HTMLElement, element: HTMLElement):
 }
 
 function collectChartFrames(pageElement: HTMLElement) {
+  const view = pageElement.ownerDocument.defaultView;
+  if (!view) {
+    return [];
+  }
+
   const candidates = Array.from(
-    pageElement.querySelectorAll<HTMLElement>('[data-html-visual-kind="chart-frame"]'),
+    pageElement.querySelectorAll<HTMLElement>(
+      [
+        '[data-html-visual-kind="chart-frame"]',
+        `[${HTML_CHART_SPEC_ATTRIBUTE}]`,
+        "[data-export-chart]",
+      ].join(","),
+    ),
   )
     .filter((element) => {
+      if (
+        isHiddenForExport({
+          element,
+          pageElement,
+          view,
+        }).hidden
+      ) {
+        return false;
+      }
+      if (hasStructuredChartContract(element)) {
+        return true;
+      }
       const moduleKind = element.getAttribute("data-html-module-kind");
-      return !moduleKind || moduleKind === "chart" || hasStructuredChartContract(element);
+      return (
+        (!moduleKind || moduleKind === "chart") &&
+        (element.getAttribute("data-html-visual-kind") === "chart-frame" ||
+          Boolean(findChartContractElement(element)))
+      );
     })
-    .map((element) => ({
-      visualId: element.getAttribute("data-html-visual-id") ?? `chart-frame-${Math.random()}`,
+    .map((element, index) => ({
+      visualId: element.getAttribute("data-html-visual-id") ?? `chart-frame-${index + 1}`,
       element,
       rect: measureElementRect(pageElement, element),
     }));
 
   return candidates.filter((candidate, index) => {
     const structured = hasStructuredChartContract(candidate.element);
-    const exportable = structured || hasUnstructuredChartPrimitives(candidate.element);
+    const contractElement = findChartContractElement(candidate.element);
+    const hasContractDescendant = Boolean(contractElement && contractElement !== candidate.element);
+    const exportable =
+      structured || hasContractDescendant || hasUnstructuredChartPrimitives(candidate.element);
     const hasStructuredDescendant = candidates.some(
       (other) =>
         other !== candidate &&
@@ -2736,6 +2777,15 @@ function collectChartFrames(pageElement: HTMLElement) {
         other !== candidate &&
         other.element.contains(candidate.element) &&
         hasStructuredChartContract(other.element),
+    );
+    const hasExportableAncestor = candidates.some(
+      (other) =>
+        other !== candidate &&
+        other.element.contains(candidate.element) &&
+        (Boolean(findChartContractElement(other.element)) ||
+          hasUnstructuredChartPrimitives(other.element)) &&
+        other.rect.w >= 180 &&
+        other.rect.h >= 110,
     );
     const hasExportableChartDescendant = candidates.some(
       (other) =>
@@ -2750,11 +2800,15 @@ function collectChartFrames(pageElement: HTMLElement) {
       return false;
     }
 
-    if (!structured && hasStructuredDescendant) {
+    if (structured && hasExportableAncestor) {
       return false;
     }
 
-    if (!structured && hasExportableChartDescendant) {
+    if (!structured && !hasContractDescendant && hasStructuredDescendant) {
+      return false;
+    }
+
+    if (!structured && !hasContractDescendant && hasExportableChartDescendant) {
       return false;
     }
 
@@ -2778,11 +2832,12 @@ function warnIfUnsupportedStructuredChart(args: {
   const spec = parseHtmlChartSpec(args.element.getAttribute(HTML_CHART_SPEC_ATTRIBUTE));
   args.warnings.push({
     code: "chart-native-unsupported",
-    severity: "degraded",
+    severity: "info",
+    countsAgainstQuality: false,
     pageNumber: args.pageNumber,
     message: spec
-      ? `${spec.kind} chart on page ${args.pageNumber} was skipped because it could not be exported as a strict native/semantic PPT object.`
-      : `Chart frame on page ${args.pageNumber} was skipped because it could not be exported as a strict native/semantic PPT object.`,
+      ? `${spec.kind} chart on page ${args.pageNumber} skipped its native data relationship but kept editable DOM geometry.`
+      : `Chart frame on page ${args.pageNumber} kept editable DOM geometry without a native data relationship.`,
   });
 }
 
@@ -2849,27 +2904,60 @@ function normalizeTableRows(spec: HtmlTableSpec) {
   ];
 }
 
+function shouldExportTableAsDomGeometry(element: HTMLElement, spec: HtmlTableSpec) {
+  if (element.tagName.toLowerCase() === "table") {
+    return false;
+  }
+
+  const columnCount = Math.max(spec.columns.length, ...spec.rows.map((row) => row.length), 1);
+  const cells = spec.rows.flatMap((row) =>
+    Array.from({ length: columnCount }, (_, index) => normalizeText(row[index] ?? "")),
+  );
+  const emptyRatio = cells.length
+    ? cells.filter((cell) => !cell).length / cells.length
+    : 0;
+  const specText = normalizeMultilineText(
+    [
+      spec.raw,
+      ...spec.columns.map((column) => column.label),
+      ...spec.rows.flat(),
+      element.getAttribute("data-html-module-label"),
+    ].join("\n"),
+  );
+  const looksLikeQuadrant =
+    (/重要性/.test(specText) && /确定性/.test(specText)) ||
+    (/impact/i.test(specText) && /effort|confidence|certainty/i.test(specText)) ||
+    /quadrant|matrix|2x2/i.test(specText);
+  const hasPositionedVisualChildren = Array.from(element.querySelectorAll<HTMLElement>("*")).some((child) => {
+    const style = child.getAttribute("style") ?? "";
+    return /position\s*:\s*absolute/i.test(style);
+  });
+
+  return (
+    looksLikeQuadrant &&
+    spec.rows.length >= 6 &&
+    columnCount <= 4 &&
+    emptyRatio >= 0.35 &&
+    hasPositionedVisualChildren
+  );
+}
+
 function collectTableModels(args: {
   pageElement?: HTMLElement | null;
   theme: PptExportThemeSnapshot;
   warnings: PptExportWarning[];
   pageNumber: number;
+  plan?: ExportPagePlan | null;
 }): TableCollectionResult {
   const tableNodes: PptExportTableModel[] = [];
   const skipVisualIds = new Set<string>();
   const skipTextElements: HTMLElement[] = [];
   const skipPrimitiveWithinElements: HTMLElement[] = [];
+  const owners: ExportOwner[] = [];
   const themeTokens = buildChartThemeTokens(args.theme);
   const tableElements = args.pageElement ? collectTableElements(args.pageElement) : [];
 
-  for (const element of tableElements) {
-    skipTextElements.push(element);
-    skipPrimitiveWithinElements.push(element);
-    const visualId = element.getAttribute("data-html-visual-id");
-    if (visualId) {
-      skipVisualIds.add(visualId);
-    }
-
+  for (const [index, element] of tableElements.entries()) {
     const rect = args.pageElement ? measureElementRect(args.pageElement, element) : null;
     if (!rect?.w || !rect.h) {
       continue;
@@ -2885,6 +2973,10 @@ function collectTableModels(args: {
       continue;
     }
 
+    if (shouldExportTableAsDomGeometry(element, spec)) {
+      continue;
+    }
+
     const rows = normalizeTableRows(spec);
     if (!rows.length || rows.every((row) => row.every((cell) => !cell))) {
       args.warnings.push({
@@ -2895,8 +2987,43 @@ function collectTableModels(args: {
       continue;
     }
 
+    skipTextElements.push(element);
+    skipPrimitiveWithinElements.push(element);
+    const visualId = element.getAttribute("data-html-visual-id");
+    if (visualId) {
+      skipVisualIds.add(visualId);
+    }
+    if (args.pageElement) {
+      const owner = createExportOwner({
+        pageElement: args.pageElement,
+        element,
+        kind: "table",
+        index,
+        ownsText: false,
+        ownsShapes: false,
+        ownsSvg: false,
+      });
+      owners.push(owner);
+      claimExportOwnership({
+        plan: args.plan,
+        element,
+        ownership: "table",
+        ownerId: owner.id,
+      });
+    }
+
+    const ordering = nodeOrderingForElement({
+      plan: args.plan,
+      element,
+      layerRole: "table",
+    });
     tableNodes.push({
       kind: "table",
+      sourceElementId: sourceElementIdForElement(args.pageElement!, element, "table"),
+      sourceOrder: ordering.sourceOrder,
+      zIndex: ordering.zIndex,
+      zOrder: ordering.zOrder,
+      layerRole: ordering.layerRole,
       renderMode: "native",
       x: pxToInches(rect.x),
       y: pxToInches(rect.y),
@@ -2915,6 +3042,7 @@ function collectTableModels(args: {
     skipPrimitiveWithinElements: skipPrimitiveWithinElements.filter(
       (element, index) => skipPrimitiveWithinElements.indexOf(element) === index,
     ),
+    owners: dedupeOwners(owners),
   };
 }
 
@@ -2999,16 +3127,30 @@ function collectVisualShapeNodes(args: {
   pageElement: HTMLElement;
   skipVisualIds: Set<string>;
   skipPrimitiveWithinElements?: HTMLElement[];
+  owners?: ExportOwner[];
+  plan?: ExportPagePlan | null;
   warnings: PptExportWarning[];
   pageNumber: number;
 }) {
   const shapeNodes: PptExportVisualNode[] = [];
   const view = args.pageElement.ownerDocument.defaultView;
-  const visualElements = collectVisualShapeElements(args.pageElement, args.skipVisualIds);
+  const annotatedVisualElements = collectVisualShapeElements(args.pageElement, args.skipVisualIds);
+  const orderForElement = createDomOrderResolver(args.pageElement);
 
   if (!view) {
     return shapeNodes;
   }
+
+  const visualElements = [
+    ...annotatedVisualElements,
+    ...collectOwnerPrimitiveShapeElements({
+      pageElement: args.pageElement,
+      owners: args.owners,
+      view,
+      existingElements: annotatedVisualElements,
+      plan: args.plan,
+    }),
+  ];
 
   for (const element of visualElements) {
     const nodeId =
@@ -3028,12 +3170,32 @@ function collectVisualShapeNodes(args: {
     if (readAttribute(element, "data-export-omit") === "true") {
       continue;
     }
+    const record = recordForElement(args.plan, element);
+    if (record && !record.visible) {
+      if (record.hiddenByPlaceholder && args.plan) {
+        warnHiddenPlaceholder(args.plan, element);
+      }
+      claimExportOwnership({
+        plan: args.plan,
+        element,
+        ownership: "omit",
+        reason: "hidden",
+      });
+      continue;
+    }
 
     const nodeKind = element.getAttribute("data-html-visual-kind") ?? "surface";
     const role = readAttribute(element, "data-export-role") ?? nodeKind;
     if (role === "decorative") {
+      claimExportOwnership({
+        plan: args.plan,
+        element,
+        ownership: "owner-only",
+        reason: "decorative",
+      });
       continue;
     }
+    const owner = resolveOwnerForElement(element, args.owners);
 
     const rect = measureElementRect(
       args.pageElement,
@@ -3048,24 +3210,14 @@ function collectVisualShapeNodes(args: {
     const fillPaint = readElementFillPaint({ element, computed });
     const computedBorderWidth = Number.parseFloat(computed.borderWidth || "0");
     const computedBorderPaint = resolveComputedBorderPaint(computed);
-    const explicitBorderWidth = readNumericAttribute(
-      element,
-      "data-export-border-width",
-      "data-html-visual-border-width",
-    );
-    const explicitBorderPaint = parseCssColor(
-      readAttribute(element, "data-export-border", "data-html-visual-border"),
-    );
     const hasComputedBorder = Boolean(computedBorderPaint && computedBorderWidth > 0);
-    const borderPaint = hasComputedBorder ? computedBorderPaint : explicitBorderPaint;
+    const borderPaint = hasComputedBorder ? computedBorderPaint : null;
     const borderWidth =
       hasComputedBorder && Number.isFinite(computedBorderWidth)
         ? computedBorderWidth
-        : (explicitBorderWidth ?? 0);
+        : 0;
     const borderRadius = resolveBorderRadiusPx(computed, rect);
-    const opacity =
-      readNumericAttribute(element, "data-export-opacity", "data-html-visual-opacity") ??
-      clamp(Number.parseFloat(computed.opacity || "1") || 1, 0, 1);
+    const opacity = clamp(Number.parseFloat(computed.opacity || "1") || 1, 0, 1);
     const shadow = resolveBoxShadow(computed, opacity);
     const lineDash = resolveLineDash(computed);
 
@@ -3084,6 +3236,19 @@ function collectVisualShapeNodes(args: {
       });
       continue;
     }
+
+    claimExportOwnership({
+      plan: args.plan,
+      element,
+      ownership: "visual-shape",
+    });
+
+    const ordering = nodeOrderingForElement({
+      plan: args.plan,
+      element,
+      layerRole: "shape",
+      offset: lineLike ? 1 : 0,
+    });
 
     const lineThicknessPx = Math.max(
       borderWidth,
@@ -3105,6 +3270,13 @@ function collectVisualShapeNodes(args: {
 
     shapeNodes.push({
       kind: "shape",
+      sourceElementId: sourceElementIdForElement(args.pageElement, element, "shape"),
+      ownerId: owner?.id,
+      ownerKind: owner?.kind,
+      sourceOrder: ordering.sourceOrder ?? orderForElement(element),
+      zIndex: ordering.zIndex ?? numericZIndex(view, element, args.pageElement),
+      zOrder: ordering.zOrder,
+      layerRole: ordering.layerRole,
       role,
       x: pxToInches(rect.x),
       y: pxToInches(rect.y),
@@ -3130,8 +3302,16 @@ function collectVisualShapeNodes(args: {
     ...collectSvgPrimitiveNodes({
       pageElement: args.pageElement,
       skipWithinElements: args.skipPrimitiveWithinElements,
+      owners: args.owners,
+      orderForElement,
     }),
-  ];
+  ].sort((left, right) => {
+    const zDelta = (left.zIndex ?? 0) - (right.zIndex ?? 0);
+    if (zDelta !== 0) {
+      return zDelta;
+    }
+    return (left.sourceOrder ?? 0) - (right.sourceOrder ?? 0);
+  });
 }
 
 function normalizeSceneChartDataModel(args: {
@@ -3210,12 +3390,13 @@ function collectChartModels(args: {
   scene?: SlideScene;
   warnings: PptExportWarning[];
   pageNumber: number;
+  plan?: ExportPagePlan | null;
 }): ChartCollectionResult {
   const chartNodes: PptExportChartModel[] = [];
   const skipVisualIds = new Set<string>();
   const skipTextElements: HTMLElement[] = [];
   const skipPrimitiveWithinElements: HTMLElement[] = [];
-  const ownedTextNodes: PptExportTextNode[] = [];
+  const owners: ExportOwner[] = [];
   const chartFrames = args.pageElement ? collectChartFrames(args.pageElement) : [];
   const sceneCharts = (args.scene?.objects ?? []).filter(
     (object): object is SlideSceneChartObject => object.kind === "chart",
@@ -3223,10 +3404,41 @@ function collectChartModels(args: {
   const nativeFrameIndexes = new Set<number>();
   const themeTokens = buildChartThemeTokens(args.theme);
 
+  const addFrameOwner = (
+    frame: ChartFrameCandidate,
+    chartKind?: SupportedNativeChartKind,
+    ownerElement: HTMLElement = frame.element,
+    ownsTextOverride?: boolean,
+  ) => {
+    if (!args.pageElement) {
+      return null;
+    }
+    const ownsChartDom = ownsTextOverride ?? (!chartKind || chartKind === "matrix");
+    const owner = createExportOwner({
+      pageElement: args.pageElement,
+      element: ownerElement,
+      kind: chartKind === "matrix" ? "matrix" : "chart",
+      idPrefix: frame.visualId,
+      index: owners.length,
+      ownsText: ownsChartDom,
+      ownsShapes: !chartKind || chartKind === "matrix",
+      ownsSvg: !chartKind || chartKind === "matrix",
+    });
+    if (!owners.some((existing) => existing.element === owner.element)) {
+      owners.push(owner);
+    }
+    claimExportOwnership({
+      plan: args.plan,
+      element: ownerElement,
+      ownership: "visual-shape",
+      ownerId: owner.id,
+    });
+    return owner;
+  };
+
   const skipUnsupportedFrame = (frame: ChartFrameCandidate) => {
-    skipVisualIds.add(frame.visualId);
     skipTextElements.push(frame.element);
-    skipPrimitiveWithinElements.push(frame.element);
+    addFrameOwner(frame);
     warnIfUnsupportedStructuredChart({
       element: frame.element,
       warnings: args.warnings,
@@ -3247,23 +3459,60 @@ function collectChartModels(args: {
         : null;
     const semanticSpec = frame ? semanticSpecFromNormalizedChart(normalized) : undefined;
     if (frame) {
-      if (semanticSpec) {
-        skipTextElements.push(frame.element);
-        if (args.pageElement && normalized.chartKind !== "matrix") {
-          ownedTextNodes.push(
-            ...collectChartInternalSupportTextNodes({
-              pageElement: args.pageElement,
-              frame,
-              includeTextPattern:
-                /\b(?:takeaway|note|source|legend|callout|quick win|strategic build|selective bet|deprioritize)\b|=/i,
-            }),
-          );
+      const plotElement =
+        args.pageElement && normalized.chartKind !== "matrix"
+          ? findChartPlotElement(frame.element)
+          : null;
+      const directChartElement = !plotElement && normalized.chartKind !== "matrix";
+      if (plotElement) {
+        skipTextElements.push(plotElement);
+        skipPrimitiveWithinElements.push(plotElement);
+        const plotVisualId = plotElement.getAttribute("data-html-visual-id");
+        if (plotVisualId) {
+          skipVisualIds.add(plotVisualId);
         }
+      } else if (directChartElement) {
+        skipPrimitiveWithinElements.push(frame.element);
+        if (frame.visualId) {
+          skipVisualIds.add(frame.visualId);
+        }
+      } else if (normalized.chartKind === "matrix") {
+        skipTextElements.push(frame.element);
       }
-      skipPrimitiveWithinElements.push(frame.element);
+      const keepOverlayText = directChartElement;
+      addFrameOwner(
+        frame,
+        normalized.chartKind,
+        plotElement ?? frame.element,
+        keepOverlayText ? true : undefined,
+      );
     }
+    const layerRole: PptExportLayerRole = "chart";
+    const ordering =
+      frame && args.pageElement
+        ? nodeOrderingForElement({
+            plan: args.plan,
+            element: frame.element,
+            layerRole,
+          })
+        : {
+            sourceOrder: sceneChart ? sceneCharts.indexOf(sceneChart) + 1 : chartNodes.length + 1,
+            zIndex: 0,
+            layerRole,
+            zOrder: layerZOrder({
+              layerRole,
+              sourceOrder: sceneChart ? sceneCharts.indexOf(sceneChart) + 1 : chartNodes.length + 1,
+            }),
+          };
     chartNodes.push({
       kind: "chart",
+      sourceElementId: frame
+        ? sourceElementIdForElement(args.pageElement!, frame.element, "chart")
+        : normalized.title ?? sceneChart?.title ?? `chart-${chartNodes.length + 1}`,
+      sourceOrder: ordering.sourceOrder,
+      zIndex: ordering.zIndex,
+      zOrder: ordering.zOrder,
+      layerRole: ordering.layerRole,
       renderMode: "native",
       x: pxToInches(chartRect?.x ?? frame?.rect.x ?? sceneChart?.x ?? 0),
       y: pxToInches(chartRect?.y ?? frame?.rect.y ?? sceneChart?.y ?? 0),
@@ -3287,7 +3536,9 @@ function collectChartModels(args: {
       valueAxisMin: normalized.valueAxisMin,
       valueAxisMax: normalized.valueAxisMax,
       colors: normalized.colors,
+      style: normalized.style,
       showInlineHeading: frame ? false : normalized.showInlineHeading,
+      showNativeVisual: true,
       themeTokens,
     });
     args.warnings.push({
@@ -3295,6 +3546,17 @@ function collectChartModels(args: {
       pageNumber: args.pageNumber,
       message: `Chart on page ${args.pageNumber} exported as a PowerPoint-native chart.`,
     });
+    if (frame) {
+      args.warnings.push({
+        code: "native-chart-visible",
+        severity: "success",
+        countsAgainstQuality: false,
+        pageNumber: args.pageNumber,
+        sourceId: frame.visualId,
+        sourceKind: normalized.chartKind === "matrix" ? "matrix" : "chart",
+        message: `Chart visible layer on page ${args.pageNumber} is rendered as a native PowerPoint chart.`,
+      });
+    }
   };
 
   sceneCharts.forEach((chart, index) => {
@@ -3304,16 +3566,17 @@ function collectChartModels(args: {
       pageNumber: args.pageNumber,
     });
     const frame = chartFrames[index] ?? null;
+    const frameContractElement = frame ? findChartContractElement(frame.element) ?? frame.element : null;
     const domNormalized =
       frame
         ? normalizeChartContractFromElement({
-            element: frame.element,
+            element: frameContractElement!,
             warnings: args.warnings,
             pageNumber: args.pageNumber,
           }) ??
-          (parseExportChartData(frame.element)
+          (parseExportChartData(frameContractElement!)
             ? normalizeChartContractFromParsed({
-                parsed: parseExportChartData(frame.element)!,
+                parsed: parseExportChartData(frameContractElement!)!,
                 warnings: args.warnings,
                 pageNumber: args.pageNumber,
                 fallbackTitle: chart.title,
@@ -3345,10 +3608,11 @@ function collectChartModels(args: {
       return;
     }
 
-    const parsed = parseExportChartData(frame.element);
+    const frameContractElement = findChartContractElement(frame.element) ?? frame.element;
+    const parsed = parseExportChartData(frameContractElement);
     const normalized =
       normalizeChartContractFromElement({
-        element: frame.element,
+        element: frameContractElement,
         warnings: args.warnings,
         pageNumber: args.pageNumber,
       }) ??
@@ -3370,7 +3634,7 @@ function collectChartModels(args: {
   return {
     chartNodes,
     skipVisualIds,
-    ownedTextNodes: dedupeTextNodes(ownedTextNodes),
+    owners: dedupeOwners(owners),
     skipTextElements: skipTextElements.filter((element, index) => skipTextElements.indexOf(element) === index),
     skipPrimitiveWithinElements: skipPrimitiveWithinElements.filter(
       (element, index) => skipPrimitiveWithinElements.indexOf(element) === index,
@@ -3411,20 +3675,35 @@ function collectExportAnnotations(args: {
     };
   }
 
+  const plan = createExportPagePlan({
+    pageElement: args.frame.pageElement,
+    pageNumber: args.pageNumber,
+    warnings: args.warnings,
+  });
   const chartCollection = collectChartModels({
     pageElement: args.frame.pageElement,
     theme,
     scene: args.scene,
     warnings: args.warnings,
     pageNumber: args.pageNumber,
+    plan,
   });
   const tableCollection = collectTableModels({
     pageElement: args.frame.pageElement,
     theme,
     warnings: args.warnings,
     pageNumber: args.pageNumber,
+    plan,
   });
   const diagramElements = collectDiagramElements(args.frame.pageElement);
+  const exportOwners = dedupeOwners([
+    ...chartCollection.owners,
+    ...tableCollection.owners,
+    ...collectDiagramOwners(args.frame.pageElement),
+  ]);
+  if (plan) {
+    plan.owners = exportOwners;
+  }
   const skipVisualIds = new Set([
     ...chartCollection.skipVisualIds,
     ...tableCollection.skipVisualIds,
@@ -3432,12 +3711,47 @@ function collectExportAnnotations(args: {
   const skipTextWithinElements = [
     ...chartCollection.skipTextElements,
     ...tableCollection.skipTextElements,
+    ...diagramElements,
   ].filter((element, index, elements) => elements.indexOf(element) === index);
   const skipPrimitiveWithinElements = [
     ...chartCollection.skipPrimitiveWithinElements,
     ...tableCollection.skipPrimitiveWithinElements,
-    ...diagramElements,
   ].filter((element, index, elements) => elements.indexOf(element) === index);
+  const ownedTextNodes = collectOwnedTextNodes({
+    pageElement: args.frame.pageElement,
+    owners: exportOwners,
+    plan,
+  });
+  const shapeNodes = collectVisualShapeNodes({
+    pageElement: args.frame.pageElement,
+    skipVisualIds,
+    skipPrimitiveWithinElements,
+    owners: exportOwners,
+    plan,
+    warnings: args.warnings,
+    pageNumber: args.pageNumber,
+  });
+  const ownedShapeCount = shapeNodes.filter((node) => node.ownerId).length;
+  if (ownedTextNodes.length) {
+    args.warnings.push({
+      code: "text-owned",
+      severity: "info",
+      countsAgainstQuality: false,
+      pageNumber: args.pageNumber,
+      sourceKind: "page",
+      message: `${ownedTextNodes.length} text nodes on page ${args.pageNumber} were exported through a single owner pass.`,
+    });
+  }
+  if (ownedShapeCount) {
+    args.warnings.push({
+      code: "shape-owned",
+      severity: "info",
+      countsAgainstQuality: false,
+      pageNumber: args.pageNumber,
+      sourceKind: "page",
+      message: `${ownedShapeCount} shape nodes on page ${args.pageNumber} were exported with chart/diagram ownership.`,
+    });
+  }
 
   return {
     theme,
@@ -3447,28 +3761,16 @@ function collectExportAnnotations(args: {
         warnings: args.warnings,
         pageNumber: args.pageNumber,
         skipTextWithinElements,
+        plan,
       }),
       ...collectLooseContentTextNodes({
         pageElement: args.frame.pageElement,
         skipTextWithinElements,
+        plan,
       }),
-      ...collectDiagramTextNodes({
-        pageElement: args.frame.pageElement,
-      }),
-      ...chartCollection.ownedTextNodes,
+      ...ownedTextNodes,
     ]),
-    shapeNodes: [
-      ...collectVisualShapeNodes({
-        pageElement: args.frame.pageElement,
-        skipVisualIds,
-        skipPrimitiveWithinElements,
-        warnings: args.warnings,
-        pageNumber: args.pageNumber,
-      }),
-      ...collectDiagramShapeNodes({
-        pageElement: args.frame.pageElement,
-      }),
-    ],
+    shapeNodes,
     chartNodes: chartCollection.chartNodes,
     tableNodes: tableCollection.tableNodes,
   };
@@ -3541,126 +3843,46 @@ function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function buildGradientFillXml(paint: Extract<PptExportPaint, { type: "linearGradient" }>) {
-  const angle = Math.round((((450 - paint.angle) % 360) + 360) % 360) * 60000;
-  const stops = paint.stops.length
-    ? paint.stops
-    : [
-        { color: "FFFFFF", position: 0, transparency: 0 },
-        { color: "FFFFFF", position: 100000, transparency: 0 },
-      ];
-
-  return `<a:gradFill rotWithShape="1"><a:gsLst>${stops
-    .map((stop) => {
-      const alpha = Math.round((100 - (stop.transparency ?? 0)) * 1000);
-      return `<a:gs pos="${clamp(stop.position, 0, 100000)}"><a:srgbClr val="${escapeXml(stop.color)}">${
-        alpha < 100000 ? `<a:alpha val="${clamp(alpha, 0, 100000)}"/>` : ""
-      }</a:srgbClr></a:gs>`;
-    })
-    .join("")}</a:gsLst><a:lin ang="${angle}" scaled="0"/></a:gradFill>`;
+function pointsToEmu(value: number | undefined, fallback: number) {
+  const next = Number.isFinite(value) ? value! : fallback;
+  return Math.round(Math.max(0, next) * 12700);
 }
 
-function replaceShapeFillXml(shapeXml: string, fillXml: string) {
-  const fillPattern = /<a:(?:solidFill|gradFill)\b[\s\S]*?<\/a:(?:solidFill|gradFill)>|<a:noFill\s*\/>/;
-  if (fillPattern.test(shapeXml)) {
-    return shapeXml.replace(fillPattern, fillXml);
+function chartDashToPreset(value: "solid" | "dash" | "dot" | "none" | undefined) {
+  if (value === "dot") {
+    return "dot";
   }
-
-  return shapeXml.replace(/(<a:prstGeom\b[\s\S]*?<\/a:prstGeom>)/, `$1${fillXml}`);
+  if (value === "dash") {
+    return "dash";
+  }
+  return "solid";
 }
 
-function buildFreeformGeometryXml(shape: PptxExportShapeNode) {
-  const points = shape.freeformPoints ?? [];
-  if (shape.shape !== "freeform" || points.length < 3) {
-    return null;
-  }
-
-  const normalizedPoints = points.map((point) => ({
-    x: Math.round(clamp(point.x, 0, 100000)),
-    y: Math.round(clamp(point.y, 0, 100000)),
-  }));
-  const [firstPoint, ...remainingPoints] = normalizedPoints;
-  if (!firstPoint) {
-    return null;
-  }
-
-  return `<a:custGeom><a:avLst/><a:gdLst/><a:ahLst/><a:cxnLst/><a:rect l="l" t="t" r="r" b="b"/><a:pathLst><a:path w="100000" h="100000"><a:moveTo><a:pt x="${firstPoint.x}" y="${firstPoint.y}"/></a:moveTo>${remainingPoints
-    .map((point) => `<a:lnTo><a:pt x="${point.x}" y="${point.y}"/></a:lnTo>`)
-    .join("")}<a:close/></a:path></a:pathLst></a:custGeom>`;
+function buildChartColorElement(color: string | null | undefined, opacity = 1) {
+  const normalizedHex = typeof color === "string" ? color.trim().replace(/^#/, "").toUpperCase() : "";
+  const parsed = /^[0-9A-F]{6}$/.test(normalizedHex) ? { hex: normalizedHex, alpha: 1 } : parseCssColor(color);
+  const hex = parsed?.hex ?? "000000";
+  const alpha = Math.round(clamp((parsed?.alpha ?? 1) * opacity, 0, 1) * 100000);
+  return `<a:srgbClr val="${escapeXml(hex)}">${alpha < 100000 ? `<a:alpha val="${alpha}"/>` : ""}</a:srgbClr>`;
 }
 
-function replaceShapeGeometryXml(shapeXml: string, geometryXml: string) {
-  const geometryPattern = /<a:(?:prstGeom|custGeom)\b[\s\S]*?<\/a:(?:prstGeom|custGeom)>/;
-  if (geometryPattern.test(shapeXml)) {
-    return shapeXml.replace(geometryPattern, geometryXml);
-  }
-
-  return shapeXml;
+function buildChartSolidFillXml(color: string | null | undefined, opacity = 1) {
+  return `<a:solidFill>${buildChartColorElement(color, opacity)}</a:solidFill>`;
 }
 
-function patchSlideNativeShapes(xml: string, shapes: PptxExportShapeNode[]) {
-  let nextXml = xml;
-
-  for (const shape of shapes) {
-    const objectName = escapeRegExp(escapeXml(shape.id));
-    const shapePattern = new RegExp(
-      `(<p:sp>[\\s\\S]*?<p:cNvPr\\b[^>]*\\bname="${objectName}"[^>]*>[\\s\\S]*?<p:spPr>)([\\s\\S]*?)(</p:spPr>[\\s\\S]*?</p:sp>)`,
-    );
-    nextXml = nextXml.replace(shapePattern, (_match, prefix, shapeBody, suffix) => {
-      let patchedShapeBody = shapeBody;
-      const geometryXml = buildFreeformGeometryXml(shape);
-      if (geometryXml) {
-        patchedShapeBody = replaceShapeGeometryXml(patchedShapeBody, geometryXml);
-      }
-      if (shape.paint.type === "linearGradient") {
-        patchedShapeBody = replaceShapeFillXml(patchedShapeBody, buildGradientFillXml(shape.paint));
-      }
-      return `${prefix}${patchedShapeBody}${suffix}`;
-    });
-  }
-
-  return nextXml;
-}
-
-async function patchNativeGradientFills(args: {
-  arrayBuffer: ArrayBuffer;
-  document: PptxExportDocument;
+function buildChartLineXml(args: {
+  color?: string | null;
+  widthPt?: number;
+  dash?: "solid" | "dash" | "dot" | "none";
+  fallbackColor: string;
+  fallbackWidthPt: number;
 }) {
-  const patchEntries = args.document.slides
-    .map((slide) => ({
-      slide,
-      shapes: slide.nodes.filter(
-        (node): node is PptxExportShapeNode =>
-          node.nodeType === "shape" &&
-          (node.paint.type === "linearGradient" || node.shape === "freeform"),
-      ),
-    }))
-    .filter((entry) => entry.shapes.length > 0);
-
-  if (!patchEntries.length) {
-    return new Blob([args.arrayBuffer], {
-      type: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    });
+  if (args.dash === "none") {
+    return `<a:ln w="${pointsToEmu(args.widthPt, args.fallbackWidthPt)}" cap="flat"><a:noFill/><a:prstDash val="solid"/><a:round/></a:ln>`;
   }
-
-  const zip = await JSZip.loadAsync(args.arrayBuffer);
-  await Promise.all(
-    patchEntries.map(async ({ slide, shapes }) => {
-      const slidePath = `ppt/slides/slide${slide.pageNumber}.xml`;
-      const file = zip.file(slidePath);
-      if (!file) {
-        return;
-      }
-      const xml = await file.async("string");
-      zip.file(slidePath, patchSlideNativeShapes(xml, shapes));
-    }),
-  );
-
-  return zip.generateAsync({
-    type: "blob",
-    compression: "DEFLATE",
-    mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-  });
+  return `<a:ln w="${pointsToEmu(args.widthPt, args.fallbackWidthPt)}" cap="round">${buildChartSolidFillXml(
+    args.color ?? args.fallbackColor,
+  )}<a:prstDash val="${chartDashToPreset(args.dash)}"/><a:round/></a:ln>`;
 }
 
 function downloadBlob(args: {
@@ -3737,10 +3959,16 @@ export async function exportProjectToPptx(args: {
     outputType: "arraybuffer",
     compression: true,
   })) as ArrayBuffer;
-  const pptxBlob = await patchNativeGradientFills({
+  const pptxBlob = await patchPptxPackageXml({
     arrayBuffer: rawPptx,
     document: exportDocument,
   });
+  const packageDiagnostics = await validatePptxPackageBlob(pptxBlob);
+  if (packageDiagnostics.length) {
+    const normalizedPackageDiagnostics = normalizePptxDiagnostics(packageDiagnostics);
+    const firstMessage = normalizedPackageDiagnostics[0]?.message ?? "Unknown PPTX package error.";
+    throw new Error(`PPTX package validation failed: ${firstMessage}`);
+  }
   downloadBlob({
     document: args.document,
     fileName,
