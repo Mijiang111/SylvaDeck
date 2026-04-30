@@ -870,17 +870,53 @@ function collectSemanticExportObjects(args: {
   if (expected) {
     const rendered = objects.find((object) => object.objectId === expected.objectId);
     if (!rendered) {
+      const materializedElement = findExpectedContractRootElement(args.pageElement, expected);
+      const materializedObject = exportObjectFromContract(expected, materializedElement);
+      objects.push(materializedObject);
+      byElement.set(materializedElement, materializedObject);
       args.warnings.push({
         code: "export-contract-missing",
         severity: "degraded",
         pageNumber: args.pageNumber,
-        sourceKind: "page",
+        sourceId: sourceElementIdForElement(args.pageElement, materializedElement, "export-object"),
+        sourceKind: materializedElement === args.pageElement ? "page" : "visual",
         countsAgainstQuality: true,
         exportObjectId: expected.objectId,
         exportObjectKind: expected.objectKind,
         exportRenderTarget: expected.renderTarget,
-        message: `Page ${args.pageNumber} promised export object ${expected.objectId}, but no DOM root carried matching semantic metadata.`,
+        message: `Page ${args.pageNumber} promised export object ${expected.objectId}, but no DOM root carried matching semantic metadata; export applied the report contract to the primary page region.`,
       });
+      args.warnings.push({
+        code: "export-contract-detected",
+        severity: "success",
+        pageNumber: args.pageNumber,
+        sourceId: sourceElementIdForElement(args.pageElement, materializedElement, "export-object"),
+        sourceKind:
+          expected.objectKind === "native-table"
+            ? "table"
+            : expected.objectKind === "native-chart"
+              ? "chart"
+              : "visual",
+        countsAgainstQuality: false,
+        exportObjectId: expected.objectId,
+        exportObjectKind: expected.objectKind,
+        exportRenderTarget: expected.renderTarget,
+        message: `Export contract ${expected.objectId} on page ${args.pageNumber} was materialized from the report contract.`,
+      });
+      if (expected.objectKind === "native-table" && !semanticNativeTableHasData(materializedElement)) {
+        args.warnings.push({
+          code: "export-contract-native-table-missing-data",
+          severity: "degraded",
+          pageNumber: args.pageNumber,
+          sourceId: sourceElementIdForElement(args.pageElement, materializedElement, "export-object"),
+          sourceKind: "table",
+          countsAgainstQuality: true,
+          exportObjectId: expected.objectId,
+          exportObjectKind: expected.objectKind,
+          exportRenderTarget: expected.renderTarget,
+          message: `Native-table contract ${expected.objectId} on page ${args.pageNumber} did not expose rows and columns through table metadata or a real table.`,
+        });
+      }
     } else if (rendered.objectKind !== expected.objectKind) {
       args.warnings.push({
         code: "export-contract-kind-mismatch",
@@ -894,6 +930,15 @@ function collectSemanticExportObjects(args: {
         exportRenderTarget: expected.renderTarget,
         message: `Page ${args.pageNumber} promised ${expected.objectKind} for ${expected.objectId}, but the DOM marked it as ${rendered.objectKind}.`,
       });
+      rendered.objectKind = expected.objectKind;
+      rendered.renderTarget = expected.renderTarget;
+      rendered.forbiddenInterpretation = expected.forbiddenInterpretation;
+      rendered.ownershipScope = {
+        ownsText: expected.ownershipScope.ownsText,
+        ownsShapes: expected.ownershipScope.ownsShapes,
+        ownsSvg: expected.ownershipScope.ownsSvg,
+      };
+      rendered.contract = expected;
     }
   }
 
@@ -952,6 +997,35 @@ function semanticObjectForbids(
 ) {
   const object = closestSemanticExportObject(registry, element);
   return Boolean(object?.forbiddenInterpretation.includes(interpretation));
+}
+
+export function inspectSemanticExportObjectForElement(args: {
+  pageElement: HTMLElement;
+  element: Element;
+  pageNumber: number;
+  expectedContract?: ExportObjectContract | null;
+}) {
+  const warnings: PptExportWarning[] = [];
+  const registry = collectSemanticExportObjects({
+    pageElement: args.pageElement,
+    pageNumber: args.pageNumber,
+    warnings,
+    expectedContract: args.expectedContract,
+  });
+  const object = closestSemanticExportObject(registry, args.element);
+  return {
+    warnings,
+    object: object
+      ? {
+          objectId: object.objectId,
+          objectKind: object.objectKind,
+          renderTarget: object.renderTarget,
+          forbiddenInterpretation: object.forbiddenInterpretation,
+        }
+      : null,
+    forbidsNativeTable: semanticObjectForbids(registry, args.element, "native-table"),
+    forbidsNativeChart: semanticObjectForbids(registry, args.element, "native-chart"),
+  };
 }
 
 function warnHiddenPlaceholder(plan: ExportPagePlan, element: HTMLElement) {
@@ -3511,6 +3585,127 @@ function semanticNativeTableHasData(element: HTMLElement) {
   ).some((candidate) => Boolean(readTableSpecFromElement(candidate)));
 }
 
+function exportObjectFromContract(
+  contract: ExportObjectContract,
+  element: HTMLElement,
+): SemanticExportObject {
+  return {
+    objectId: contract.objectId,
+    element,
+    objectKind: contract.objectKind,
+    renderTarget: contract.renderTarget,
+    forbiddenInterpretation: contract.forbiddenInterpretation,
+    ownershipScope: {
+      ownsText: contract.ownershipScope.ownsText,
+      ownsShapes: contract.ownershipScope.ownsShapes,
+      ownsSvg: contract.ownershipScope.ownsSvg,
+    },
+    contract,
+  };
+}
+
+function candidateArea(pageElement: HTMLElement, element: HTMLElement) {
+  const rect = measureElementRect(pageElement, element);
+  return Math.max(0, rect.w) * Math.max(0, rect.h);
+}
+
+function preferredRootScore(pageElement: HTMLElement, element: HTMLElement) {
+  const tagName = element.tagName.toLowerCase();
+  const semanticWeight =
+    tagName === "main"
+      ? 1_000_000_000
+      : element.hasAttribute("data-page-body")
+        ? 900_000_000
+        : element.hasAttribute("data-html-module-kind")
+          ? 800_000_000
+          : tagName === "figure" || tagName === "article"
+            ? 700_000_000
+            : element.hasAttribute("data-html-visual-kind")
+              ? 600_000_000
+              : 0;
+  return semanticWeight + candidateArea(pageElement, element);
+}
+
+function largestPrimaryElement(pageElement: HTMLElement, selector: string) {
+  const candidates = Array.from(pageElement.querySelectorAll<HTMLElement>(selector))
+    .filter((element) => {
+      const area = candidateArea(pageElement, element);
+      return area > 0 && element !== pageElement;
+    })
+    .sort(
+      (left, right) =>
+        preferredRootScore(pageElement, right) - preferredRootScore(pageElement, left),
+    );
+  return candidates[0] ?? null;
+}
+
+function findExpectedContractRootElement(
+  pageElement: HTMLElement,
+  contract: ExportObjectContract,
+) {
+  if (contract.objectKind === "native-chart") {
+    return (
+      largestPrimaryElement(
+        pageElement,
+        [
+          '[data-html-module-kind="chart"]',
+          `[${HTML_CHART_SPEC_ATTRIBUTE}]`,
+          '[data-html-visual-kind="chart-frame"]',
+          "[data-export-chart]",
+          "main",
+          "[data-page-body]",
+        ].join(","),
+      ) ?? pageElement
+    );
+  }
+  if (contract.objectKind === "native-table") {
+    return (
+      largestPrimaryElement(
+        pageElement,
+        [
+          `[${HTML_TABLE_SPEC_ATTRIBUTE}]`,
+          `[data-html-module-kind="${TABLE_MODULE_KIND}"]`,
+          "table",
+          "main",
+          "[data-page-body]",
+        ].join(","),
+      ) ?? pageElement
+    );
+  }
+  if (contract.objectKind === "diagram") {
+    return (
+      largestPrimaryElement(
+        pageElement,
+        [
+          "[data-html-diagram-spec]",
+          '[data-html-module-kind="scientific-diagram"]',
+          '[data-html-visual-kind="structured-diagram"]',
+          "main",
+          "[data-page-body]",
+          "figure",
+          "article",
+          "div",
+        ].join(","),
+      ) ?? pageElement
+    );
+  }
+  return (
+    largestPrimaryElement(
+      pageElement,
+      [
+        "main",
+        "[data-page-body]",
+        "figure",
+        "article",
+        "[data-html-module-kind]",
+        "[data-html-visual-kind]",
+        "section",
+        "div",
+      ].join(","),
+    ) ?? pageElement
+  );
+}
+
 function normalizeTableRows(spec: HtmlTableSpec) {
   const columnCount = Math.max(spec.columns.length, ...spec.rows.map((row) => row.length), 1);
   const bodyRows = spec.rows.map((row) =>
@@ -4597,6 +4792,45 @@ function findExpectedExportObjectContract(
   );
 }
 
+function warnIfExpectedRenderTargetMissing(args: {
+  expectedContract?: ExportObjectContract | null;
+  pageNumber: number;
+  warnings: PptExportWarning[];
+  chartNodes: PptExportChartModel[];
+  tableNodes: PptExportTableModel[];
+}) {
+  const expected = args.expectedContract;
+  if (!expected) {
+    return;
+  }
+  if (expected.renderTarget === "native-chart" && args.chartNodes.length === 0) {
+    args.warnings.push({
+      code: "export-contract-render-target-missing",
+      severity: "degraded",
+      pageNumber: args.pageNumber,
+      sourceKind: "chart",
+      countsAgainstQuality: true,
+      exportObjectId: expected.objectId,
+      exportObjectKind: expected.objectKind,
+      exportRenderTarget: expected.renderTarget,
+      message: `Export contract ${expected.objectId} promised a native chart on page ${args.pageNumber}, but no PPTX chart object was produced.`,
+    });
+  }
+  if (expected.renderTarget === "native-table" && args.tableNodes.length === 0) {
+    args.warnings.push({
+      code: "export-contract-render-target-missing",
+      severity: "degraded",
+      pageNumber: args.pageNumber,
+      sourceKind: "table",
+      countsAgainstQuality: true,
+      exportObjectId: expected.objectId,
+      exportObjectKind: expected.objectKind,
+      exportRenderTarget: expected.renderTarget,
+      message: `Export contract ${expected.objectId} promised a native table on page ${args.pageNumber}, but no PPTX table object was produced.`,
+    });
+  }
+}
+
 function normalizeSlideModel(args: {
   project: WorkbenchProject;
   draft: WorkbenchDraft;
@@ -4621,6 +4855,10 @@ function normalizeSlideModel(args: {
     });
   }
 
+  const expectedExportObjectContract = findExpectedExportObjectContract(
+    args.htmlReport,
+    pageNumber,
+  );
   const annotations = collectExportAnnotations({
     frame: args.frame,
     pageVisualStyle,
@@ -4628,10 +4866,14 @@ function normalizeSlideModel(args: {
     scene: pageDraft?.scene,
     warnings,
     pageNumber,
-    expectedExportObjectContract: findExpectedExportObjectContract(
-      args.htmlReport,
-      pageNumber,
-    ),
+    expectedExportObjectContract,
+  });
+  warnIfExpectedRenderTargetMissing({
+    expectedContract: expectedExportObjectContract,
+    pageNumber,
+    warnings,
+    chartNodes: annotations.chartNodes,
+    tableNodes: annotations.tableNodes,
   });
 
   const slide: PptExportSlideModel = {

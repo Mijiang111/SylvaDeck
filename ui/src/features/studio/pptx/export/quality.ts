@@ -57,6 +57,7 @@ function defaultDiagnosticSeverity(diagnostic: Pick<PptExportDiagnostic, "code">
     case "export-contract-forbidden-violation":
     case "export-contract-native-table-missing-data":
     case "export-contract-duplicate-ownership":
+    case "export-contract-render-target-missing":
       return "degraded";
     case "hybrid-chart-exported":
     case "visual-clipped":
@@ -429,7 +430,8 @@ function pageReportForSlide(
         issue.code === "export-contract-kind-mismatch" ||
         issue.code === "export-contract-forbidden-violation" ||
         issue.code === "export-contract-native-table-missing-data" ||
-        issue.code === "export-contract-duplicate-ownership",
+        issue.code === "export-contract-duplicate-ownership" ||
+        issue.code === "export-contract-render-target-missing",
     ).length,
     issues,
   };
@@ -521,7 +523,8 @@ export function buildPptxExportQualityReport(document: PptxExportDocument): Pptx
       diagnostic.code === "export-contract-kind-mismatch" ||
       diagnostic.code === "export-contract-forbidden-violation" ||
       diagnostic.code === "export-contract-native-table-missing-data" ||
-      diagnostic.code === "export-contract-duplicate-ownership"
+      diagnostic.code === "export-contract-duplicate-ownership" ||
+      diagnostic.code === "export-contract-render-target-missing"
     ) {
       exportContractViolationCount += 1;
       if (diagnostic.exportObjectKind) {

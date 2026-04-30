@@ -36,6 +36,7 @@ export type PptExportDiagnosticCode =
   | "export-contract-forbidden-violation"
   | "export-contract-native-table-missing-data"
   | "export-contract-duplicate-ownership"
+  | "export-contract-render-target-missing"
   | "chart-native-unsupported"
   | "chart-image-fallback"
   | "table-native-unsupported"

@@ -17,12 +17,13 @@ import {
   buildPptxExportDocument,
   buildPptxExportQualityReport,
 } from "./pptx/export/quality";
+import { inspectSemanticExportObjectForElement } from "./pptx/export-pptx";
 import {
   buildExportChartContractFromSpec,
   classifyUnstructuredChartElement,
 } from "./pptx/export/recognition/chart";
 import { normalizeChartNativeStyle, normalizeChartSeriesStyle, parseCssColor } from "./pptx/export/style";
-import type { HtmlChartSpec } from "./types";
+import type { ExportObjectContract, HtmlChartSpec } from "./types";
 
 test("pptx export pipeline declares the canonical phase order and boundary rules", () => {
   assert.deepEqual(
@@ -306,13 +307,70 @@ test("quality report summarizes semantic export contract diagnostics", () => {
         exportObjectKind: "matrix",
         exportRenderTarget: "editable-shapes",
       },
+      {
+        code: "export-contract-render-target-missing",
+        pageNumber: 1,
+        message: "Native chart target was not produced.",
+        exportObjectId: "p1-primary-chart",
+        exportObjectKind: "native-chart",
+        exportRenderTarget: "native-chart",
+      },
     ],
   });
   const report = buildPptxExportQualityReport(document);
 
   assert.equal(report.exportContracts.candidateCount, 1);
-  assert.equal(report.exportContracts.violationCount, 1);
+  assert.equal(report.exportContracts.violationCount, 2);
   assert.equal(report.exportContracts.byKind.matrix, 2);
+  assert.equal(report.exportContracts.byKind["native-chart"], 1);
   assert.equal(report.pages[0]?.exportContractCandidateCount, 1);
-  assert.equal(report.pages[0]?.exportContractViolationCount, 1);
+  assert.equal(report.pages[0]?.exportContractViolationCount, 2);
+});
+
+test("semantic export contract materializes from report contract when DOM metadata is missing", () => {
+  if (typeof DOMParser === "undefined") {
+    return;
+  }
+  const document = new DOMParser().parseFromString(
+    `<section class="page" data-page-number="1" data-page-title="Matrix"><main><table><tr><td>A</td><td>B</td></tr><tr><td>C</td><td>D</td></tr></table></main></section>`,
+    "text/html",
+  );
+  const pageElement = document.querySelector("section") as HTMLElement;
+  const tableElement = document.querySelector("table") as HTMLElement;
+  const expectedContract: ExportObjectContract = {
+    objectId: "p1-primary-matrix",
+    pageNumber: 1,
+    pageStory: "Compare strategic options without exporting a native table.",
+    primaryVisualObject: "2x2 matrix",
+    objectKind: "matrix",
+    dataContract: { expected: "matrix-object", nativeTableAllowed: false },
+    renderTarget: "editable-shapes",
+    ownershipScope: {
+      rootId: "p1-primary-matrix",
+      ownsText: true,
+      ownsShapes: true,
+      ownsSvg: true,
+      childRoles: ["axis", "quadrant", "cell"],
+    },
+    forbiddenInterpretation: ["native-table"],
+  };
+
+  const inspection = inspectSemanticExportObjectForElement({
+    pageElement,
+    element: tableElement,
+    pageNumber: 1,
+    expectedContract,
+  });
+
+  assert.equal(inspection.object?.objectId, "p1-primary-matrix");
+  assert.equal(inspection.object?.objectKind, "matrix");
+  assert.equal(inspection.forbidsNativeTable, true);
+  assert.equal(
+    inspection.warnings.some((warning) => warning.code === "export-contract-missing"),
+    true,
+  );
+  assert.equal(
+    inspection.warnings.some((warning) => warning.code === "export-contract-detected"),
+    true,
+  );
 });
