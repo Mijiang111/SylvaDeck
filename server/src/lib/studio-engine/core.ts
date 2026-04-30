@@ -202,6 +202,7 @@ const publishedModuleManifestCache = new Map<string, PublishedModuleManifest[]>(
 async function runStudioPreflightStage(args: {
   brief: string;
   requestedPageCount?: number | null;
+  exportContract?: DeckExportContract | null;
   agentConfig: StudioAgentConfig;
   runId: string;
   signal?: AbortSignal;
@@ -215,14 +216,17 @@ async function runStudioPreflightStage(args: {
     stage: "preflight",
     label: "Routing the task contract",
   });
+  const requestedPageCount =
+    args.requestedPageCount ?? args.exportContract?.pages.length ?? null;
   const route = resolveStudioTaskRoute({
     brief: args.brief,
-    requestedPageCount: args.requestedPageCount,
+    requestedPageCount,
   });
   const preflight = buildDeterministicStudioPreflightPlan({
     brief: args.brief,
-    requestedPageCount: args.requestedPageCount,
+    requestedPageCount,
     route,
+    exportContract: args.exportContract,
   });
   await emit({
     type: "assistant_chunk",
@@ -1106,6 +1110,18 @@ export function isLongFormGenerationRequest(
   payload: Pick<GenerateStudioReportRequest, "generationMode" | "pageCount">,
 ) {
   return payload.generationMode === "long-form" || (payload.pageCount ?? 0) >= 10;
+}
+
+function normalizeGenerateRequestPayloadPageCount(
+  payload: GenerateStudioReportRequest,
+): GenerateStudioReportRequest {
+  if (payload.pageCount !== undefined || !payload.exportContract?.pages.length) {
+    return payload;
+  }
+  return {
+    ...payload,
+    pageCount: payload.exportContract.pages.length,
+  };
 }
 
 function resolveLongFormPageClass(pageNumber: number, pageCount: number): LongFormPageClass {
@@ -5265,6 +5281,14 @@ export async function runStudioGenerationV2(args: {
   evalOverrides?: StudioEvalOverrides | null;
   onStageTrace?: (entry: StudioStageTraceEntry) => Promise<void> | void;
 }) {
+  const normalizedPayload = normalizeGenerateRequestPayloadPageCount(args.payload);
+  if (normalizedPayload !== args.payload) {
+    return runStudioGenerationV2({
+      ...args,
+      payload: normalizedPayload,
+    });
+  }
+
   const emit = args.emit ?? (async () => {});
   const analysisSkill = loadStudioAnalysisSkill();
   const heroSkill = loadStudio3dHeroSkill();
@@ -5281,6 +5305,7 @@ export async function runStudioGenerationV2(args: {
   const preflight = await runStudioPreflightStage({
     brief: args.payload.brief,
     requestedPageCount: args.payload.pageCount ?? null,
+    exportContract: args.payload.exportContract ?? null,
     agentConfig: args.agentConfig,
     runId: args.runId,
     signal: args.signal,
@@ -5986,12 +6011,21 @@ export async function runStudioGenerationV1(args: {
   evalOverrides?: StudioEvalOverrides | null;
   onStageTrace?: (entry: StudioStageTraceEntry) => Promise<void> | void;
 }) {
+  const normalizedPayload = normalizeGenerateRequestPayloadPageCount(args.payload);
+  if (normalizedPayload !== args.payload) {
+    return runStudioGenerationV1({
+      ...args,
+      payload: normalizedPayload,
+    });
+  }
+
   const emit = args.emit ?? (async () => {});
   const analysisSkill = loadStudioAnalysisSkill();
   const heroSkill = loadStudio3dHeroSkill();
   const preflight = await runStudioPreflightStage({
     brief: args.payload.brief,
     requestedPageCount: args.payload.pageCount ?? null,
+    exportContract: args.payload.exportContract ?? null,
     agentConfig: args.agentConfig,
     runId: args.runId,
     signal: args.signal,
@@ -6327,8 +6361,16 @@ export async function runStudioGeneration(args: {
   evalOverrides?: StudioEvalOverrides | null;
   onStageTrace?: (entry: StudioStageTraceEntry) => Promise<void> | void;
 }) {
+  const normalizedPayload = normalizeGenerateRequestPayloadPageCount(args.payload);
+  const normalizedArgs =
+    normalizedPayload === args.payload
+      ? args
+      : {
+          ...args,
+          payload: normalizedPayload,
+        };
   try {
-    return await runStudioGenerationV2(args);
+    return await runStudioGenerationV2(normalizedArgs);
   } catch (error) {
     if (isStudioAbortError(error)) {
       throw error;
@@ -6370,7 +6412,7 @@ export async function runStudioGeneration(args: {
       });
     }
 
-    const fallbackResult = await runStudioGenerationV1(args);
+    const fallbackResult = await runStudioGenerationV1(normalizedArgs);
     return {
       ...fallbackResult,
       enginePath: "v1-fallback" as const,

@@ -8,6 +8,43 @@ import {
   buildPreflightEvidenceInput,
   resolveStudioTaskRoute,
 } from "./preflight.js";
+import { generateStudioReportRequestSchema, type DeckExportContract } from "./schemas.js";
+
+function buildExternalMatrixExportContract(pageCount = 1): DeckExportContract {
+  return {
+    version: 1,
+    pages: Array.from({ length: pageCount }, (_, index) => {
+      const pageNumber = index + 1;
+      const objectId = `p${pageNumber}-external-matrix`;
+      return {
+        pageNumber,
+        pageStory: `External story ${pageNumber}`,
+        primaryVisualObject: "Externally supplied matrix",
+        objects: [
+          {
+            objectId,
+            pageNumber,
+            pageStory: `External story ${pageNumber}`,
+            primaryVisualObject: "Externally supplied matrix",
+            objectKind: "matrix",
+            dataContract: {
+              expected: "external-matrix",
+            },
+            renderTarget: "editable-shapes",
+            ownershipScope: {
+              rootId: objectId,
+              ownsText: true,
+              ownsShapes: true,
+              ownsSvg: true,
+              childRoles: ["row", "column", "cell"],
+            },
+            forbiddenInterpretation: ["native-table"],
+          },
+        ],
+      };
+    }),
+  };
+}
 
 test("router extracts a Chinese five-page blueprint without calling AI preflight", () => {
   const brief = `把腾讯的分析做成 5 页PPT。
@@ -146,6 +183,156 @@ Page 6: Use a matrix-first recommendation page to show where investment should f
   assert.equal(plan.exportContract.pages[3]?.objects[0]?.objectKind, "native-table");
   assert.equal(plan.exportContract.pages[5]?.objects[0]?.objectKind, "matrix");
   assert.deepEqual(plan.exportContract.pages[5]?.objects[0]?.forbiddenInterpretation, ["native-table"]);
+});
+
+test("generate request schema accepts a valid explicit export contract", () => {
+  const exportContract = buildExternalMatrixExportContract(1);
+  const payload = generateStudioReportRequestSchema.parse({
+    brief: "Create one page about a market matrix.",
+    exportContract,
+  });
+
+  assert.deepEqual(payload.exportContract, exportContract);
+  assert.equal(payload.pageCount, undefined);
+});
+
+test("external export contract wins over inferred primary object kind", () => {
+  const exportContract = buildExternalMatrixExportContract(1);
+  const plan = buildDeterministicStudioPreflightPlan({
+    brief: "Create a one-page native bar chart comparing revenue by segment.",
+    requestedPageCount: 1,
+    exportContract,
+  });
+
+  assert.equal(plan.route.capabilities.chart, true);
+  assert.equal(plan.exportContract.pages[0]?.objects[0]?.objectKind, "matrix");
+  assert.equal(plan.exportContract.pages[0]?.objects[0]?.renderTarget, "editable-shapes");
+  assert.deepEqual(plan.exportContract.pages[0]?.objects[0]?.forbiddenInterpretation, [
+    "native-table",
+  ]);
+  assert.deepEqual(plan.exportContract, exportContract);
+});
+
+test("external export contract supplies the requested page count when omitted", () => {
+  const exportContract = buildExternalMatrixExportContract(2);
+  const plan = buildDeterministicStudioPreflightPlan({
+    brief: "Create a concise deck about market position.",
+    exportContract,
+  });
+
+  assert.equal(plan.pageCount, 2);
+  assert.equal(plan.pageMissions.length, 2);
+  assert.equal(plan.exportContract.pages.length, 2);
+});
+
+test("external export contract page count mismatch throws clearly", () => {
+  assert.throws(
+    () =>
+      buildDeterministicStudioPreflightPlan({
+        brief: "Create a two-page chart deck.",
+        requestedPageCount: 2,
+        exportContract: buildExternalMatrixExportContract(1),
+      }),
+    /External exportContract page count mismatch: expected 2, received 1\./,
+  );
+});
+
+test("external export contract coverage errors throw clearly", () => {
+  const duplicatePageContract = buildExternalMatrixExportContract(2);
+  duplicatePageContract.pages[1] = {
+    ...duplicatePageContract.pages[1]!,
+    pageNumber: 1,
+    objects: duplicatePageContract.pages[1]!.objects.map((object) => ({
+      ...object,
+      pageNumber: 1,
+    })),
+  };
+  assert.throws(
+    () =>
+      buildDeterministicStudioPreflightPlan({
+        brief: "Create a two-page deck.",
+        requestedPageCount: 2,
+        exportContract: duplicatePageContract,
+      }),
+    /External exportContract has duplicate page number 1\./,
+  );
+
+  const missingPageContract = buildExternalMatrixExportContract(2);
+  missingPageContract.pages[1] = {
+    ...missingPageContract.pages[1]!,
+    pageNumber: 3,
+    objects: missingPageContract.pages[1]!.objects.map((object) => ({
+      ...object,
+      pageNumber: 3,
+    })),
+  };
+  assert.throws(
+    () =>
+      buildDeterministicStudioPreflightPlan({
+        brief: "Create a two-page deck.",
+        requestedPageCount: 2,
+        exportContract: missingPageContract,
+      }),
+    /External exportContract missing page coverage for page\(s\): 2\./,
+  );
+
+  const objectMismatchContract = buildExternalMatrixExportContract(1);
+  objectMismatchContract.pages[0] = {
+    ...objectMismatchContract.pages[0]!,
+    objects: objectMismatchContract.pages[0]!.objects.map((object) => ({
+      ...object,
+      pageNumber: 2,
+    })),
+  };
+  assert.throws(
+    () =>
+      buildDeterministicStudioPreflightPlan({
+        brief: "Create one page.",
+        requestedPageCount: 1,
+        exportContract: objectMismatchContract,
+      }),
+    /External exportContract object p1-external-matrix declares pageNumber 2 but belongs to page 1\./,
+  );
+});
+
+test("page prompt uses metadata rules from an external export contract", () => {
+  const rawBrief = "Create a one-page native chart comparing revenue by segment.";
+  const exportContract = buildExternalMatrixExportContract(1);
+  const preflight = buildDeterministicStudioPreflightPlan({
+    brief: rawBrief,
+    requestedPageCount: 1,
+    exportContract,
+  });
+  const preparation = resolveStudioGenerationPreparation({
+    brief: rawBrief,
+    requestedPageCount: 1,
+  });
+  const styleProfile = resolveDeckStyleProfile({
+    brief: rawBrief,
+  }).profile;
+  const page = {
+    pageNumber: 1,
+    pageTitle: "Revenue matrix",
+    goal: "Compare segment positions.",
+    story: "Segment positions should be shown as a matrix.",
+  };
+
+  const prompt = buildPagePrompt({
+    brief: rawBrief,
+    deckTitle: "Revenue matrix",
+    page,
+    allPages: [page],
+    styleProfile,
+    thinkingContext: preparation.thinkingContext,
+    briefSynthesis: preparation.briefSynthesis,
+    complexityProfile: preparation.complexityProfile,
+    preflight,
+  });
+
+  assert.match(prompt, /Primary export object contract: objectId=p1-external-matrix; semantic kind=matrix/);
+  assert.match(prompt, /data-export-object-id="p1-external-matrix"/);
+  assert.match(prompt, /data-semantic-kind="matrix"/);
+  assert.match(prompt, /data-forbidden-export="native-table"/);
 });
 
 test("explicit page blueprint preserves quoted page titles ahead of chart fallbacks", () => {

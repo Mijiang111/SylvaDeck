@@ -157,7 +157,7 @@ export const pageExportContractSchema = z.object({
 });
 export const deckExportContractSchema = z.object({
   version: z.literal(1),
-  pages: z.array(pageExportContractSchema).max(200),
+  pages: z.array(pageExportContractSchema).min(1).max(200),
 });
 export const pageOverflowCauseSchema = z.enum([
   "title",
@@ -302,20 +302,22 @@ export const generateStudioReportRequestSchema = z
     generationMode: generationModeSchema.optional().default("standard"),
     moduleUsageMode: moduleUsageModeSchema.optional().default("disabled"),
     htmlOutputMode: htmlOutputModeSchema.optional().default("static"),
+    exportContract: deckExportContractSchema.optional(),
     agentConfig: agentConfigSchema.optional().default({}),
     publishedModules: z.array(publishedModuleManifestSchema).max(200).optional().default([]),
     moduleManifestSignature: z.string().max(10_000).optional().default(""),
     attachments: z.array(fileContextSchema).max(20).optional().default([]),
   })
   .superRefine((payload, ctx) => {
+    const effectivePageCount = payload.pageCount ?? payload.exportContract?.pages.length;
     if (
       payload.generationMode === "long-form" &&
-      payload.pageCount !== undefined &&
-      (payload.pageCount < 10 || payload.pageCount > 12)
+      effectivePageCount !== undefined &&
+      (effectivePageCount < 10 || effectivePageCount > 12)
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ["pageCount"],
+        path: payload.pageCount !== undefined ? ["pageCount"] : ["exportContract", "pages"],
         message: "Long-form mode requires pageCount between 10 and 12.",
       });
     }

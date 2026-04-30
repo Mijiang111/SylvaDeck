@@ -31,9 +31,17 @@ import {
 } from "./brief.js";
 import { buildStudioWorkingMemory } from "./working-memory.js";
 import { extractRequestedDeckPageCount } from "./page-count.js";
+import { deckExportContractSchema } from "./schemas.js";
 
 function detectRequestedPageCount(brief: string, requestedPageCount?: number | null) {
   return extractRequestedDeckPageCount(brief, requestedPageCount) ?? 1;
+}
+
+function resolveRequestedPageCountForExportContract(args: {
+  requestedPageCount?: number | null;
+  exportContract?: DeckExportContract | null;
+}) {
+  return args.requestedPageCount ?? args.exportContract?.pages.length ?? null;
 }
 
 function createEmptySourceWeightProfile(brief: string) {
@@ -1396,23 +1404,75 @@ function buildDeckExportContract(args: {
   };
 }
 
+export function resolveExternalDeckExportContract(args: {
+  external?: DeckExportContract | null;
+  inferred: DeckExportContract;
+  pageCount: number;
+}): DeckExportContract {
+  if (!args.external) {
+    return args.inferred;
+  }
+
+  const external = deckExportContractSchema.parse(args.external);
+  if (external.pages.length !== args.pageCount) {
+    throw new Error(
+      `External exportContract page count mismatch: expected ${args.pageCount}, received ${external.pages.length}.`,
+    );
+  }
+
+  const seenPageNumbers = new Set<number>();
+  for (const page of external.pages) {
+    if (seenPageNumbers.has(page.pageNumber)) {
+      throw new Error(`External exportContract has duplicate page number ${page.pageNumber}.`);
+    }
+    seenPageNumbers.add(page.pageNumber);
+
+    for (const object of page.objects) {
+      if (object.pageNumber !== page.pageNumber) {
+        throw new Error(
+          `External exportContract object ${object.objectId} declares pageNumber ${object.pageNumber} but belongs to page ${page.pageNumber}.`,
+        );
+      }
+    }
+  }
+
+  const missingPageNumbers: number[] = [];
+  for (let pageNumber = 1; pageNumber <= args.pageCount; pageNumber += 1) {
+    if (!seenPageNumbers.has(pageNumber)) {
+      missingPageNumbers.push(pageNumber);
+    }
+  }
+  if (missingPageNumbers.length > 0) {
+    throw new Error(
+      `External exportContract missing page coverage for page(s): ${missingPageNumbers.join(", ")}.`,
+    );
+  }
+
+  return external;
+}
+
 export function buildDeterministicStudioPreflightPlan(args: {
   brief: string;
   requestedPageCount?: number | null;
   route?: StudioTaskRoute | null;
+  exportContract?: DeckExportContract | null;
 }): StudioPreflightPlan {
   const rawInputs = createRawBriefThinkingInputs(args.brief);
+  const requestedPageCount = resolveRequestedPageCountForExportContract({
+    requestedPageCount: args.requestedPageCount,
+    exportContract: args.exportContract,
+  });
   const workingMemory = buildStudioWorkingMemory({
     brief: args.brief,
     inputs: rawInputs,
-    requestedPageCount: args.requestedPageCount,
+    requestedPageCount,
   });
-  const pageCount = detectRequestedPageCount(args.brief, args.requestedPageCount);
+  const pageCount = detectRequestedPageCount(args.brief, requestedPageCount);
   const route =
     args.route ??
     resolveStudioTaskRoute({
       brief: args.brief,
-      requestedPageCount: args.requestedPageCount,
+      requestedPageCount,
     });
   const evidenceTier: StudioEvidenceTier =
     route.capabilities.sourceBacked
@@ -1441,9 +1501,14 @@ export function buildDeterministicStudioPreflightPlan(args: {
     inputPageMissions: deterministicPageMissions,
     deterministicPageMissions,
   });
-  const exportContract = buildDeckExportContract({
+  const inferredExportContract = buildDeckExportContract({
     pageMissions,
     route,
+  });
+  const exportContract = resolveExternalDeckExportContract({
+    external: args.exportContract,
+    inferred: inferredExportContract,
+    pageCount,
   });
 
   return {

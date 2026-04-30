@@ -4,6 +4,7 @@ import { inferRequestedHtmlPageCount } from "./page-count";
 import {
   applyDeterministicTitleRepairToReport,
   consumeStudioStreamResponse,
+  createGenerationRequestPayload,
   didPageReviewImprove,
   resolvePageReviewDecision,
   resolveGenerationIntent,
@@ -193,6 +194,49 @@ test("resolveGenerationIntent preserves animated preview mode before first gener
   assert.equal(intent.requestedPageCount, 4);
 });
 
+test("createGenerationRequestPayload forwards explicit export contracts", () => {
+  const exportContract = {
+    version: 1,
+    pages: [
+      {
+        pageNumber: 1,
+        pageStory: "External matrix story",
+        primaryVisualObject: "Market matrix",
+        objects: [
+          {
+            objectId: "p1-external-matrix",
+            pageNumber: 1,
+            pageStory: "External matrix story",
+            primaryVisualObject: "Market matrix",
+            objectKind: "matrix",
+            dataContract: {
+              expected: "matrix-object",
+            },
+            renderTarget: "editable-shapes",
+            ownershipScope: {
+              rootId: "p1-external-matrix",
+              ownsText: true,
+              ownsShapes: true,
+              ownsSvg: true,
+              childRoles: ["cell"],
+            },
+            forbiddenInterpretation: ["native-table"],
+          },
+        ],
+      },
+    ],
+  } as const;
+
+  const payload = createGenerationRequestPayload("Build a market matrix.", undefined, {
+    requestedPageCount: null,
+    suppressInferredPageCount: true,
+    exportContract,
+  });
+
+  assert.deepEqual(payload.exportContract, exportContract);
+  assert.equal(payload.pageCount, undefined);
+});
+
 test("resolvePageReviewDecision softens density-only failures for short decks", () => {
   const decision = resolvePageReviewDecision(
     createMeasurement({
@@ -288,7 +332,9 @@ test("didPageReviewImprove detects reduced hard-fail pressure after a repair pas
   assert.equal(improved, true);
 });
 
-test("applyDeterministicTitleRepairToReport replaces leaked prompt titles with page evidence", () => {
+(typeof DOMParser === "undefined" ? test.skip : test)(
+  "applyDeterministicTitleRepairToReport replaces leaked prompt titles with page evidence",
+  () => {
   const repaired = applyDeterministicTitleRepairToReport({
     report: {
       title: "Title cleanup fixture",

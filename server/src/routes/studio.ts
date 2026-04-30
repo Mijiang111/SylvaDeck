@@ -33,6 +33,18 @@ import {
   loadStudioLayoutRepairSkill,
 } from "../lib/studio-engine/skills.js";
 
+function normalizeGenerateRequestPageCount(
+  payload: GenerateStudioReportRequest,
+): GenerateStudioReportRequest {
+  if (payload.pageCount !== undefined || !payload.exportContract?.pages.length) {
+    return payload;
+  }
+  return {
+    ...payload,
+    pageCount: payload.exportContract.pages.length,
+  };
+}
+
 export function studioRoutes() {
   loadStudioAnalysisSkill();
   loadStudioLayoutRepairSkill();
@@ -85,7 +97,7 @@ export function studioRoutes() {
   });
 
   router.post("/studio/generate-html", validate(generateStudioReportRequestSchema), async (req, res) => {
-    const payload = req.body as GenerateStudioReportRequest;
+    const payload = normalizeGenerateRequestPageCount(req.body as GenerateStudioReportRequest);
     const compactedBrief = compactBriefForGeneration(
       payload.brief,
       isLongFormGenerationRequest(payload) ? 24_000 : 12_000,
@@ -195,7 +207,7 @@ export function studioRoutes() {
   });
 
   router.post("/studio/generate-html/stream", validate(generateStudioReportRequestSchema), async (req, res) => {
-    const payload = req.body as GenerateStudioReportRequest;
+    const payload = normalizeGenerateRequestPageCount(req.body as GenerateStudioReportRequest);
     const compactedBrief = compactBriefForGeneration(
       payload.brief,
       isLongFormGenerationRequest(payload) ? 24_000 : 12_000,
