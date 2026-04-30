@@ -43,6 +43,30 @@ export function useStudioTranscriptState(args: UseStudioTranscriptStateArgs) {
     [setStreamUi],
   );
 
+  const appendUniqueStreamTranscript = useCallback(
+    (text: string) => {
+      const normalized = text.trim();
+      if (!normalized) {
+        return;
+      }
+
+      setStreamUi((current) => {
+        const existingLines = current.transcriptTarget
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean);
+        if (existingLines.includes(normalized)) {
+          return current;
+        }
+        return {
+          ...current,
+          transcriptTarget: `${current.transcriptTarget}${current.transcriptTarget ? "\n" : ""}${normalized}`,
+        };
+      });
+    },
+    [setStreamUi],
+  );
+
   const initializeStreamPlaceholders = useCallback(
     (pageTitles: string[], deckTitle: string) => {
       setStreamUi((current) => ({
@@ -88,27 +112,21 @@ export function useStudioTranscriptState(args: UseStudioTranscriptStateArgs) {
               : current.deckTitle,
         }));
         if (event.stage === "planning") {
-          appendStreamTranscript("[Planning]");
+          return;
         }
         if (event.stage === "evidence") {
-          appendStreamTranscript("[Evidence graph]");
+          return;
         }
         if (event.stage === "modules") {
-          appendStreamTranscript("[Published modules]");
+          return;
         }
         if (event.stage === "pages" && event.pageTitles?.length) {
           initializeStreamPlaceholders(event.pageTitles, projectName ?? "Streaming preview");
-        }
-        if (event.stage.startsWith("page-recipe-")) {
-          appendStreamTranscript(
-            `[Page ${event.pageNumber ?? event.stage.replace("page-recipe-", "")}]`,
-          );
         }
         return;
       }
 
       if (event.type === "assistant_chunk") {
-        appendStreamTranscript(event.content);
         return;
       }
 
@@ -135,6 +153,7 @@ export function useStudioTranscriptState(args: UseStudioTranscriptStateArgs) {
           ) satisfies StreamPreviewPageState[],
         }));
         setCurrentCanvasPageId(String(event.pageNumber));
+        appendUniqueStreamTranscript(`Page ${event.pageNumber}: ${event.pageTitle}`);
         return;
       }
 
@@ -209,6 +228,7 @@ export function useStudioTranscriptState(args: UseStudioTranscriptStateArgs) {
       }
     },
     [
+      appendUniqueStreamTranscript,
       appendStreamTranscript,
       initializeStreamPlaceholders,
       projectName,

@@ -73,6 +73,18 @@ test("working memory supports compare tasks without collapsing into a single gen
   assert.match(memory.primaryObject, /Codex vs Claude/i);
 });
 
+test("working memory honors explicit Subject lines before broad task extraction", () => {
+  const brief = `Task: Create a 5-page English PPTX-style investment-analysis deck about Tencent Holdings (0700.HK).
+Subject: Tencent Holdings (0700.HK).
+Source constraint: Use only observed facts.
+Page 1: "Tencent is a BBM V2 compounder" Story claim: focus the opener.`;
+  const memory = resolveWorkingMemory(brief, 5);
+
+  assert.equal(memory.primaryObject, "Tencent Holdings (0700.HK)");
+  assert.equal(memory.slotConfidence.primaryObject, "high");
+  assert.doesNotMatch(memory.primaryObject, /Page 1|Source constraint|Task:/i);
+});
+
 test("acceptance checks fail when the audience bar leaks into the primary object", () => {
   const invalidMemory = {
     rawBrief: "placeholder",

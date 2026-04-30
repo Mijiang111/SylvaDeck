@@ -120,6 +120,8 @@ test("page workspace stays raw-brief-first and disableLayoutPlanningBlock suppre
   assert.match(basePrompt, /## Active capability cards/);
   assert.equal(basePrompt.includes("## Layout strategy"), false);
   assert.equal(basePrompt.includes("## Private layout plan"), false);
+  assert.match(basePrompt, /institutional evidence-page composition/);
+  assert.match(basePrompt, /Do not render meta-copy such as page thesis/);
   assert.doesNotMatch(disabledPrompt, /## Layout strategy/);
   assert.doesNotMatch(disabledPrompt, /## Private layout plan/);
   assert.match(disabledPrompt, /## AI understanding/);

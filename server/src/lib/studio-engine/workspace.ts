@@ -144,6 +144,9 @@ function buildWorkspaceMeta(
     preflightEvidenceTier: workspace.preflight?.evidencePolicy.tier ?? null,
     preflightIncludes3dActivation:
       workspace.preflight?.capabilityActivations.some((item) => item.kind === "3d") ?? false,
+    preflightRouteKind: workspace.preflight?.route.primaryKind ?? null,
+    preflightRouteConfidence: workspace.preflight?.route.confidence ?? null,
+    preflightWorkspaceMode: workspace.preflight?.route.workspaceMode ?? null,
   };
 }
 
@@ -292,6 +295,20 @@ export function createPageMissionWorkspaceBlock(args: {
 }
 
 function createRawBriefWorkspaceBlock(preflight: StudioPreflightPlan): StudioAiWorkspaceBlock {
+  if (preflight.route.workspaceMode === "page-scoped") {
+    return {
+      id: "raw-brief",
+      title: "Raw brief",
+      lines: [
+        "The full raw brief stays preserved server-side; this renderer prompt receives the routed page-scoped contract.",
+        `Task route: ${preflight.route.primaryKind} (${preflight.route.confidence}).`,
+        `Route reasons: ${preflight.route.reasonCodes.join(", ") || "none"}.`,
+        "Do not invent facts outside the page mission, evidence notes, or explicit route constraints.",
+      ],
+      rawText: null,
+    };
+  }
+
   return {
     id: "raw-brief",
     title: "Raw brief",
@@ -310,6 +327,7 @@ function createAiUnderstandingWorkspaceBlock(args: {
     id: "ai-understanding",
     title: "AI understanding",
     lines: [
+      `Route: ${args.preflight.route.primaryKind} (${args.preflight.route.confidence}, ${args.preflight.route.workspaceMode}).`,
       `Subject: ${clampText(args.preflight.subject, 160)}`,
       `Deliverable: ${clampText(args.preflight.deliverable, 160)}`,
       `Core task: ${clampText(args.preflight.coreTask, 220)}`,

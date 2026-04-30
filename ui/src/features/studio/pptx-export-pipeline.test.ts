@@ -13,7 +13,16 @@ import {
   type ExportPagePlan,
 } from "./pptx/export/ownership";
 import { resolvePptxRelationshipTarget } from "./pptx/export/package-patch";
+import {
+  buildPptxExportDocument,
+  buildPptxExportQualityReport,
+} from "./pptx/export/quality";
+import {
+  buildExportChartContractFromSpec,
+  classifyUnstructuredChartElement,
+} from "./pptx/export/recognition/chart";
 import { normalizeChartNativeStyle, normalizeChartSeriesStyle, parseCssColor } from "./pptx/export/style";
+import type { HtmlChartSpec } from "./types";
 
 test("pptx export pipeline declares the canonical phase order and boundary rules", () => {
   assert.deepEqual(
@@ -140,4 +149,170 @@ test("package patch phase resolves PPTX relationship targets without DOM context
     "ppt/charts/chart1.xml",
   );
   assert.equal(resolvePptxRelationshipTarget("ppt/slides/_rels/slide1.xml.rels", "https://example.com/x"), null);
+});
+
+test("chart export contract classifies the seven supported chart families", () => {
+  const series = [{ id: "s1", label: "Value", values: [1, 2, 3], role: "bar" as const, axis: "primary" as const }];
+  const specs: HtmlChartSpec[] = [
+    { kind: "bar", title: "", subtitle: "", insight: "", unit: "", categories: ["A", "B", "C"], series },
+    { kind: "stacked", title: "", subtitle: "", insight: "", unit: "", categories: ["A", "B", "C"], series },
+    {
+      kind: "line",
+      title: "",
+      subtitle: "",
+      insight: "",
+      unit: "",
+      categories: ["A", "B", "C"],
+      series: [{ ...series[0]!, role: "line" }],
+    },
+    { kind: "waterfall", title: "", subtitle: "", insight: "", unit: "", categories: ["A", "B", "C"], series },
+    {
+      kind: "combo",
+      title: "",
+      subtitle: "",
+      insight: "",
+      unit: "",
+      secondaryUnit: "%",
+      categories: ["A", "B", "C"],
+      series: [
+        { ...series[0]!, role: "bar" },
+        { id: "s2", label: "Rate", values: [3, 4, 5], role: "line", axis: "secondary" },
+      ],
+    },
+    {
+      kind: "bubble",
+      title: "",
+      subtitle: "",
+      insight: "",
+      unit: "",
+      xLabel: "X",
+      yLabel: "Y",
+      sizeLabel: "Size",
+      points: [{ id: "p1", label: "A", x: 1, y: 2, size: 3 }],
+    },
+    {
+      kind: "matrix",
+      title: "",
+      subtitle: "",
+      insight: "",
+      xLabel: "X",
+      yLabel: "Y",
+      items: [{ id: "m1", label: "A", detail: "", x: 0.1, y: 0.2, w: 0.2, h: 0.1 }],
+    },
+  ];
+
+  assert.deepEqual(
+    specs.map((spec) => buildExportChartContractFromSpec({ spec }).family),
+    ["bar", "stacked", "line", "waterfall", "combo", "bubble", "matrix"],
+  );
+  assert.equal(buildExportChartContractFromSpec({ spec: specs.at(-1)! }).nativeEligibility, "matrix-shapes");
+});
+
+test("chart export contract blocks chart-like content that lacks data", () => {
+  if (typeof DOMParser === "undefined") {
+    return;
+  }
+  const document = new DOMParser().parseFromString(
+    `<section><div style="width:800px;height:400px">Chart-led evidence view. What the chart says.</div></section>`,
+    "text/html",
+  );
+  const element = document.querySelector("div") as HTMLElement;
+  const contract = classifyUnstructuredChartElement(element);
+
+  assert.equal(contract?.nativeEligibility, "blocked");
+  assert.equal(contract?.blockedReason, "missing-data");
+  assert.equal(contract?.source, "text-layout");
+});
+
+test("quality report summarizes chart contract diagnostics", () => {
+  const document = buildPptxExportDocument({
+    slides: [
+      {
+        pageNumber: 1,
+        title: "Chart contract fixture",
+        backgroundColor: "FFFFFF",
+        theme: {
+          backgroundColor: "FFFFFF",
+          surfaceFill: "FFFFFF",
+          surfaceSecondary: "F6F6F6",
+          dividerColor: "DDDDDD",
+          accent: "305C63",
+          textPrimary: "111111",
+          textMuted: "666666",
+          chartPalette: ["305C63"],
+        },
+        textNodes: [],
+        shapeNodes: [],
+        chartNodes: [],
+        tableNodes: [],
+      },
+    ],
+    diagnostics: [
+      {
+        code: "chart-contract-blocked",
+        pageNumber: 1,
+        message: "Chart-like page lacked data.",
+        chartFamily: "unknown",
+        chartNativeEligibility: "blocked",
+        chartBlockedReason: "missing-data",
+      },
+    ],
+  });
+  const report = buildPptxExportQualityReport(document);
+
+  assert.equal(report.chartContracts.candidateCount, 1);
+  assert.equal(report.chartContracts.blockedCount, 1);
+  assert.equal(report.chartContracts.byEligibility.blocked, 1);
+  assert.equal(report.pages[0]?.blockedChartContractCount, 1);
+});
+
+test("quality report summarizes semantic export contract diagnostics", () => {
+  const document = buildPptxExportDocument({
+    slides: [
+      {
+        pageNumber: 1,
+        title: "Matrix fixture",
+        backgroundColor: "FFFFFF",
+        theme: {
+          backgroundColor: "FFFFFF",
+          surfaceFill: "FFFFFF",
+          surfaceSecondary: "F6F6F6",
+          dividerColor: "DDDDDD",
+          accent: "305C63",
+          textPrimary: "111111",
+          textMuted: "666666",
+          chartPalette: ["305C63"],
+        },
+        textNodes: [],
+        shapeNodes: [],
+        chartNodes: [],
+        tableNodes: [],
+      },
+    ],
+    diagnostics: [
+      {
+        code: "export-contract-detected",
+        pageNumber: 1,
+        message: "Matrix contract detected.",
+        exportObjectId: "p1-primary-matrix",
+        exportObjectKind: "matrix",
+        exportRenderTarget: "editable-shapes",
+      },
+      {
+        code: "export-contract-forbidden-violation",
+        pageNumber: 1,
+        message: "Matrix tried to become a native table.",
+        exportObjectId: "p1-primary-matrix",
+        exportObjectKind: "matrix",
+        exportRenderTarget: "editable-shapes",
+      },
+    ],
+  });
+  const report = buildPptxExportQualityReport(document);
+
+  assert.equal(report.exportContracts.candidateCount, 1);
+  assert.equal(report.exportContracts.violationCount, 1);
+  assert.equal(report.exportContracts.byKind.matrix, 2);
+  assert.equal(report.pages[0]?.exportContractCandidateCount, 1);
+  assert.equal(report.pages[0]?.exportContractViolationCount, 1);
 });

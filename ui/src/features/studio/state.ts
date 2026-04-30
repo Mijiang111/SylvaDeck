@@ -33,7 +33,11 @@ import type {
   BlockKind,
   BlockTone,
   ConversationMessage,
+  DeckExportContract,
   DraftProvider,
+  ExportObjectContract,
+  ExportObjectKind,
+  ExportRenderTarget,
   GenerationHistoryEntry,
   GeneratedHtmlReport,
   GeneratedDraftAsset,
@@ -1048,7 +1052,131 @@ function normalizeGeneratedHtmlReport(value: unknown): GeneratedHtmlReport {
       structure,
       visualStructure,
     }),
+    exportContract: normalizeDeckExportContract(candidate.exportContract, candidate.pageCount as number),
   };
+}
+
+function isExportObjectKind(value: unknown): value is ExportObjectKind {
+  return (
+    value === "native-chart" ||
+    value === "matrix" ||
+    value === "native-table" ||
+    value === "comparison-grid" ||
+    value === "metric-grid" ||
+    value === "card-grid" ||
+    value === "diagram" ||
+    value === "text"
+  );
+}
+
+function isExportRenderTarget(value: unknown): value is ExportRenderTarget {
+  return (
+    value === "native-chart" ||
+    value === "native-table" ||
+    value === "editable-shapes" ||
+    value === "editable-text" ||
+    value === "html-visual"
+  );
+}
+
+function normalizeExportObjectContract(value: unknown, pageNumber: number): ExportObjectContract | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const candidate = value as Partial<ExportObjectContract>;
+  if (
+    typeof candidate.objectId !== "string" ||
+    !candidate.objectId.trim() ||
+    !isExportObjectKind(candidate.objectKind) ||
+    !isExportRenderTarget(candidate.renderTarget)
+  ) {
+    return null;
+  }
+  const ownershipScope =
+    candidate.ownershipScope && typeof candidate.ownershipScope === "object"
+      ? candidate.ownershipScope
+      : null;
+  return {
+    objectId: candidate.objectId.trim(),
+    pageNumber,
+    pageStory: typeof candidate.pageStory === "string" ? candidate.pageStory.trim() : "",
+    primaryVisualObject:
+      typeof candidate.primaryVisualObject === "string"
+        ? candidate.primaryVisualObject.trim()
+        : candidate.objectKind,
+    objectKind: candidate.objectKind,
+    dataContract:
+      candidate.dataContract && typeof candidate.dataContract === "object" && !Array.isArray(candidate.dataContract)
+        ? candidate.dataContract
+        : null,
+    renderTarget: candidate.renderTarget,
+    ownershipScope: {
+      rootId:
+        typeof ownershipScope?.rootId === "string" && ownershipScope.rootId.trim()
+          ? ownershipScope.rootId.trim()
+          : candidate.objectId.trim(),
+      ownsText: Boolean(ownershipScope?.ownsText),
+      ownsShapes: Boolean(ownershipScope?.ownsShapes),
+      ownsSvg: Boolean(ownershipScope?.ownsSvg),
+      childRoles: Array.isArray(ownershipScope?.childRoles)
+        ? ownershipScope.childRoles
+            .filter((role): role is string => typeof role === "string")
+            .map((role) => role.trim())
+            .filter(Boolean)
+            .slice(0, 24)
+        : [],
+    },
+    forbiddenInterpretation: Array.isArray(candidate.forbiddenInterpretation)
+      ? candidate.forbiddenInterpretation
+          .filter((item): item is string => typeof item === "string")
+          .map((item) => item.trim())
+          .filter(Boolean)
+          .slice(0, 16)
+      : [],
+  };
+}
+
+function normalizeDeckExportContract(value: unknown, pageCount: number): DeckExportContract | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const candidate = value as Partial<DeckExportContract>;
+  if (candidate.version !== 1 || !Array.isArray(candidate.pages)) {
+    return undefined;
+  }
+  const pages = candidate.pages
+    .map((page) => {
+      if (!page || typeof page !== "object") {
+        return null;
+      }
+      const pageCandidate = page as Partial<DeckExportContract["pages"][number]>;
+      const pageNumber =
+        typeof pageCandidate.pageNumber === "number" && Number.isInteger(pageCandidate.pageNumber)
+          ? pageCandidate.pageNumber
+          : null;
+      if (!pageNumber || pageNumber < 1 || pageNumber > pageCount) {
+        return null;
+      }
+      const objects = Array.isArray(pageCandidate.objects)
+        ? pageCandidate.objects
+            .map((object) => normalizeExportObjectContract(object, pageNumber))
+            .filter((object): object is ExportObjectContract => Boolean(object))
+        : [];
+      if (!objects.length) {
+        return null;
+      }
+      return {
+        pageNumber,
+        pageStory: typeof pageCandidate.pageStory === "string" ? pageCandidate.pageStory.trim() : "",
+        primaryVisualObject:
+          typeof pageCandidate.primaryVisualObject === "string"
+            ? pageCandidate.primaryVisualObject.trim()
+            : objects[0]?.primaryVisualObject ?? "",
+        objects,
+      };
+    })
+    .filter((page): page is DeckExportContract["pages"][number] => Boolean(page));
+  return pages.length ? { version: 1, pages } : undefined;
 }
 
 function normalizeProjectSnapshot(

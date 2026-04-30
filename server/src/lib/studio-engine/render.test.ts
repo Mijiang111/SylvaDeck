@@ -91,6 +91,24 @@ function buildRecorderAnimationSection(manifest: Record<string, unknown>) {
   ].join("");
 }
 
+test("validateGeneratedPageHtml rejects generation meta-copy leaks", () => {
+  assert.throws(
+    () =>
+      validateGeneratedPageHtml({
+        html: buildSinglePageHtml(
+          [
+            "<h1>Revenue moat</h1>",
+            "<p>The page thesis argues that the setup is attractive.</p>",
+            "<p>Illustrative trajectory of the supplied page thesis; no additional metrics are introduced.</p>",
+          ].join(""),
+        ),
+        expectedPageNumber: 1,
+        expectedPageTitle: "Revenue moat",
+      }),
+    /workspace scaffolding.*generation meta-copy/i,
+  );
+});
+
 function buildRecipeWithTwoCharts(): PageRecipe {
   const densityBudget = {
     maxMajorRegions: 2,
@@ -169,6 +187,20 @@ test("composeDeterministicPageSection renders two editable consulting chart modu
   assert.match(html, /data-chart-exhibit-preset="margin-bridge"/);
   assert.match(html, /data-chart-exhibit-preset="segment-mix"/);
   assert.match(html, /data-chart-density="sidecar"/);
+});
+
+test("consulting and finance deterministic sections use square rectangular surfaces", () => {
+  for (const profileId of ["general-consulting", "finance"] as const) {
+    const html = composeDeterministicPageSection(
+      buildRecipeWithTwoCharts(),
+      getDeckStyleProfile(profileId),
+    );
+
+    assert.doesNotMatch(html, /border-radius:(?!0px|999px)\d+px/);
+    assert.doesNotMatch(html, /rx="(?:4|13)"/);
+    assert.match(html, /border-radius:0px/);
+    assert.match(html, /border-radius:999px/);
+  }
 });
 
 test("extractHtmlDocument keeps the full HTML document when surrounded by extra text", () => {

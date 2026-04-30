@@ -5,6 +5,7 @@ import {
   buildHtmlTableSpecFromRaw,
   parseHtmlChartSpec,
   renderHtmlChartModule,
+  renderHtmlTableModule,
   serializeHtmlChartSpec,
   updateHtmlChartSpecFromRawData,
 } from "./html-report-data-modules";
@@ -193,6 +194,41 @@ test("rendered chart modules keep a parseable chart spec payload", () => {
   assert.equal(parsed?.series[0]?.values[0], 42);
   assert.equal(parsed?.presentation?.version, 2);
   assert.equal(parseHtmlChartSpec(serializeHtmlChartSpec(spec))?.kind, "bar");
+});
+
+test("structured chart and table modules render as square institutional exhibits", () => {
+  const chartHtml = renderHtmlChartModule({
+    spec: {
+      kind: "bar",
+      title: "Capacity by region",
+      subtitle: "",
+      insight: "",
+      unit: "GW",
+      categories: ["NA", "EU"],
+      series: [
+        {
+          id: "series-1",
+          label: "Capacity",
+          values: [42, 31],
+          color: "#5d7f9d",
+          role: "bar",
+          axis: "primary",
+        },
+      ],
+    },
+  });
+  const tableHtml = renderHtmlTableModule({
+    tableSpec: buildHtmlTableSpecFromRaw(
+      "Operator\tCapacity\tMargin\nHyperscaler\t8.4 GW\t41%\nEnterprise colo\t2.8 GW\t18%",
+    ),
+  });
+
+  assert.match(chartHtml, /border-radius:0px/);
+  assert.match(chartHtml, /box-shadow:none/);
+  assert.doesNotMatch(chartHtml, /border-radius:(?!0px)\d+px/);
+  assert.match(tableHtml, /border-radius:0px/);
+  assert.match(tableHtml, /box-shadow:none/);
+  assert.doesNotMatch(tableHtml, /border-radius:(?!0px)\d+px/);
 });
 
 test("v2 chart presentation round-trips through parse and data updates", () => {

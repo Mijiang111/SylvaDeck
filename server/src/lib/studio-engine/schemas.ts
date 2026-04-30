@@ -114,6 +114,51 @@ export const htmlAnimationPageSchema = z.object({
 export const htmlAnimationStructureSchema = z.object({
   pages: z.array(htmlAnimationPageSchema).max(12),
 });
+export const exportObjectKindSchema = z.enum([
+  "native-chart",
+  "matrix",
+  "native-table",
+  "comparison-grid",
+  "metric-grid",
+  "card-grid",
+  "diagram",
+  "text",
+]);
+export const exportRenderTargetSchema = z.enum([
+  "native-chart",
+  "native-table",
+  "editable-shapes",
+  "editable-text",
+  "html-visual",
+]);
+export const exportOwnershipScopeSchema = z.object({
+  rootId: z.string().min(1).max(160),
+  ownsText: z.boolean(),
+  ownsShapes: z.boolean(),
+  ownsSvg: z.boolean(),
+  childRoles: z.array(z.string().min(1).max(80)).max(24),
+});
+export const exportObjectContractSchema = z.object({
+  objectId: z.string().min(1).max(160),
+  pageNumber: z.number().int().min(1).max(200),
+  pageStory: z.string().max(500),
+  primaryVisualObject: z.string().max(240),
+  objectKind: exportObjectKindSchema,
+  dataContract: z.record(z.unknown()).nullable(),
+  renderTarget: exportRenderTargetSchema,
+  ownershipScope: exportOwnershipScopeSchema,
+  forbiddenInterpretation: z.array(z.string().min(1).max(80)).max(16),
+});
+export const pageExportContractSchema = z.object({
+  pageNumber: z.number().int().min(1).max(200),
+  pageStory: z.string().max(500),
+  primaryVisualObject: z.string().max(240),
+  objects: z.array(exportObjectContractSchema).min(1).max(20),
+});
+export const deckExportContractSchema = z.object({
+  version: z.literal(1),
+  pages: z.array(pageExportContractSchema).max(200),
+});
 export const pageOverflowCauseSchema = z.enum([
   "title",
   "hero-copy",
@@ -541,5 +586,11 @@ export type HtmlLoopEffect = z.infer<typeof htmlLoopEffectSchema>;
 export type HtmlPageAnimationManifest = z.infer<typeof htmlPageAnimationManifestSchema>;
 export type HtmlAnimationPage = z.infer<typeof htmlAnimationPageSchema>;
 export type HtmlAnimationStructure = z.infer<typeof htmlAnimationStructureSchema>;
+export type ExportObjectKind = z.infer<typeof exportObjectKindSchema>;
+export type ExportRenderTarget = z.infer<typeof exportRenderTargetSchema>;
+export type ExportOwnershipScope = z.infer<typeof exportOwnershipScopeSchema>;
+export type ExportObjectContract = z.infer<typeof exportObjectContractSchema>;
+export type PageExportContract = z.infer<typeof pageExportContractSchema>;
+export type DeckExportContract = z.infer<typeof deckExportContractSchema>;
 export type PageOverflowCause = z.infer<typeof pageOverflowCauseSchema>;
 export type PageCompositionFingerprint = z.infer<typeof pageCompositionFingerprintSchema>;

@@ -124,6 +124,36 @@ test("deterministic recovery returns a valid page when primary and classic rende
   });
 });
 
+test("deterministic recovery strips workspace labels before validation", () => {
+  const recovery = recoverDeterministicPageAfterRenderFailures({
+    deckTitle: "Robotics Adoption",
+    recipe: {
+      ...baseRecipe,
+      pageTitle: "Page mission: WeChat monetization flywheel",
+      pageIntent: "Current page intent: Explain why mini-program traffic matters.",
+      objective: "Page question: Why does traffic compound?",
+      insight: "Source material: WeChat owns daily traffic and monetization surfaces.",
+      heroClaim: "Headline claim: The traffic layer compounds monetization.",
+      supportBullets: [
+        "Support bullet 1: Traffic creates repeatable ad inventory.",
+        "Evidence callouts: Mini-programs extend commercial surface area.",
+      ],
+      evidenceBullets: ["Source basis: page rendered only from supplied brief."],
+      takeaway: "Page thesis: Own the monetization layer, not just the app.",
+    },
+    styleProfile,
+    reportStyleProfile,
+    htmlOutputMode: "static",
+    model: "gpt-fallback-test",
+    primaryError: new Error("primary page renderer unavailable"),
+    fallbackError: new Error("classic HTML prompt failed validation"),
+  });
+
+  assert.equal(recovery.page.pageTitle, "WeChat monetization flywheel");
+  assert.doesNotMatch(recovery.page.sectionHtml, /Page mission|Source material|Headline claim/i);
+  assert.match(recovery.page.sectionHtml, /traffic layer compounds monetization/i);
+});
+
 test("deck section collection and final report builder share one assembly contract", () => {
   const page = renderDeterministicPageFromRecipe({
     deckTitle: "Robotics Adoption",

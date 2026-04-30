@@ -23,6 +23,8 @@ import type {
   DeckPlan,
   EvidenceGraph,
   EvidenceNode,
+  DeckExportContract,
+  ExportObjectContract,
   FactTable,
   FreeformLayoutPlan,
   GeneratedReportStyleProfile,
@@ -184,15 +186,14 @@ import {
   shouldUseScientificDiagramLane,
 } from "./scientific-diagram.js";
 import {
-  buildFallbackStudioPreflightPlan,
+  buildDeterministicStudioPreflightPlan,
   buildPreflightCapabilityCards,
   buildPreflightEvidenceInput,
-  buildStudioPreflightPrompt,
   buildVisualThinkingLines,
   createRawBriefThinkingInputs,
   findStudioPageMission,
   mergeStudioPreflightIntoBriefSynthesis,
-  parseStudioPreflightPlan,
+  resolveStudioTaskRoute,
 } from "./preflight.js";
 
 const evidenceGraphCache = new Map<string, EvidenceGraph>();
@@ -212,46 +213,22 @@ async function runStudioPreflightStage(args: {
     type: "stage_started",
     runId: args.runId,
     stage: "preflight",
-    label: "Understanding the raw brief",
+    label: "Routing the task contract",
   });
-  const prompt = buildStudioPreflightPrompt({
+  const route = resolveStudioTaskRoute({
     brief: args.brief,
     requestedPageCount: args.requestedPageCount,
   });
-  const preflightResult = await executeStudioStage({
-    runId: args.runId,
-    stage: "preflight",
-    prompt,
-    payload: {
-      brief: args.brief,
-      pageCount: args.requestedPageCount ?? null,
-    },
-    agentConfig: args.agentConfig,
-    assistantTextParser: extractTextBeforeJson,
-    onAssistantChunk: async (content) => {
-      if (!content.trim()) {
-        return;
-      }
-      await emit({
-        type: "assistant_chunk",
-        runId: args.runId,
-        stage: "preflight",
-        content,
-      });
-    },
-    onStageTrace: args.onStageTrace,
-    signal: args.signal,
-  });
-  const preflight = parseStudioPreflightPlan({
-    text: preflightResult.summary,
+  const preflight = buildDeterministicStudioPreflightPlan({
     brief: args.brief,
     requestedPageCount: args.requestedPageCount,
+    route,
   });
   await emit({
     type: "assistant_chunk",
     runId: args.runId,
     stage: "preflight",
-    content: `Preflight understood the request as ${preflight.deliverable} about ${preflight.subject}${preflight.audienceOrQualityBar ? ` for ${preflight.audienceOrQualityBar}` : ""}, with ${preflight.evidencePolicy.tier} evidence handling.`,
+    content: `Preflight routed ${preflight.deliverable} about ${preflight.subject} through ${route.primaryKind} (${route.confidence}, ${route.workspaceMode}).`,
   });
   return preflight;
 }
@@ -606,7 +583,7 @@ export function buildPagePrompt(args: {
     });
   const preflight =
     args.preflight ??
-    buildFallbackStudioPreflightPlan({
+    buildDeterministicStudioPreflightPlan({
       brief: args.brief,
       requestedPageCount: args.allPages.length,
     });
@@ -685,12 +662,21 @@ export function buildPagePrompt(args: {
     fallbackTitle: args.page.pageTitle,
     fallbackMission: args.pageArgument?.pageQuestion ?? args.page.goal,
   });
+  const primaryExportObjectContract = findPagePrimaryExportObjectContract(
+    preflight,
+    args.page.pageNumber,
+  );
   const visualOperatorLines = buildPageVisualOperatorLines({
     templateOptions,
     chartPageIntent: args.chartPageIntent,
     heroModelIntent: args.heroModelIntent,
     structureCue: pageMission.structureCue,
     freeformLayoutPlan,
+  });
+  const contentLayoutRules = buildInstitutionalContentLayoutRules({
+    sourceBacked: preflight.evidencePolicy.tier === "source-backed",
+    chartFirst: Boolean(args.chartPageIntent?.enabled || pageMission.structureCue === "chart"),
+    structureCue: pageMission.structureCue,
   });
   const capabilityCards = buildPreflightCapabilityCards({
     preflight,
@@ -790,6 +776,8 @@ export function buildPagePrompt(args: {
       `The section must include data-page-number="${args.page.pageNumber}" and data-page-title="${escapeHtml(args.page.pageTitle)}".`,
       "The data-page-title must be audience-facing, specific, and grounded in the user brief or page claim; never use internal placeholders like Core thesis, Opening thesis, or Page 1.",
       "No internal scrolling, no cut-off content, and no placeholder language.",
+      ...contentLayoutRules,
+      ...buildPrimaryObjectMetadataRuleLines(primaryExportObjectContract),
       "Use Visual thinking privately before writing HTML. Do not output the reasoning or scaffold.",
       ...(isWowPage
         ? buildWowOutputRuleLines({
@@ -3673,6 +3661,63 @@ function buildChartPageContractLines(intent: ChartPageIntent) {
   ];
 }
 
+function buildInstitutionalContentLayoutRules(args: {
+  sourceBacked: boolean;
+  chartFirst: boolean;
+  structureCue?: StudioPageMission["structureCue"];
+}) {
+  const exhibitLabel =
+    args.structureCue === "matrix" || args.structureCue === "quadrant"
+      ? "matrix or quadrant"
+      : args.chartFirst
+        ? "chart or composite figure"
+        : "evidence exhibit";
+  return [
+    `Use an institutional evidence-page composition: action title, one large primary ${exhibitLabel} field, one compact interpretation rail or inset, and a small source footer only when useful.`,
+    "Make the primary exhibit carry the proof; secondary panels should explain how to read it, not compete with it.",
+    "Do not wrap the whole slide in one giant rounded card; use anchored margins, thin dividers, and restrained panels.",
+    "Keep title hierarchy strong: action title about 42-56px on normal content pages, eyebrow 14-18px, body 18-24px; do not render a tiny H1.",
+    "If using a chart, use supplied numbers and labels; if numbers are missing, use a qualitative matrix, diagram, or annotation instead of fake axes, fake trendlines, placeholder bars, or invented years.",
+    "Do not render meta-copy such as page thesis, page mission, supplied brief, no additional metrics are introduced, illustrative trajectory, source basis, or what this page shows.",
+    ...(args.sourceBacked
+      ? [
+          "Source-backed pages may use a small Source footer naming the supplied source, but never explain that the page was rendered from a brief or generated from a mission.",
+        ]
+      : []),
+  ];
+}
+
+function findPagePrimaryExportObjectContract(preflight: StudioPreflightPlan, pageNumber: number) {
+  return (
+    preflight.exportContract.pages
+      .find((page) => page.pageNumber === pageNumber)
+      ?.objects.find((object) => object.pageNumber === pageNumber) ?? null
+  );
+}
+
+function ownershipScopeAttribute(contract: ExportObjectContract) {
+  return [
+    contract.ownershipScope.ownsText ? "text" : "",
+    contract.ownershipScope.ownsShapes ? "shape" : "",
+    contract.ownershipScope.ownsSvg ? "svg" : "",
+  ].filter(Boolean).join(",");
+}
+
+function buildPrimaryObjectMetadataRuleLines(contract: ExportObjectContract | null) {
+  if (!contract) {
+    return [];
+  }
+  const forbiddenExport = contract.forbiddenInterpretation.join(",");
+  const ownershipScope = ownershipScopeAttribute(contract);
+  const contractPayload = JSON.stringify(contract).replaceAll("'", "&apos;");
+  return [
+    `Primary export object contract: objectId=${contract.objectId}; semantic kind=${contract.objectKind}; render target=${contract.renderTarget}.`,
+    `The root element of the primary visual object must include data-export-object-id="${contract.objectId}", data-semantic-kind="${contract.objectKind}", data-render-target="${contract.renderTarget}", data-ownership-scope="${ownershipScope}", and data-forbidden-export="${forbiddenExport}".`,
+    `Also include data-export-contract='${contractPayload}' on that same root element, using single quotes around the attribute value.`,
+    "Do not label comparison-grid, metric-grid, card-grid, matrix, diagram, or text objects as native tables just because their content aligns in rows or columns.",
+  ];
+}
+
 function buildPageVisualOperatorLines(args: {
   templateOptions: PublishedModuleManifest[];
   chartPageIntent?: ChartPageIntent;
@@ -4015,7 +4060,7 @@ export function buildSkillBackedPagePrompt(args: {
     });
   const preflight =
     args.preflight ??
-    buildFallbackStudioPreflightPlan({
+    buildDeterministicStudioPreflightPlan({
       brief: args.brief,
       requestedPageCount: args.allPages.length,
     });
@@ -4103,6 +4148,10 @@ export function buildSkillBackedPagePrompt(args: {
     fallbackTitle: args.page.pageTitle,
     fallbackMission: args.page.objective,
   });
+  const primaryExportObjectContract = findPagePrimaryExportObjectContract(
+    preflight,
+    args.page.pageNumber,
+  );
   const capabilityCards = buildPreflightCapabilityCards({
     preflight,
     forceKinds: args.heroModelIntent.enabled ? ["3d"] : undefined,
@@ -4215,6 +4264,7 @@ export function buildSkillBackedPagePrompt(args: {
       `The section must include data-page-number="${args.page.pageNumber}" and data-page-title="${escapeHtml(args.page.pageTitle)}".`,
       "The data-page-title must be audience-facing, specific, and grounded in the user brief or page claim; never use internal placeholders like Core thesis, Opening thesis, or Page 1.",
       "No internal scrolling, no cut-off content, and no placeholder language.",
+      ...buildPrimaryObjectMetadataRuleLines(primaryExportObjectContract),
       "Use Visual thinking privately before writing HTML. Do not output the reasoning or scaffold.",
       ...(isWowPage
         ? buildWowOutputRuleLines({
@@ -5020,7 +5070,7 @@ function buildLayoutRepairPrompt(args: {
 
   const preflight =
     args.preflight ??
-    buildFallbackStudioPreflightPlan({
+    buildDeterministicStudioPreflightPlan({
       brief: args.brief,
       requestedPageCount: args.deckPageMap.length,
     });
@@ -5283,7 +5333,7 @@ export async function runStudioGenerationV2(args: {
     type: "assistant_chunk",
     runId: args.runId,
     stage: "evidence",
-    content: `Preflight resolved ${preflight.subject} and the render path is keeping the raw brief primary. Evidence graph extracted ${evidenceGraph.factTable.items.length} fact nodes, ${evidenceGraph.comparisonSets.length} comparison sets, and ${evidenceGraph.timelineSets.length} timeline sets from ${briefSynthesis.evidenceSourceUsed}.`,
+    content: `Preflight resolved ${preflight.subject} through ${preflight.route.primaryKind}; render prompts use ${preflight.route.workspaceMode}. Evidence graph extracted ${evidenceGraph.factTable.items.length} fact nodes, ${evidenceGraph.comparisonSets.length} comparison sets, and ${evidenceGraph.timelineSets.length} timeline sets from ${briefSynthesis.evidenceSourceUsed}.`,
   });
   const thinkingSkill = loadStudioThinkingModeSkill(thinkingContext.mode);
 
@@ -5427,6 +5477,10 @@ export async function runStudioGenerationV2(args: {
       allPages,
       brief: args.payload.brief,
     });
+    const primaryExportObjectContract = findPagePrimaryExportObjectContract(
+      preflight,
+      recipe.pageNumber,
+    );
     const heroReferenceContext = buildHeroReferenceContext({
       skill: heroSkill,
       intent: heroModelIntent,
@@ -5477,6 +5531,7 @@ export async function runStudioGenerationV2(args: {
         styleProfile,
         reportStyleProfile,
         htmlOutputMode: args.payload.htmlOutputMode,
+        exportObjectContract: primaryExportObjectContract,
       });
       await emit({
         type: "assistant_chunk",
@@ -5512,6 +5567,7 @@ export async function runStudioGenerationV2(args: {
         styleProfile,
         reportStyleProfile,
         htmlOutputMode: args.payload.htmlOutputMode,
+        exportObjectContract: primaryExportObjectContract,
       });
       await emit({
         type: "assistant_chunk",
@@ -5651,6 +5707,7 @@ export async function runStudioGenerationV2(args: {
         expectedPageNumber: recipe.pageNumber,
         expectedPageTitle: recipe.pageTitle,
         htmlOutputMode: args.payload.htmlOutputMode,
+        expectedExportObjectContract: primaryExportObjectContract,
       });
     } catch (error) {
       const fallbackPrompt = buildPagePrompt({
@@ -5755,6 +5812,7 @@ export async function runStudioGenerationV2(args: {
           expectedPageNumber: recipe.pageNumber,
           expectedPageTitle: recipe.pageTitle,
           htmlOutputMode: args.payload.htmlOutputMode,
+          expectedExportObjectContract: primaryExportObjectContract,
         });
       } catch (fallbackError) {
         await emit({
@@ -5771,6 +5829,7 @@ export async function runStudioGenerationV2(args: {
           styleProfile,
           reportStyleProfile,
           htmlOutputMode: args.payload.htmlOutputMode,
+          exportObjectContract: primaryExportObjectContract,
           model: args.agentConfig.model,
           primaryError: error,
           fallbackError,
@@ -5861,15 +5920,22 @@ export async function runStudioGenerationV2(args: {
     const firstPagePromise = pageRecipes[0]
       ? renderPageRecipe(pageRecipes[0], false)
       : Promise.resolve(null);
+    let remainingResultsError: unknown = null;
     const remainingResultsPromise =
       pageRecipes.length > 1
         ? mapWithConcurrency(pageRecipes.slice(1), 2, async (recipe) =>
             renderPageRecipe(recipe, true),
-          )
+          ).catch((error: unknown) => {
+            remainingResultsError = error;
+            return [] as StudioPageRenderResult[];
+          })
         : Promise.resolve([]);
 
     const firstPageResult = await firstPagePromise;
     const remainingResults = await remainingResultsPromise;
+    if (remainingResultsError) {
+      throw remainingResultsError;
+    }
     pageResults = [
       ...(firstPageResult ? [firstPageResult] : []),
       ...remainingResults,
@@ -5894,6 +5960,7 @@ export async function runStudioGenerationV2(args: {
     styleProfile: reportStyleProfile,
     htmlOutputMode: args.payload.htmlOutputMode,
     animationPages: pageAnimationPages,
+    exportContract: preflight.exportContract,
   });
 
   await emit({
@@ -6200,6 +6267,10 @@ export async function runStudioGenerationV1(args: {
       expectedPageNumber: page.pageNumber,
       expectedPageTitle: page.pageTitle,
       htmlOutputMode: args.payload.htmlOutputMode,
+      expectedExportObjectContract: findPagePrimaryExportObjectContract(
+        preflight,
+        page.pageNumber,
+      ),
     });
     pageSections.push(validatedPage.sectionHtml);
     if (validatedPage.animationPage) {
@@ -6230,6 +6301,7 @@ export async function runStudioGenerationV1(args: {
     styleProfile: reportStyleProfile,
     htmlOutputMode: args.payload.htmlOutputMode,
     animationPages: pageAnimationPages,
+    exportContract: preflight.exportContract,
   });
 
   await emit({
@@ -6327,6 +6399,10 @@ export async function runStudioRevision(args: {
     emit,
     onStageTrace: args.onStageTrace,
   });
+  const inheritedExportContract = args.payload.report.exportContract as DeckExportContract | undefined;
+  const revisionPreflight = inheritedExportContract
+    ? { ...preflight, exportContract: inheritedExportContract }
+    : preflight;
   const runtimeInputs = createRawBriefThinkingInputs(args.payload.brief);
   const preparation = resolveStudioGenerationPreparation({
     brief: args.payload.brief,
@@ -6338,13 +6414,13 @@ export async function runStudioRevision(args: {
   const thinkingContext = preparation.thinkingContext;
   const briefSynthesis = mergeStudioPreflightIntoBriefSynthesis({
     synthesis: preparation.briefSynthesis,
-    preflight,
+    preflight: revisionPreflight,
     rawBrief: args.payload.brief,
   });
   const evidenceGraph = buildEvidenceGraph(
     buildPreflightEvidenceInput({
       brief: args.payload.brief,
-      preflight,
+      preflight: revisionPreflight,
     }),
     args.payload.report.pageCount,
   );
@@ -6473,6 +6549,7 @@ export async function runStudioRevision(args: {
       styleProfile: reportStyleProfile,
       htmlOutputMode: args.payload.report.htmlOutputMode ?? "static",
       animationStructure: args.payload.report.animationStructure,
+      exportContract: args.payload.report.exportContract as DeckExportContract | undefined,
     });
     await emit({
       type: "final_report",
@@ -6590,6 +6667,10 @@ export async function runStudioRevision(args: {
         }),
         htmlOutputMode: args.payload.report.htmlOutputMode ?? "static",
         previousAnimationPage: existingAnimationPages.get(measurement.pageNumber) ?? null,
+        expectedExportObjectContract: findPagePrimaryExportObjectContract(
+          revisionPreflight,
+          measurement.pageNumber,
+        ),
       });
 
       await emit({
@@ -6633,7 +6714,7 @@ export async function runStudioRevision(args: {
       heroModelIntent,
       heroReferenceLines: heroReferenceContext.lines,
       evalOverrides: args.evalOverrides,
-      preflight,
+      preflight: revisionPreflight,
       htmlOutputMode: args.payload.report.htmlOutputMode ?? "static",
     });
     const repairWorkspaceMeta = getStudioAiWorkspacePromptMeta(prompt);
@@ -6696,6 +6777,10 @@ export async function runStudioRevision(args: {
       expectedPageTitle: currentSection.pageTitle,
       htmlOutputMode: args.payload.report.htmlOutputMode ?? "static",
       previousAnimationPage: existingAnimationPages.get(measurement.pageNumber) ?? null,
+      expectedExportObjectContract: findPagePrimaryExportObjectContract(
+        revisionPreflight,
+        measurement.pageNumber,
+      ),
     });
 
     await emit({
@@ -6764,6 +6849,7 @@ export async function runStudioRevision(args: {
     styleProfile: reportStyleProfile,
     htmlOutputMode: args.payload.report.htmlOutputMode ?? "static",
     animationPages: pageAnimationPages,
+    exportContract: revisionPreflight.exportContract,
   });
 
   await emit({

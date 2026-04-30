@@ -1,4 +1,8 @@
-import type { HtmlChartKind } from "@/features/studio/types";
+import type {
+  ExportObjectKind,
+  ExportRenderTarget,
+  HtmlChartKind,
+} from "@/features/studio/types";
 
 export const PPT_LAYOUT = {
   widthInches: 13.333,
@@ -24,6 +28,14 @@ export type PptExportDiagnosticCode =
   | "dom-geometry-chart-visible"
   | "hidden-native-chart-data"
   | "native-chart-visible"
+  | "chart-contract-detected"
+  | "chart-contract-blocked"
+  | "export-contract-detected"
+  | "export-contract-missing"
+  | "export-contract-kind-mismatch"
+  | "export-contract-forbidden-violation"
+  | "export-contract-native-table-missing-data"
+  | "export-contract-duplicate-ownership"
   | "chart-native-unsupported"
   | "chart-image-fallback"
   | "table-native-unsupported"
@@ -37,6 +49,47 @@ export type PptExportDiagnosticCode =
 export type PptExportWarningCode = PptExportDiagnosticCode;
 
 export type PptExportDiagnosticSeverity = "success" | "info" | "degraded" | "fatal";
+
+export type PptExportChartFamily = Extract<
+  HtmlChartKind,
+  "bar" | "stacked" | "line" | "waterfall" | "combo" | "bubble" | "matrix"
+>;
+
+export type PptExportChartContractConfidence = "high" | "medium" | "low";
+
+export type PptExportChartContractSource =
+  | "spec"
+  | "export-payload"
+  | "module"
+  | "svg"
+  | "dom"
+  | "text-layout"
+  | "scene";
+
+export type PptExportChartNativeEligibility =
+  | "native-required"
+  | "native-eligible"
+  | "matrix-shapes"
+  | "blocked";
+
+export type PptExportChartBlockedReason =
+  | "missing-data"
+  | "ambiguous-family"
+  | "sparse-series"
+  | "unsupported-style"
+  | "ownership-conflict";
+
+export type PptExportChartContract = {
+  family: PptExportChartFamily | "unknown";
+  confidence: PptExportChartContractConfidence;
+  source: PptExportChartContractSource;
+  reasonCodes: string[];
+  bounds?: PptxExportBounds;
+  ownerElementIds: string[];
+  nativeEligibility: PptExportChartNativeEligibility;
+  blockedReason?: PptExportChartBlockedReason;
+  diagnostics: string[];
+};
 
 export type PptExportDiagnostic = {
   code: PptExportDiagnosticCode;
@@ -56,6 +109,14 @@ export type PptExportDiagnostic = {
     | "fallback";
   renderMode?: PptxExportEditability;
   countsAgainstQuality?: boolean;
+  chartFamily?: PptExportChartFamily | "unknown";
+  chartContractConfidence?: PptExportChartContractConfidence;
+  chartNativeEligibility?: PptExportChartNativeEligibility;
+  chartBlockedReason?: PptExportChartBlockedReason;
+  chartReasonCodes?: string[];
+  exportObjectId?: string;
+  exportObjectKind?: ExportObjectKind;
+  exportRenderTarget?: ExportRenderTarget;
 };
 
 export type PptExportWarning = PptExportDiagnostic;
@@ -352,6 +413,7 @@ export type PptExportChartModel = {
   showInlineHeading?: boolean;
   showNativeVisual?: boolean;
   themeTokens: PptExportChartThemeTokens;
+  chartContract?: PptExportChartContract;
   fallbackAsset?: PptExportFallbackAsset;
 };
 
@@ -426,6 +488,12 @@ export type PptxExportQualityIssue = {
   sourceKind?: PptExportDiagnostic["sourceKind"];
   renderMode?: PptxExportEditability;
   countsAgainstQuality?: boolean;
+  chartFamily?: PptExportChartFamily | "unknown";
+  chartNativeEligibility?: PptExportChartNativeEligibility;
+  chartBlockedReason?: PptExportChartBlockedReason;
+  exportObjectId?: string;
+  exportObjectKind?: ExportObjectKind;
+  exportRenderTarget?: ExportRenderTarget;
 };
 
 export type PptxExportNodeBase = {
@@ -493,7 +561,25 @@ export type PptxExportPageQualityReport = {
   degradedCount: number;
   nativeObjectCount: number;
   fallbackObjectCount: number;
+  chartContractCandidateCount: number;
+  blockedChartContractCount: number;
+  exportContractCandidateCount: number;
+  exportContractViolationCount: number;
   issues: PptxExportQualityIssue[];
+};
+
+export type PptxExportChartContractQualitySummary = {
+  candidateCount: number;
+  blockedCount: number;
+  byFamily: Record<string, number>;
+  byEligibility: Record<string, number>;
+};
+
+export type PptxExportObjectContractQualitySummary = {
+  candidateCount: number;
+  violationCount: number;
+  byKind: Record<string, number>;
+  byRenderTarget: Record<string, number>;
 };
 
 export type PptxExportQualityReport = {
@@ -510,6 +596,8 @@ export type PptxExportQualityReport = {
   fallbackObjectCount: number;
   fallbackCountByReason: Record<string, number>;
   nativeChartCountByKind: Record<string, number>;
+  chartContracts: PptxExportChartContractQualitySummary;
+  exportContracts: PptxExportObjectContractQualitySummary;
   acceptanceFailures: string[];
   fatalCount: number;
   degradedCount: number;

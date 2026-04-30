@@ -1,4 +1,8 @@
 import type {
+  DeckExportContract,
+  ExportObjectContract,
+  ExportObjectKind,
+  ExportRenderTarget,
   FreeformLayoutPlan,
   HeroModelIntent,
   SegmentedThinkingInputs,
@@ -9,6 +13,10 @@ import type {
   StudioEvidenceTier,
   StudioPageMission,
   StudioPreflightPlan,
+  StudioTaskRoute,
+  StudioTaskRouteCapabilities,
+  StudioTaskRoutePageBlueprint,
+  StudioTaskRoutePrimaryKind,
   StudioVisualThinking,
   StudioWorkingMemory,
 } from "./contracts.js";
@@ -21,7 +29,6 @@ import {
   stripInstructionalLead,
   uniqueStrings,
 } from "./brief.js";
-import { extractJsonDocument } from "./render.js";
 import { buildStudioWorkingMemory } from "./working-memory.js";
 import { extractRequestedDeckPageCount } from "./page-count.js";
 
@@ -55,31 +62,63 @@ function hasExplicitThreeDimensionalRequest(brief: string) {
   );
 }
 
-function matchesThreeDimensionalCue(value: string | undefined) {
-  const normalized = normalizeStudioText(value ?? "").toLowerCase();
-  if (!normalized) {
-    return false;
-  }
-
-  return (
-    normalized.includes("3d") ||
-    normalized.includes("three dimensional") ||
-    normalized.includes("three-dimensional") ||
-    normalized.includes("pseudo 3d") ||
-    normalized.includes("pseudo-3d") ||
-    normalized.includes("hero model") ||
-    normalized.includes("hero-model") ||
-    normalized.includes("cutaway") ||
-    normalized.includes("exploded view") ||
-    normalized.includes("exploded stack") ||
-    normalized.includes("exploded")
-  );
-}
-
 function hasExplicitChartRequest(brief: string) {
   return /\b(?:chart|graph|bar chart|line chart|waterfall|visualize|figure|matrix|quadrant|2x2|bcg)\b/i.test(
     brief,
   ) || /(?:矩阵|矩陣|四象限|波士顿矩阵|波士頓矩陣|BCG矩阵|BCG矩陣|二维矩阵|二維矩陣)/i.test(brief);
+}
+
+function hasProcessFlowRequest(brief: string) {
+  return (
+    /\b(?:flowchart|process\s+flow|swimlane|workflow|lane headers?|phase bands?|connectors?|decision diamonds?)\b/i.test(
+      brief,
+    ) || /(?:流程图|流程圖|泳道|阶段|階段|车道|泳道图|泳道圖|连接线|連接線|决策节点|決策節點)/i.test(brief)
+  );
+}
+
+function countSourceEvidenceSignals(brief: string) {
+  const matches = brief.match(
+    /(?:observed facts?|source-backed|research note|equity strategy|pdf|report|analysis|revenue|margin|profit|market share|valuation|FY\d{2,4}|20\d{2}|Q[1-4]|%|\$|RMB|USD|HKD|研报|研報|报告|報告|分析|财报|財報|收入|利润|利潤|毛利率|市场份额|市場份額|同比|环比|環比|亿元|億)/gi,
+  );
+  return matches?.length ?? 0;
+}
+
+function hasSourceBackedAnalysisCue(brief: string) {
+  const evidenceSignals = countSourceEvidenceSignals(brief);
+  return (
+    evidenceSignals >= 3 ||
+    /(?:observed facts?|source-backed|research note|equity strategy|pdf|研报|研報|财报|財報|腾讯|騰訊|Tencent)/i.test(
+      brief,
+    )
+  );
+}
+
+function hasClearSubjectCue(brief: string) {
+  return (
+    /\b(?:about|on|for|of)\s+[\p{L}\p{N}][\s\S]{2,}/iu.test(brief) ||
+    /(?:关于|關於|介绍|介紹|分析|讲|講|围绕|圍繞|针对|針對|把|將|将).{2,}/i.test(brief)
+  );
+}
+
+function isAmbiguousBriefRequest(brief: string) {
+  const normalized = normalizeStudioText(brief).toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+  if (hasClearSubjectCue(brief)) {
+    return false;
+  }
+
+  const contentRemainder = normalized
+    .replace(
+      /\b(?:make|create|generate|build|prepare|design|a|an|the|ppt|powerpoint|presentation|deck|slides?|nice|good|great|premium|beautiful|professional|simple|high-end|polished)\b/gi,
+      " ",
+    )
+    .replace(/(?:做|做个|做一份|生成|制作|製作|帮我|幫我|一个|一份|PPT|ppt|演示|簡報|简报|好看|高级|高級|专业|專業|漂亮|简单|簡單)/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return normalized.length <= 100 && contentRemainder.length <= 12;
 }
 
 const CHINESE_PAGE_NUMBER_TOKEN_PATTERN = /[一二两三四五六七八九十]{1,3}/;
@@ -261,7 +300,7 @@ function deriveCoreTaskFromMemory(memory: StudioWorkingMemory) {
   }
 }
 
-function sanitizeFallbackSubject(value: string, brief: string) {
+function sanitizeDeterministicSubject(value: string, brief: string) {
   const cleaned = normalizeStudioText(value)
     .replace(/\bfor\s+(?:a|an|the)$/i, "")
     .replace(/\bto\s+(?:do|make|create|build|prepare)$/i, "")
@@ -271,7 +310,77 @@ function sanitizeFallbackSubject(value: string, brief: string) {
   return cleaned || compactBoardTitle(brief, "Core subject", 6);
 }
 
-function buildFallbackVisualThinking(memory: StudioWorkingMemory): StudioVisualThinking {
+function resolveAmbiguousBriefSubject(value: string, brief: string) {
+  const candidate = sanitizeDeterministicSubject(value, brief);
+  if (
+    !candidate ||
+    /^(?:ppt|powerpoint|presentation|deck|slides?|演示|簡報|简报|core subject)$/i.test(candidate)
+  ) {
+    return "the requested topic";
+  }
+  return candidate;
+}
+
+function buildDeterministicVisualThinking(args: {
+  memory: StudioWorkingMemory;
+  route: StudioTaskRoute;
+}): StudioVisualThinking {
+  if (args.route.primaryKind === "ambiguous-brief") {
+    return {
+      dominantVisualAnchor: "one conservative story frame for a sparse request",
+      readingPath: "plain title -> assumption-labeled story frame -> simple support -> next step",
+      regionStrategy: "use a simple thesis canvas or three-part structure rather than pretending there is source evidence",
+      densityPosture: "light, explicit, and assumption-aware",
+      avoidPattern: "fake data, fake case facts, over-specific charts, or ornate design that hides missing intent",
+    };
+  }
+  if (args.route.primaryKind === "process-flow") {
+    return {
+      dominantVisualAnchor: "one structured flow or swimlane map",
+      readingPath: "phase or lane headers -> ordered nodes -> connector logic -> short implication",
+      regionStrategy: "let the process diagram own the main field with only compact annotations outside it",
+      densityPosture: "diagram-first, label-disciplined, and connector-light",
+      avoidPattern: "card wall, generic roadmap, or prose summary that replaces the flow itself",
+    };
+  }
+  if (args.route.primaryKind === "chart-matrix-figure") {
+    return {
+      dominantVisualAnchor: "one dominant analytical chart, matrix, or figure",
+      readingPath: "headline claim -> figure frame -> annotation -> takeaway",
+      regionStrategy: "figure-first composition with one compact explanation zone",
+      densityPosture: "evidence-led, compact, and readable",
+      avoidPattern: "equal-weight dashboard tiles or decorative chart-like shapes without a clear argument",
+    };
+  }
+  if (args.route.primaryKind === "visual-hero-3d") {
+    return {
+      dominantVisualAnchor: "one explicit pseudo-3D hero object",
+      readingPath: "object first -> anchored labels -> concise explanation",
+      regionStrategy: "hero object owns the page while text stays peripheral",
+      densityPosture: "object-heavy, sparse, and annotation-friendly",
+      avoidPattern: "flat cards, dashboard tiles, glass panels, or generic left-right explainers",
+    };
+  }
+  if (args.route.primaryKind === "source-backed-analysis") {
+    return {
+      dominantVisualAnchor: "one evidence-backed analytical proof field",
+      readingPath: "claim -> source fact -> implication",
+      regionStrategy: "use source evidence as the main surface and keep interpretation compact",
+      densityPosture: "analytical, concise, and citation-disciplined",
+      avoidPattern: "unsupported market claims, fake precision, or decorative summary cards",
+    };
+  }
+  if (args.route.primaryKind === "explicit-page-blueprint") {
+    return {
+      dominantVisualAnchor: "the page-specific visual object named by the blueprint",
+      readingPath: "page title -> one claim -> named visual -> short support",
+      regionStrategy: "each page follows its own blueprint and avoids repeating deck-level scaffolding",
+      densityPosture: "page-scoped, concise, and one-visual-thesis per page",
+      avoidPattern: "request-understanding pages, repeated generic openers, or ignoring the page blueprint",
+    };
+  }
+
+  const memory = args.memory;
   switch (memory.userOperation) {
     case "value":
       return {
@@ -324,21 +433,18 @@ function buildFallbackVisualThinking(memory: StudioWorkingMemory): StudioVisualT
   }
 }
 
-function buildFallbackCapabilityActivations(args: {
-  brief: string;
-  memory: StudioWorkingMemory;
-}): StudioCapabilityActivation[] {
+function buildRouteCapabilityActivations(route: StudioTaskRoute): StudioCapabilityActivation[] {
   return [
     {
       kind: "style",
       reason: "Every page still needs a coherent professional visual system.",
       lines: ["Use a coherent, presentation-grade visual language with strong hierarchy and intentional spacing."],
     },
-    ...(hasExplicitThreeDimensionalRequest(args.brief)
+    ...(route.capabilities.threeD
       ? [
           {
             kind: "3d" as const,
-            reason: "The brief explicitly requests 3D treatment.",
+            reason: "The task route detected an explicit 3D request.",
             lines: [
               "Treat the page as one fabricated 3D hero object, not a flat UI composition.",
               "Show perspective, visible thickness, overlap or occlusion, and cutaway or exploded layer logic.",
@@ -348,24 +454,30 @@ function buildFallbackCapabilityActivations(args: {
           },
         ]
       : []),
-    ...(hasExplicitChartRequest(args.brief)
+    ...(route.capabilities.chart || route.capabilities.matrix
       ? [
           {
             kind: "chart" as const,
-            reason: "The brief explicitly requests a chart or figure.",
+            reason: route.capabilities.matrix
+              ? "The task route detected an explicit matrix or quadrant request."
+              : "The task route detected an explicit chart or figure request.",
             lines: ["Use a chart only when the page has real quantitative evidence or a clearly labeled assumption frame."],
           },
         ]
       : []),
-    {
-      kind: "freeform-layout",
-      reason: "No template is guaranteed, so layout must stay content-led.",
-      lines: ["Choose a composition from the page mission instead of defaulting to a left/right split."],
-    },
+    ...(route.capabilities.freeformLayout
+      ? [
+          {
+            kind: "freeform-layout" as const,
+            reason: "The task route requires content-led page composition.",
+            lines: ["Choose a composition from the page mission instead of defaulting to a left/right split."],
+          },
+        ]
+      : []),
   ];
 }
 
-function buildFallbackPageMission(args: {
+function buildDeterministicPageMissions(args: {
   brief: string;
   memory: StudioWorkingMemory;
   pageCount: number;
@@ -461,6 +573,65 @@ function buildFallbackPageMission(args: {
   return pageMissions;
 }
 
+function buildAmbiguousBriefPageMissions(args: {
+  brief: string;
+  memory: StudioWorkingMemory;
+  pageCount: number;
+}) {
+  const subject = resolveAmbiguousBriefSubject(args.memory.primaryObject, args.brief);
+  const missionTemplates = [
+    {
+      title: "Core Story Frame",
+      mission: `Turn the sparse request into one conservative presentation frame around ${subject}.`,
+      headlineClaim: `${subject} should be presented with explicit assumptions because the brief does not supply enough source detail.`,
+      preferredVisual: "simple-thesis-canvas",
+    },
+    {
+      title: "Audience Need",
+      mission: `Explain the likely audience need for ${subject} without inventing specific customer or market facts.`,
+      headlineClaim: `${subject} needs a clear audience problem before any detailed proof is claimed.`,
+      preferredVisual: "problem-to-response-strip",
+    },
+    {
+      title: "Basic Structure",
+      mission: `Show the basic structure or components of ${subject} using qualitative labels only.`,
+      headlineClaim: `${subject} should be organized into a simple, editable structure before adding unsupported detail.`,
+      preferredVisual: "three-part-structure",
+    },
+    {
+      title: "Knowns And Assumptions",
+      mission: `Separate what the user actually supplied about ${subject} from assumptions needed to complete the deck.`,
+      headlineClaim: `${subject} can stay useful if assumptions are visible instead of disguised as source-backed facts.`,
+      preferredVisual: "assumption-boundary-board",
+    },
+    {
+      title: "Next Step",
+      mission: `Close with the most reasonable next step for refining or using the ${subject} deck.`,
+      headlineClaim: `${subject} should end with a clear next action rather than fake precision.`,
+      preferredVisual: "next-step-panel",
+    },
+  ];
+
+  return Array.from({ length: args.pageCount }, (_value, index) => {
+    const template = missionTemplates[Math.min(index, missionTemplates.length - 1)]!;
+    const pageNumber = index + 1;
+    return {
+      pageNumber,
+      title: args.pageCount === 1 ? template.title : template.title,
+      mission: template.mission,
+      headlineClaim: template.headlineClaim,
+      supportPoints: [
+        "Use the user's sparse wording as the boundary.",
+        "Keep missing detail assumption-labeled instead of fabricating specifics.",
+      ],
+      evidenceNotes: ["No source-backed evidence was supplied; avoid hard numbers, citations, or named proof points."],
+      preferredVisual: template.preferredVisual,
+      missionScope: "page",
+      structureCue: null,
+    } satisfies StudioPageMission;
+  });
+}
+
 function sanitizeMission(mission: StudioPageMission, pageNumber: number): StudioPageMission {
   const combinedText = [mission.title, mission.mission, mission.headlineClaim, mission.preferredVisual]
     .filter(Boolean)
@@ -468,7 +639,7 @@ function sanitizeMission(mission: StudioPageMission, pageNumber: number): Studio
   const structureCue = normalizeStructureCue(mission.structureCue, combinedText);
   return {
     pageNumber,
-    title: clampText(mission.title || `Page ${pageNumber}`, 80),
+    title: clampTitleText(mission.title || `Page ${pageNumber}`, 80),
     mission: clampText(mission.mission || "Resolve one clear page mission.", 220),
     headlineClaim: clampText(mission.headlineClaim || mission.mission || "Land one clear claim.", 220),
     supportPoints: uniqueStrings((mission.supportPoints ?? []).map((line) => clampText(line, 120))).slice(0, 2),
@@ -499,7 +670,72 @@ function trimExplicitPageSegmentText(value: string) {
   return trimmed.replace(/[\s,，。.;；、]+$/g, "").trim();
 }
 
+function clampTitleText(value: string, max = 80) {
+  const normalized = normalizeStudioText(value);
+  if (normalized.length <= max) {
+    return normalized;
+  }
+  const wordBoundaryTitle = normalized
+    .slice(0, max)
+    .replace(/\s+\S*$/g, "")
+    .replace(/[\s,，。.;；:：\-–—、]+$/g, "")
+    .trim();
+  return wordBoundaryTitle.length >= 20 ? wordBoundaryTitle : normalized.slice(0, max).trim();
+}
+
+function cleanExplicitSegmentTitleCandidate(value: string) {
+  const cleaned = normalizeStudioText(value)
+    .replace(/^(?:page|slide)\s*title\s*[:：\-–—]\s*/i, "")
+    .replace(/^(?:title|headline|标题|標題)\s*[:：\-–—]\s*/i, "")
+    .replace(/^["'“”‘’]+|["'“”‘’]+$/g, "")
+    .replace(/[\s,，。.;；、]+$/g, "")
+    .trim();
+  if (!cleaned || cleaned.length < 4) {
+    return null;
+  }
+  if (/^(?:story claim|claim|evidence|layout|visual|must not become)\s*[:：]/i.test(cleaned)) {
+    return null;
+  }
+  if (
+    /^(?:create|make|generate|build|prepare|design)\b/i.test(cleaned) ||
+    /(?:\b\d+\s*-\s*page\b|\bpage\s*\d+\b|\bslide\s*\d+\b|第\s*[一二两三四五六七八九十\d]\s*(?:页|頁|张|張))/i.test(
+      cleaned,
+    )
+  ) {
+    return null;
+  }
+  return clampTitleText(cleaned, 80);
+}
+
+function extractExplicitSegmentTitle(segment: string) {
+  const normalizedSegment = normalizeStudioText(segment);
+  if (!normalizedSegment) {
+    return null;
+  }
+
+  const quotedTitle =
+    normalizedSegment.match(/^["“]([^"”]{4,180})["”]/)?.[1] ??
+    normalizedSegment.match(/^['‘]([^'’]{4,180})['’]/)?.[1];
+  const cleanedQuotedTitle = quotedTitle ? cleanExplicitSegmentTitleCandidate(quotedTitle) : null;
+  if (cleanedQuotedTitle) {
+    return cleanedQuotedTitle;
+  }
+
+  const labeledTitle = normalizedSegment.match(
+    /^(?:page|slide)\s*title\s*[:：\-–—]\s*([\s\S]*?)(?=\s+(?:story claim|claim|evidence|layout|visual|must not become|support|notes?)\s*[:：]|$)/i,
+  )?.[1] ?? normalizedSegment.match(
+    /^(?:title|headline|标题|標題)\s*[:：\-–—]\s*([\s\S]*?)(?=\s+(?:story claim|claim|evidence|layout|visual|must not become|support|notes?)\s*[:：]|$)/i,
+  )?.[1];
+  const cleanedLabeledTitle = labeledTitle ? cleanExplicitSegmentTitleCandidate(labeledTitle) : null;
+  if (cleanedLabeledTitle) {
+    return cleanedLabeledTitle;
+  }
+
+  return null;
+}
+
 function extractExplicitPageSegments(brief: string, pageCount: number) {
+  EXPLICIT_PAGE_MARKER_PATTERN.lastIndex = 0;
   const matches = Array.from(brief.matchAll(EXPLICIT_PAGE_MARKER_PATTERN))
     .map((match) => {
       const pageNumber = parsePageReferenceToken(match[1] ?? match[2] ?? "");
@@ -538,6 +774,11 @@ function resolveExplicitMissionTitle(args: {
   subject: string;
   structureCue: StudioPageMission["structureCue"];
 }) {
+  const explicitTitle = extractExplicitSegmentTitle(args.segment);
+  if (explicitTitle) {
+    return explicitTitle;
+  }
+
   const normalizedSegment = normalizeStudioText(args.segment);
   for (const entry of PAGE_ROLE_TITLE_PATTERNS) {
     if (entry.pattern.test(args.segment) || entry.pattern.test(normalizedSegment)) {
@@ -545,7 +786,17 @@ function resolveExplicitMissionTitle(args: {
     }
   }
 
-  const shortSubject = compactBoardTitle(args.subject, "Core subject", 4);
+  const normalizedSubject = normalizeStudioText(args.subject);
+  const safeSubject =
+    normalizedSubject &&
+    normalizedSubject.length <= 60 &&
+    !/^(?:create|make|generate|build|prepare|design)\b/i.test(normalizedSubject) &&
+    !/(?:\b\d+\s*-\s*page\b|\bpage\s*\d+\b|\bslide\s*\d+\b|第\s*[一二两三四五六七八九十\d]\s*(?:页|頁|张|張)|observed facts?|page plan)/i.test(
+      normalizedSubject,
+    )
+      ? normalizedSubject
+      : "";
+  const shortSubject = safeSubject ? compactBoardTitle(safeSubject, "Core subject", 4) : "";
   if (args.structureCue === "matrix" || args.structureCue === "quadrant") {
     return shortSubject && shortSubject !== "Core subject"
       ? `${shortSubject} in a BCG Matrix`
@@ -619,6 +870,14 @@ function buildMissionFromExplicitPageSegment(args: {
 }) {
   const structureCue = normalizeStructureCue(undefined, args.segment.text);
   const scopedSegmentSummary = clampText(args.segment.text, 140);
+  const normalizedSubject = normalizeStudioText(args.subject);
+  const safeSubject =
+    normalizedSubject &&
+    normalizedSubject.length <= 60 &&
+    !/\b(?:page|slide)\s*\d|\b\d+\s*-\s*page\b|第\s*[一二两三四五六七八九十\d]/i.test(normalizedSubject)
+      ? normalizedSubject
+      : "the subject";
+  const titleSubject = safeSubject === "the subject" ? "The subject" : safeSubject;
   const title = resolveExplicitMissionTitle({
     segment: args.segment.text,
     pageNumber: args.segment.pageNumber,
@@ -627,19 +886,19 @@ function buildMissionFromExplicitPageSegment(args: {
   });
   const mission =
     structureCue === "matrix" || structureCue === "quadrant"
-      ? `Frame ${args.subject || "the subject"} through one BCG-style 2x2 matrix focused on ${scopedSegmentSummary}.`
+      ? `Frame ${safeSubject} through one BCG-style 2x2 matrix focused on ${scopedSegmentSummary}.`
       : structureCue === "chart"
-        ? `Explain ${args.subject || "the subject"} through one chart-led evidence view focused on ${scopedSegmentSummary}.`
+        ? `Explain one chart-led evidence view focused on ${scopedSegmentSummary}.`
         : /\b(?:3d|three-dimensional)\b/i.test(args.segment.text) || /(?:3D|三维|立体|建模)/i.test(args.segment.text)
-          ? `Explain ${args.subject || "the subject"} through one 3D-model-centered page focused on ${scopedSegmentSummary}.`
+          ? `Explain one 3D-model-centered page focused on ${scopedSegmentSummary}.`
           : `Resolve page ${args.segment.pageNumber} around: ${clampText(args.segment.text, 140)}.`;
   const headlineClaim =
     structureCue === "matrix" || structureCue === "quadrant"
-      ? `${args.subject || "The subject"} should be positioned through one quadrant matrix that specifically answers ${scopedSegmentSummary}.`
+      ? `${titleSubject} should be positioned through one quadrant matrix that specifically answers ${scopedSegmentSummary}.`
       : structureCue === "chart"
-        ? `${args.subject || "The subject"} is best supported through one chart-led proof pattern that specifically answers ${scopedSegmentSummary}.`
+        ? `The page should use one chart-led proof pattern to answer ${scopedSegmentSummary}.`
         : /\b(?:3d|three-dimensional)\b/i.test(args.segment.text) || /(?:3D|三维|立体|建模)/i.test(args.segment.text)
-          ? `${args.subject || "The subject"} is best explained through one dominant 3D product or system model focused on ${scopedSegmentSummary}.`
+          ? `The page should use one dominant 3D product or system model focused on ${scopedSegmentSummary}.`
           : clampText(args.segment.text, 180);
 
   return sanitizeMission(
@@ -664,10 +923,152 @@ function buildMissionFromExplicitPageSegment(args: {
   );
 }
 
+function resolveRouteConfidence(args: {
+  primaryKind: StudioTaskRoutePrimaryKind;
+  explicitSegmentCount: number;
+  pageCount: number;
+  sourceSignalCount: number;
+}) {
+  if (args.primaryKind === "explicit-page-blueprint") {
+    const requiredCoverage = Math.max(1, Math.ceil(args.pageCount * 0.6));
+    return args.explicitSegmentCount >= args.pageCount || args.explicitSegmentCount >= requiredCoverage
+      ? "high"
+      : "medium";
+  }
+  if (args.primaryKind === "source-backed-analysis") {
+    return args.sourceSignalCount >= 4 ? "high" : "medium";
+  }
+  if (
+    args.primaryKind === "chart-matrix-figure" ||
+    args.primaryKind === "process-flow" ||
+    args.primaryKind === "visual-hero-3d"
+  ) {
+    return "high";
+  }
+  return "low";
+}
+
+function buildRouteReasonCodes(args: {
+  primaryKind: StudioTaskRoutePrimaryKind;
+  explicitSegmentCount: number;
+  pageCount: number;
+  sourceSignalCount: number;
+  capabilities: StudioTaskRouteCapabilities;
+}) {
+  return uniqueStrings([
+    `kind:${args.primaryKind}`,
+    ...(args.explicitSegmentCount > 0
+      ? [`explicit-page-segments:${args.explicitSegmentCount}/${args.pageCount}`]
+      : []),
+    ...(args.sourceSignalCount > 0 ? [`source-signals:${args.sourceSignalCount}`] : []),
+    ...(args.capabilities.matrix ? ["capability:matrix"] : []),
+    ...(args.capabilities.chart ? ["capability:chart"] : []),
+    ...(args.capabilities.flow ? ["capability:flow"] : []),
+    ...(args.capabilities.threeD ? ["capability:3d"] : []),
+    ...(args.capabilities.sourceBacked ? ["capability:source-backed"] : []),
+  ]).slice(0, 8);
+}
+
+function buildRoutePageBlueprint(args: {
+  segments: Map<number, ExplicitPageSegment>;
+  pageCount: number;
+}): StudioTaskRoutePageBlueprint[] {
+  return Array.from(args.segments.values())
+    .sort((left, right) => left.pageNumber - right.pageNumber)
+    .slice(0, args.pageCount)
+    .map((segment) => {
+      const structureCue = normalizeStructureCue(undefined, segment.text);
+      const has3dCue = hasExplicitThreeDimensionalRequest(segment.text);
+      const hasFlowCue = hasProcessFlowRequest(segment.text);
+      return {
+        pageNumber: segment.pageNumber,
+        title: resolveExplicitMissionTitle({
+          segment: segment.text,
+          pageNumber: segment.pageNumber,
+          subject: "",
+          structureCue,
+        }),
+        storyClaim: clampText(segment.text, 180),
+        evidenceNotes: [],
+        layoutCue: has3dCue ? "3d" : hasFlowCue ? "flow" : structureCue,
+        primaryVisual:
+          has3dCue
+            ? "explicit 3D hero object"
+            : hasFlowCue
+              ? "structured flow or swimlane map"
+              : buildPreferredVisualFromStructureCue(structureCue),
+        rawText: segment.text,
+      };
+    });
+}
+
+export function resolveStudioTaskRoute(args: {
+  brief: string;
+  requestedPageCount?: number | null;
+}): StudioTaskRoute {
+  const pageCount = detectRequestedPageCount(args.brief, args.requestedPageCount);
+  const explicitSegments = extractExplicitPageSegments(args.brief, pageCount);
+  const explicitSegmentCount = explicitSegments.size;
+  const sourceSignalCount = countSourceEvidenceSignals(args.brief);
+  const ambiguousBrief = isAmbiguousBriefRequest(args.brief);
+  const capabilities: StudioTaskRouteCapabilities = {
+    chart: hasExplicitChartRequest(args.brief),
+    matrix:
+      MATRIX_STRUCTURE_CUE_PATTERN.test(args.brief) ||
+      QUADRANT_STRUCTURE_CUE_PATTERN.test(args.brief),
+    flow: hasProcessFlowRequest(args.brief),
+    threeD: hasExplicitThreeDimensionalRequest(args.brief),
+    sourceBacked: hasSourceBackedAnalysisCue(args.brief),
+    freeformLayout: true,
+  };
+  const explicitPageThreshold = Math.max(1, Math.ceil(pageCount * 0.6));
+  const primaryKind: StudioTaskRoutePrimaryKind =
+    explicitSegmentCount >= explicitPageThreshold
+      ? "explicit-page-blueprint"
+      : capabilities.sourceBacked
+        ? "source-backed-analysis"
+        : capabilities.chart || capabilities.matrix
+          ? "chart-matrix-figure"
+          : capabilities.flow
+            ? "process-flow"
+            : capabilities.threeD
+              ? "visual-hero-3d"
+              : ambiguousBrief
+                ? "ambiguous-brief"
+              : "generic-presentation";
+  const confidence = resolveRouteConfidence({
+    primaryKind,
+    explicitSegmentCount,
+    pageCount,
+    sourceSignalCount,
+  });
+
+  return {
+    primaryKind,
+    confidence,
+    reasonCodes: buildRouteReasonCodes({
+      primaryKind,
+      explicitSegmentCount,
+      pageCount,
+      sourceSignalCount,
+      capabilities,
+    }),
+    capabilities,
+    pageBlueprint:
+      primaryKind === "explicit-page-blueprint"
+        ? buildRoutePageBlueprint({
+            segments: explicitSegments,
+            pageCount,
+          })
+        : [],
+    workspaceMode: confidence === "low" ? "full-brief" : "page-scoped",
+  };
+}
+
 function fingerprintStudioPageMission(mission: StudioPageMission) {
   return normalizeStudioText([mission.title, mission.mission, mission.headlineClaim].join(" "))
     .toLowerCase()
-    .replace(EXPLICIT_PAGE_MARKER_PATTERN, " ")
+    .replace(new RegExp(EXPLICIT_PAGE_MARKER_PATTERN.source, "gi"), " ")
     .replace(/\b(?:page|slide|deck|presentation|ppt|overall|storyboard|flow)\b/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -679,11 +1080,11 @@ export function normalizeDeckPageMissions(args: {
   subject: string;
   evidenceTier: StudioEvidenceTier;
   inputPageMissions: StudioPageMission[];
-  fallbackPageMissions: StudioPageMission[];
+  deterministicPageMissions: StudioPageMission[];
 }) {
   const explicitSegments = extractExplicitPageSegments(args.brief, args.pageCount);
-  const fallbackByPage = new Map(
-    args.fallbackPageMissions.map((mission) => [mission.pageNumber, sanitizeMission(mission, mission.pageNumber)]),
+  const deterministicByPage = new Map(
+    args.deterministicPageMissions.map((mission) => [mission.pageNumber, sanitizeMission(mission, mission.pageNumber)]),
   );
   const providedByPage = new Map(
     args.inputPageMissions.map((mission, index) => [
@@ -706,7 +1107,7 @@ export function normalizeDeckPageMissions(args: {
     return (
       providedByPage.get(pageNumber) ??
       args.inputPageMissions[index] ??
-      fallbackByPage.get(pageNumber) ??
+      deterministicByPage.get(pageNumber) ??
       sanitizeMission(
         {
           pageNumber,
@@ -752,7 +1153,7 @@ export function normalizeDeckPageMissions(args: {
       duplicateFingerprints.has(fingerprintStudioPageMission(mission))
     ) {
       return (
-        fallbackByPage.get(pageNumber) ??
+        deterministicByPage.get(pageNumber) ??
         sanitizeMission(
           {
             ...mission,
@@ -787,9 +1188,218 @@ export function normalizeDeckPageMissions(args: {
   });
 }
 
-export function buildFallbackStudioPreflightPlan(args: {
+function slugifyExportObjectId(value: string) {
+  const slug = normalizeStudioText(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fff]+/gi, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
+  return slug || "primary";
+}
+
+function inferExportObjectKind(args: {
+  mission: StudioPageMission;
+  route: StudioTaskRoute;
+}): ExportObjectKind {
+  const blueprint = args.route.pageBlueprint.find(
+    (entry) => entry.pageNumber === args.mission.pageNumber,
+  );
+  const haystack = normalizeStudioText(
+    [
+      args.mission.title,
+      args.mission.mission,
+      args.mission.headlineClaim,
+      args.mission.preferredVisual,
+      args.mission.structureCue,
+      blueprint?.layoutCue,
+      blueprint?.primaryVisual,
+      blueprint?.storyClaim,
+      blueprint?.rawText,
+    ].join(" "),
+  ).toLowerCase();
+
+  if (
+    args.mission.structureCue === "matrix" ||
+    args.mission.structureCue === "quadrant" ||
+    /\b(?:matrix|quadrant|2x2|bcg)\b/i.test(haystack) ||
+    /(?:矩阵|矩陣|四象限|二维|二維)/i.test(haystack)
+  ) {
+    return "matrix";
+  }
+  if (
+    args.mission.structureCue === "chart" ||
+    /\b(?:chart|graph|plot|bar|line|waterfall|combo|bubble|series|axis|trend)\b/i.test(haystack) ||
+    /(?:图表|圖表|柱状图|柱狀圖|折线图|折線圖|瀑布图|瀑布圖|气泡图|氣泡圖|走势图|走勢圖)/i.test(haystack)
+  ) {
+    return "native-chart";
+  }
+  if (
+    /\b(?:native table|data table|table with rows|rows and columns|financial table)\b/i.test(haystack) ||
+    /(?:原生表格|数据表|資料表|明细表|明細表|表格.{0,8}行列|行列.{0,8}表格)/i.test(haystack)
+  ) {
+    return "native-table";
+  }
+  if (
+    blueprint?.layoutCue === "flow" ||
+    args.route.primaryKind === "process-flow" ||
+    /\b(?:diagram|flow|flowchart|swimlane|workflow|process|roadmap|timeline|gantt|3d|hero model)\b/i.test(haystack) ||
+    /(?:流程|泳道|图解|圖解|架构|架構|路线图|路線圖|时间线|時間線)/i.test(haystack)
+  ) {
+    return "diagram";
+  }
+  if (
+    /\b(?:compare|comparison|versus|vs\.?|trade-?off|options?|alternatives?)\b/i.test(haystack) ||
+    /(?:对比|比較|比较|取舍|方案|选项|選項)/i.test(haystack)
+  ) {
+    return "comparison-grid";
+  }
+  if (
+    /\b(?:metric|kpi|scorecard|dashboard|stats?|numbers?|facts?|evidence wall)\b/i.test(haystack) ||
+    /(?:指标|指標|数据点|數據點|事实|事實|证据|證據)/i.test(haystack)
+  ) {
+    return "metric-grid";
+  }
+  if (
+    /\b(?:cards?|pillars?|themes?|drivers?|buckets?|modules?)\b/i.test(haystack) ||
+    /(?:卡片|支柱|主题|主題|驱动|驅動|模块|模塊)/i.test(haystack)
+  ) {
+    return "card-grid";
+  }
+  return "text";
+}
+
+function renderTargetForExportObjectKind(kind: ExportObjectKind): ExportRenderTarget {
+  if (kind === "native-chart") {
+    return "native-chart";
+  }
+  if (kind === "native-table") {
+    return "native-table";
+  }
+  if (kind === "text") {
+    return "editable-text";
+  }
+  return "editable-shapes";
+}
+
+function forbiddenInterpretationForExportObjectKind(kind: ExportObjectKind) {
+  switch (kind) {
+    case "native-chart":
+      return ["native-table"];
+    case "matrix":
+    case "comparison-grid":
+    case "metric-grid":
+    case "card-grid":
+      return ["native-table"];
+    case "diagram":
+      return ["native-table", "native-chart"];
+    case "text":
+      return ["native-table", "native-chart"];
+    case "native-table":
+    default:
+      return [];
+  }
+}
+
+function childRolesForExportObjectKind(kind: ExportObjectKind) {
+  switch (kind) {
+    case "native-chart":
+      return ["chart-frame", "plot", "axis", "legend", "annotation"];
+    case "native-table":
+      return ["table", "row", "column", "cell", "caption"];
+    case "matrix":
+      return ["axis", "quadrant", "cell", "item", "annotation"];
+    case "comparison-grid":
+      return ["option", "dimension", "evidence", "annotation"];
+    case "metric-grid":
+      return ["metric", "label", "delta", "annotation"];
+    case "card-grid":
+      return ["card", "heading", "body", "annotation"];
+    case "diagram":
+      return ["node", "connector", "lane", "phase", "annotation"];
+    case "text":
+    default:
+      return ["headline", "body", "annotation"];
+  }
+}
+
+function dataContractForExportObjectKind(kind: ExportObjectKind, mission: StudioPageMission) {
+  if (kind === "native-chart") {
+    return {
+      expected: "chart-spec",
+      source: mission.structureCue === "chart" ? "structure-cue" : "visual-cue",
+      requiredFields: ["categories", "series"],
+    };
+  }
+  if (kind === "native-table") {
+    return {
+      expected: "table-spec",
+      requiredFields: ["columns", "rows"],
+    };
+  }
+  if (kind === "matrix") {
+    return {
+      expected: "matrix-object",
+      nativeTableAllowed: false,
+    };
+  }
+  return null;
+}
+
+function buildPrimaryExportObjectContract(args: {
+  mission: StudioPageMission;
+  route: StudioTaskRoute;
+}): ExportObjectContract {
+  const objectKind = inferExportObjectKind(args);
+  const objectId = `p${args.mission.pageNumber}-primary-${slugifyExportObjectId(objectKind)}`;
+  const renderTarget = renderTargetForExportObjectKind(objectKind);
+  return {
+    objectId,
+    pageNumber: args.mission.pageNumber,
+    pageStory: args.mission.headlineClaim || args.mission.mission,
+    primaryVisualObject:
+      args.mission.preferredVisual ||
+      args.mission.structureCue ||
+      args.mission.title ||
+      objectKind,
+    objectKind,
+    dataContract: dataContractForExportObjectKind(objectKind, args.mission),
+    renderTarget,
+    ownershipScope: {
+      rootId: objectId,
+      ownsText: objectKind !== "native-chart" && objectKind !== "native-table",
+      ownsShapes: renderTarget === "editable-shapes",
+      ownsSvg: objectKind === "matrix" || objectKind === "diagram",
+      childRoles: childRolesForExportObjectKind(objectKind),
+    },
+    forbiddenInterpretation: forbiddenInterpretationForExportObjectKind(objectKind),
+  };
+}
+
+function buildDeckExportContract(args: {
+  pageMissions: StudioPageMission[];
+  route: StudioTaskRoute;
+}): DeckExportContract {
+  return {
+    version: 1,
+    pages: args.pageMissions.map((mission) => {
+      const primaryObject = buildPrimaryExportObjectContract({
+        mission,
+        route: args.route,
+      });
+      return {
+        pageNumber: mission.pageNumber,
+        pageStory: mission.headlineClaim || mission.mission,
+        primaryVisualObject: primaryObject.primaryVisualObject,
+        objects: [primaryObject],
+      };
+    }),
+  };
+}
+
+export function buildDeterministicStudioPreflightPlan(args: {
   brief: string;
   requestedPageCount?: number | null;
+  route?: StudioTaskRoute | null;
 }): StudioPreflightPlan {
   const rawInputs = createRawBriefThinkingInputs(args.brief);
   const workingMemory = buildStudioWorkingMemory({
@@ -798,32 +1408,61 @@ export function buildFallbackStudioPreflightPlan(args: {
     requestedPageCount: args.requestedPageCount,
   });
   const pageCount = detectRequestedPageCount(args.brief, args.requestedPageCount);
-  const evidenceTier = inferEvidenceTierFromWorkingMemory(workingMemory);
-  const fallbackPageMissions = buildFallbackPageMission({
-    brief: args.brief,
-    memory: workingMemory,
-    pageCount,
-    evidenceTier,
-  }).map((mission) => sanitizeMission(mission, mission.pageNumber));
+  const route =
+    args.route ??
+    resolveStudioTaskRoute({
+      brief: args.brief,
+      requestedPageCount: args.requestedPageCount,
+    });
+  const evidenceTier: StudioEvidenceTier =
+    route.capabilities.sourceBacked
+      ? "source-backed"
+      : route.primaryKind === "ambiguous-brief"
+        ? "explicit assumption"
+        : inferEvidenceTierFromWorkingMemory(workingMemory);
+  const deterministicPageMissions =
+    route.primaryKind === "ambiguous-brief"
+      ? buildAmbiguousBriefPageMissions({
+          brief: args.brief,
+          memory: workingMemory,
+          pageCount,
+        }).map((mission) => sanitizeMission(mission, mission.pageNumber))
+      : buildDeterministicPageMissions({
+          brief: args.brief,
+          memory: workingMemory,
+          pageCount,
+          evidenceTier,
+        }).map((mission) => sanitizeMission(mission, mission.pageNumber));
   const pageMissions = normalizeDeckPageMissions({
     brief: args.brief,
     pageCount,
     subject: workingMemory.primaryObject,
     evidenceTier,
-    inputPageMissions: fallbackPageMissions,
-    fallbackPageMissions,
+    inputPageMissions: deterministicPageMissions,
+    deterministicPageMissions,
+  });
+  const exportContract = buildDeckExportContract({
+    pageMissions,
+    route,
   });
 
   return {
     rawBrief: args.brief,
-    subject: sanitizeFallbackSubject(
-      workingMemory.primaryObject || compactBoardTitle(args.brief, "Core subject", 6),
-      args.brief,
-    ),
+    route,
+    subject:
+      route.primaryKind === "ambiguous-brief"
+        ? resolveAmbiguousBriefSubject(workingMemory.primaryObject, args.brief)
+        : sanitizeDeterministicSubject(
+            workingMemory.primaryObject || compactBoardTitle(args.brief, "Core subject", 6),
+            args.brief,
+          ),
     deliverable: workingMemory.deliverable || (pageCount === 1 ? "1-page PPT" : `${pageCount}-page PPT`),
     pageCount,
     audienceOrQualityBar: workingMemory.audienceBar,
-    coreTask: deriveCoreTaskFromMemory(workingMemory),
+    coreTask:
+      route.primaryKind === "ambiguous-brief"
+        ? "Resolve a sparse presentation request with explicit assumptions and no invented evidence."
+        : deriveCoreTaskFromMemory(workingMemory),
     evidencePolicy: {
       tier: evidenceTier,
       summary:
@@ -844,11 +1483,11 @@ export function buildFallbackStudioPreflightPlan(args: {
             ],
     },
     pageMissions,
-    visualThinking: buildFallbackVisualThinking(workingMemory),
-    capabilityActivations: buildFallbackCapabilityActivations({
-      brief: args.brief,
+    visualThinking: buildDeterministicVisualThinking({
       memory: workingMemory,
+      route,
     }),
+    capabilityActivations: buildRouteCapabilityActivations(route),
     assumptionPolicy:
       evidenceTier === "source-backed"
         ? ["Keep claims tied to the raw brief's evidence and do not invent extra hard facts."]
@@ -856,239 +1495,8 @@ export function buildFallbackStudioPreflightPlan(args: {
             "If the page needs completion, use assumption-labeled or qualitative framing.",
             "Never fabricate citations, exact financials, market shares, or recent factual claims.",
           ],
+    exportContract,
   };
-}
-
-type ParsedPreflightPayload = Partial<StudioPreflightPlan> & {
-  evidencePolicy?: Partial<StudioPreflightPlan["evidencePolicy"]>;
-  visualThinking?: Partial<StudioVisualThinking>;
-  capabilityActivations?: Array<Partial<StudioCapabilityActivation>>;
-  pageMissions?: Array<Partial<StudioPageMission>>;
-};
-
-function normalizeEvidenceTier(value: string | undefined, fallback: StudioEvidenceTier): StudioEvidenceTier {
-  const normalized = normalizeStudioText(value ?? "").toLowerCase();
-  if (normalized.includes("source")) {
-    return "source-backed";
-  }
-  if (normalized.includes("axiomatic") || normalized.includes("common")) {
-    return "axiomatic/common-knowledge";
-  }
-  if (normalized.includes("assumption")) {
-    return "explicit assumption";
-  }
-  return fallback;
-}
-
-function normalizeCapabilityKind(value: string | undefined): StudioCapabilityActivation["kind"] | null {
-  const normalized = normalizeStudioText(value ?? "").toLowerCase();
-  if (!normalized) {
-    return null;
-  }
-  if (matchesThreeDimensionalCue(normalized)) {
-    return "3d";
-  }
-  if (normalized.includes("chart") || normalized.includes("matrix") || normalized.includes("quadrant") || normalized.includes("bcg")) {
-    return "chart";
-  }
-  if (normalized.includes("template")) {
-    return "template";
-  }
-  if (normalized.includes("data")) {
-    return "data-visualization";
-  }
-  if (normalized.includes("layout")) {
-    return "freeform-layout";
-  }
-  return "style";
-}
-
-function sanitizeVisualThinking(
-  value: Partial<StudioVisualThinking> | undefined,
-  fallback: StudioVisualThinking,
-): StudioVisualThinking {
-  return {
-    dominantVisualAnchor: clampText(value?.dominantVisualAnchor || fallback.dominantVisualAnchor, 140),
-    readingPath: clampText(value?.readingPath || fallback.readingPath, 140),
-    regionStrategy: clampText(value?.regionStrategy || fallback.regionStrategy, 180),
-    densityPosture: clampText(value?.densityPosture || fallback.densityPosture, 120),
-    avoidPattern: clampText(value?.avoidPattern || fallback.avoidPattern, 140),
-  };
-}
-
-function sanitizeCapabilityActivations(
-  value: Array<Partial<StudioCapabilityActivation>> | undefined,
-  fallback: StudioCapabilityActivation[],
-): StudioCapabilityActivation[] {
-  const items = (value ?? [])
-    .map((entry) => {
-      const kind = normalizeCapabilityKind(typeof entry.kind === "string" ? entry.kind : "");
-      const reason = clampText(String(entry.reason ?? "").trim(), 180);
-      if (!kind || !reason) {
-        return null;
-      }
-      return {
-        kind,
-        reason,
-        lines: uniqueStrings((entry.lines ?? []).map((line) => clampText(String(line ?? ""), 160))).slice(0, 3),
-      } satisfies StudioCapabilityActivation;
-    })
-    .filter((item): item is NonNullable<typeof item> => item !== null);
-
-  return items.length > 0 ? items : fallback;
-}
-
-export function parseStudioPreflightPlan(args: {
-  text: string;
-  brief: string;
-  requestedPageCount?: number | null;
-}): StudioPreflightPlan {
-  const fallback = buildFallbackStudioPreflightPlan({
-    brief: args.brief,
-    requestedPageCount: args.requestedPageCount,
-  });
-  const rawJson = extractJsonDocument(args.text);
-  if (!rawJson) {
-    return fallback;
-  }
-
-  let parsed: ParsedPreflightPayload;
-  try {
-    parsed = JSON.parse(rawJson) as ParsedPreflightPayload;
-  } catch {
-    return fallback;
-  }
-
-  const pageCount = Math.max(
-    1,
-    Number.isFinite(parsed.pageCount) ? Number(parsed.pageCount) : fallback.pageCount ?? 1,
-  );
-  const evidenceTier = normalizeEvidenceTier(parsed.evidencePolicy?.tier as string | undefined, fallback.evidencePolicy.tier);
-
-  const parsedPageMissions =
-    (parsed.pageMissions ?? [])
-      .slice(0, pageCount)
-      .map((mission, index) =>
-        sanitizeMission(
-          {
-            pageNumber: mission.pageNumber ?? index + 1,
-            title: String(mission.title ?? ""),
-            mission: String(mission.mission ?? ""),
-            headlineClaim: String(mission.headlineClaim ?? ""),
-            supportPoints: Array.isArray(mission.supportPoints) ? mission.supportPoints.map(String) : [],
-            evidenceNotes: Array.isArray(mission.evidenceNotes) ? mission.evidenceNotes.map(String) : [],
-            preferredVisual:
-              mission.preferredVisual === null || mission.preferredVisual === undefined
-                ? null
-                : String(mission.preferredVisual),
-            missionScope:
-              mission.missionScope === null || mission.missionScope === undefined
-                ? "page"
-                : normalizeMissionScope(String(mission.missionScope), String(mission.mission ?? "")),
-            structureCue:
-              mission.structureCue === null || mission.structureCue === undefined
-                ? null
-                : normalizeStructureCue(String(mission.structureCue), String(mission.mission ?? "")),
-          },
-          index + 1,
-        ),
-      )
-      .filter((mission) => mission.title || mission.mission);
-  const pageMissions = normalizeDeckPageMissions({
-    brief: args.brief,
-    pageCount,
-    subject: String(parsed.subject ?? fallback.subject),
-    evidenceTier,
-    inputPageMissions: parsedPageMissions.length > 0 ? parsedPageMissions : fallback.pageMissions,
-    fallbackPageMissions: fallback.pageMissions,
-  });
-
-  return {
-    rawBrief: args.brief,
-    subject: clampText(String(parsed.subject ?? fallback.subject), 120),
-    deliverable: clampText(String(parsed.deliverable ?? fallback.deliverable), 120),
-    pageCount,
-    audienceOrQualityBar:
-      parsed.audienceOrQualityBar === null || parsed.audienceOrQualityBar === undefined
-        ? fallback.audienceOrQualityBar
-        : clampText(String(parsed.audienceOrQualityBar), 140),
-    coreTask: clampText(String(parsed.coreTask ?? fallback.coreTask), 220),
-    evidencePolicy: {
-      tier: evidenceTier,
-      summary: clampText(String(parsed.evidencePolicy?.summary ?? fallback.evidencePolicy.summary), 220),
-      lines: uniqueStrings(
-        (Array.isArray(parsed.evidencePolicy?.lines) ? parsed.evidencePolicy?.lines : fallback.evidencePolicy.lines)
-          .map(String)
-          .map((line) => clampText(line, 180)),
-      ).slice(0, 3),
-    },
-    pageMissions,
-    visualThinking: sanitizeVisualThinking(parsed.visualThinking, fallback.visualThinking),
-    capabilityActivations: sanitizeCapabilityActivations(parsed.capabilityActivations, fallback.capabilityActivations),
-    assumptionPolicy: uniqueStrings(
-      (Array.isArray(parsed.assumptionPolicy) ? parsed.assumptionPolicy : fallback.assumptionPolicy)
-        .map(String)
-        .map((line) => clampText(line, 180)),
-    ).slice(0, 3),
-  };
-}
-
-export function buildStudioPreflightPrompt(args: {
-  brief: string;
-  requestedPageCount?: number | null;
-}) {
-  const requestedPageCount = detectRequestedPageCount(args.brief, args.requestedPageCount);
-  return [
-    "You are Codex preparing a very small JSON-only understanding plan for a presentation request.",
-    "Read the raw brief as a whole. Do not break it into platform-defined sub-blocks before understanding it.",
-    "Do not write page copy or HTML.",
-    "Return JSON only with this exact shape:",
-    "{",
-    '  "rawBrief": string,',
-    '  "subject": string,',
-    '  "deliverable": string,',
-    '  "pageCount": number,',
-    '  "audienceOrQualityBar": string | null,',
-    '  "coreTask": string,',
-    '  "evidencePolicy": {',
-    '    "tier": "source-backed" | "axiomatic/common-knowledge" | "explicit assumption",',
-    '    "summary": string,',
-    '    "lines": string[]',
-    "  },",
-    '  "pageMissions": [{',
-    '    "pageNumber": number,',
-    '    "title": string,',
-    '    "mission": string,',
-    '    "headlineClaim": string,',
-    '    "supportPoints": string[],',
-    '    "evidenceNotes": string[],',
-    '    "preferredVisual": string | null,',
-    '    "missionScope": "page" | "deck",',
-    '    "structureCue": "matrix" | "quadrant" | "chart" | null',
-    "  }],",
-    '  "visualThinking": {',
-    '    "dominantVisualAnchor": string,',
-    '    "readingPath": string,',
-    '    "regionStrategy": string,',
-    '    "densityPosture": string,',
-    '    "avoidPattern": string',
-    "  },",
-    '  "capabilityActivations": [{ "kind": string, "reason": string, "lines": string[] }],',
-    '  "assumptionPolicy": string[]',
-    "}",
-    "Rules:",
-    `- Honor the raw brief exactly as written and keep it in rawBrief unchanged.`,
-    `- Requested page count: ${requestedPageCount}.`,
-    "- Identify the real subject and do not confuse audience or quality bar with the subject.",
-    "- Activate 3D only if the raw brief explicitly asks for 3D, cutaway, exploded view, or hero model.",
-    "- Activate chart only if the raw brief explicitly asks for a chart, matrix, quadrant, or the page is truly figure-first.",
-    "- If evidence is weak, allow axiomatic/common-knowledge or explicit assumption framing, but never invent citations, recent facts, market shares, financial numbers, or valuation multiples.",
-    "- Keep page missions tight: one page, one mission, one headline claim.",
-    "- For multi-page decks, pageMissions must be page-scoped and specific to that page. Do not reuse one deck-level mission across multiple pages.",
-    "",
-    "Raw brief:",
-    args.brief,
-  ].join("\n");
 }
 
 function mapEvidenceSourceFromTier(tier: StudioEvidenceTier): StudioBriefSynthesis["evidenceSourceUsed"] {

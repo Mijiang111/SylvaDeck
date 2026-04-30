@@ -159,11 +159,74 @@ domParserTest("bubble-like figure roots can be upgraded into editable chart modu
   }
 });
 
-domParserTest("strong table-like grids become editable table modules", () => {
+domParserTest("div-built bar roots can be upgraded into editable chart modules", () => {
+  const structure = extractHtmlVisualStructure({
+    html: `<!DOCTYPE html><html><body>
+      <section class="page">
+        <div style="position:relative;width:860px;height:420px;background:#fff;border:1px solid #d9e5ef;">
+          <div style="position:absolute;left:36px;top:24px;font-size:18px;font-weight:700;">Revenue bar chart</div>
+          <div style="position:absolute;left:80px;bottom:48px;width:70px;height:90px;background:#305c63;"></div>
+          <div style="position:absolute;left:210px;bottom:48px;width:70px;height:150px;background:#305c63;"></div>
+          <div style="position:absolute;left:340px;bottom:48px;width:70px;height:210px;background:#305c63;"></div>
+          <div style="position:absolute;left:95px;bottom:14px;font-size:13px;">2024</div>
+          <div style="position:absolute;left:225px;bottom:14px;font-size:13px;">2025</div>
+          <div style="position:absolute;left:355px;bottom:14px;font-size:13px;">2026</div>
+          <div style="position:absolute;left:92px;top:250px;font-size:13px;">90</div>
+          <div style="position:absolute;left:222px;top:190px;font-size:13px;">150</div>
+          <div style="position:absolute;left:350px;top:130px;font-size:13px;">210</div>
+        </div>
+      </section>
+    </body></html>`,
+  });
+
+  const page = structure.pages[0];
+  assert.ok(page);
+  const chartNode = page.nodes.find((node) => node.moduleKind === "chart");
+
+  assert.ok(chartNode);
+  assert.equal(chartNode?.chartSpec?.kind, "bar");
+  if (chartNode?.chartSpec?.kind === "bar") {
+    assert.deepEqual(chartNode.chartSpec.categories, ["2024", "2025", "2026"]);
+    assert.deepEqual(chartNode.chartSpec.series[0]?.values, [90, 150, 210]);
+  }
+});
+
+domParserTest("table-like grids without table intent stay visual surfaces", () => {
   const structure = extractHtmlVisualStructure({
     html: `<!DOCTYPE html><html><body>
       <section class="page">
         <div style="position:relative;width:1160px;height:420px;background:#fff;border:1px solid #d9e5ef;">
+          <div style="position:absolute;left:24px;top:24px;font-size:13px;font-weight:700;">Operator</div>
+          <div style="position:absolute;left:320px;top:24px;font-size:13px;font-weight:700;">Capacity</div>
+          <div style="position:absolute;left:520px;top:24px;font-size:13px;font-weight:700;">Margin</div>
+          <div style="position:absolute;left:720px;top:24px;font-size:13px;font-weight:700;">Lead time</div>
+          <div style="position:absolute;left:24px;top:108px;font-size:24px;font-weight:700;">Hyperscaler</div>
+          <div style="position:absolute;left:24px;top:136px;font-size:13px;">Cloud + platform stack</div>
+          <div style="position:absolute;left:320px;top:112px;font-size:28px;font-weight:700;">8.4 GW</div>
+          <div style="position:absolute;left:520px;top:112px;font-size:28px;font-weight:700;">41%</div>
+          <div style="position:absolute;left:720px;top:112px;font-size:28px;font-weight:700;">5 mo</div>
+          <div style="position:absolute;left:24px;top:196px;font-size:24px;font-weight:700;">Enterprise colo</div>
+          <div style="position:absolute;left:24px;top:224px;font-size:13px;">Interconnect layer</div>
+          <div style="position:absolute;left:320px;top:200px;font-size:28px;font-weight:700;">2.8 GW</div>
+          <div style="position:absolute;left:520px;top:200px;font-size:28px;font-weight:700;">18%</div>
+          <div style="position:absolute;left:720px;top:200px;font-size:28px;font-weight:700;">8 mo</div>
+        </div>
+      </section>
+    </body></html>`,
+  });
+
+  const page = structure.pages[0];
+  assert.ok(page);
+  const tableNode = page.nodes.find((node) => node.moduleKind === "table");
+
+  assert.equal(tableNode, undefined);
+});
+
+domParserTest("explicit table-intent grids become editable table modules", () => {
+  const structure = extractHtmlVisualStructure({
+    html: `<!DOCTYPE html><html><body>
+      <section class="page">
+        <div data-export-role="table" style="position:relative;width:1160px;height:420px;background:#fff;border:1px solid #d9e5ef;">
           <div style="position:absolute;left:24px;top:24px;font-size:13px;font-weight:700;">Operator</div>
           <div style="position:absolute;left:320px;top:24px;font-size:13px;font-weight:700;">Capacity</div>
           <div style="position:absolute;left:520px;top:24px;font-size:13px;font-weight:700;">Margin</div>

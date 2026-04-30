@@ -996,8 +996,46 @@ function renderNativeBubbleChart(pptx: any, slide: any, chartNode: PptxExportCha
     legendPos: "b",
     dataLabelPosition: "r",
   });
+  renderNativeBubbleChartText(slide, chartNode);
 
   return true;
+}
+
+function renderNativeBubbleChartText(slide: any, chartNode: PptxExportChartNode) {
+  const frame = chartFrameBounds(chartNode);
+  if (chartNode.xAxisTitle) {
+    addChartText(slide, chartNode.xAxisTitle, {
+      x: frame.x + Math.min(0.42, frame.w * 0.08),
+      y: frame.y + frame.h - 0.28,
+      w: Math.max(0.8, frame.w - 0.84),
+      h: 0.16,
+      fontSize: 6.8,
+      align: "center",
+      color: chartNode.themeTokens.textMuted,
+    });
+  }
+  if (chartNode.yAxisTitle) {
+    addChartText(slide, chartNode.yAxisTitle, {
+      x: Math.max(0, frame.x - 0.18),
+      y: frame.y + frame.h * 0.46,
+      w: 0.58,
+      h: 0.16,
+      fontSize: 6.8,
+      align: "center",
+      rotate: 270,
+      color: chartNode.themeTokens.textMuted,
+    });
+  }
+  if (chartNode.insight) {
+    addChartText(slide, chartNode.insight, {
+      x: frame.x + frame.w - Math.min(1.2, frame.w * 0.32),
+      y: frame.y + 0.18,
+      w: Math.min(1.2, frame.w * 0.32),
+      h: Math.min(0.42, frame.h * 0.34),
+      fontSize: 6,
+      color: chartNode.themeTokens.textMuted,
+    });
+  }
 }
 
 function renderNativeComboChart(pptx: any, slide: any, chartNode: PptxExportChartNode) {

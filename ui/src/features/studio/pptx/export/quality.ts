@@ -46,8 +46,18 @@ function defaultDiagnosticSeverity(diagnostic: Pick<PptExportDiagnostic, "code">
       return "degraded";
     case "native-chart-exported":
     case "native-chart-visible":
+    case "chart-contract-detected":
+    case "export-contract-detected":
     case "hidden-native-chart-data":
       return "success";
+    case "chart-contract-blocked":
+      return "fatal";
+    case "export-contract-missing":
+    case "export-contract-kind-mismatch":
+    case "export-contract-forbidden-violation":
+    case "export-contract-native-table-missing-data":
+    case "export-contract-duplicate-ownership":
+      return "degraded";
     case "hybrid-chart-exported":
     case "visual-clipped":
     case "text-owned":
@@ -96,6 +106,12 @@ function issuesFromDiagnostics(diagnostics: PptExportDiagnostic[]) {
       sourceKind: diagnostic.sourceKind,
       renderMode: diagnostic.renderMode,
       countsAgainstQuality: diagnostic.countsAgainstQuality,
+      chartFamily: diagnostic.chartFamily,
+      chartNativeEligibility: diagnostic.chartNativeEligibility,
+      chartBlockedReason: diagnostic.chartBlockedReason,
+      exportObjectId: diagnostic.exportObjectId,
+      exportObjectKind: diagnostic.exportObjectKind,
+      exportRenderTarget: diagnostic.exportRenderTarget,
     }),
   );
 }
@@ -402,6 +418,19 @@ function pageReportForSlide(
     degradedCount,
     nativeObjectCount: countByEditability(slide, "native"),
     fallbackObjectCount: countByEditability(slide, "hybrid") + countByEditability(slide, "image"),
+    chartContractCandidateCount:
+      slide.nodes.filter((node) => node.nodeType === "chart" && node.chartContract).length +
+      issues.filter((issue) => issue.code === "chart-contract-blocked").length,
+    blockedChartContractCount: issues.filter((issue) => issue.code === "chart-contract-blocked").length,
+    exportContractCandidateCount: issues.filter((issue) => issue.code === "export-contract-detected").length,
+    exportContractViolationCount: issues.filter(
+      (issue) =>
+        issue.code === "export-contract-missing" ||
+        issue.code === "export-contract-kind-mismatch" ||
+        issue.code === "export-contract-forbidden-violation" ||
+        issue.code === "export-contract-native-table-missing-data" ||
+        issue.code === "export-contract-duplicate-ownership",
+    ).length,
     issues,
   };
 }
@@ -447,6 +476,14 @@ export function buildPptxExportQualityReport(document: PptxExportDocument): Pptx
   const issueCount = fatalCount + degradedCount + infoCount;
   const fallbackCountByReason: Record<string, number> = {};
   const nativeChartCountByKind: Record<string, number> = {};
+  const chartContractByFamily: Record<string, number> = {};
+  const chartContractByEligibility: Record<string, number> = {};
+  const exportContractByKind: Record<string, number> = {};
+  const exportContractByRenderTarget: Record<string, number> = {};
+  let chartContractCandidateCount = 0;
+  let blockedChartContractCount = 0;
+  let exportContractCandidateCount = 0;
+  let exportContractViolationCount = 0;
 
   for (const slide of document.slides) {
     for (const node of slide.nodes) {
@@ -456,6 +493,42 @@ export function buildPptxExportQualityReport(document: PptxExportDocument): Pptx
       }
       if (node.nodeType === "chart" && node.editability === "native") {
         incrementRecord(nativeChartCountByKind, node.chartKind ?? "chart");
+      }
+      if (node.nodeType === "chart" && node.chartContract) {
+        chartContractCandidateCount += 1;
+        incrementRecord(chartContractByFamily, node.chartContract.family);
+        incrementRecord(chartContractByEligibility, node.chartContract.nativeEligibility);
+        if (node.chartContract.nativeEligibility === "blocked") {
+          blockedChartContractCount += 1;
+        }
+      }
+    }
+  }
+  for (const diagnostic of document.diagnostics) {
+    if (diagnostic.code === "chart-contract-blocked") {
+      chartContractCandidateCount += 1;
+      incrementRecord(chartContractByFamily, diagnostic.chartFamily ?? "unknown");
+      incrementRecord(chartContractByEligibility, diagnostic.chartNativeEligibility ?? "blocked");
+      blockedChartContractCount += 1;
+    }
+    if (diagnostic.code === "export-contract-detected") {
+      exportContractCandidateCount += 1;
+      incrementRecord(exportContractByKind, diagnostic.exportObjectKind ?? "unknown");
+      incrementRecord(exportContractByRenderTarget, diagnostic.exportRenderTarget ?? "unknown");
+    }
+    if (
+      diagnostic.code === "export-contract-missing" ||
+      diagnostic.code === "export-contract-kind-mismatch" ||
+      diagnostic.code === "export-contract-forbidden-violation" ||
+      diagnostic.code === "export-contract-native-table-missing-data" ||
+      diagnostic.code === "export-contract-duplicate-ownership"
+    ) {
+      exportContractViolationCount += 1;
+      if (diagnostic.exportObjectKind) {
+        incrementRecord(exportContractByKind, diagnostic.exportObjectKind);
+      }
+      if (diagnostic.exportRenderTarget) {
+        incrementRecord(exportContractByRenderTarget, diagnostic.exportRenderTarget);
       }
     }
   }
@@ -487,6 +560,18 @@ export function buildPptxExportQualityReport(document: PptxExportDocument): Pptx
     fallbackObjectCount,
     fallbackCountByReason,
     nativeChartCountByKind,
+    chartContracts: {
+      candidateCount: chartContractCandidateCount,
+      blockedCount: blockedChartContractCount,
+      byFamily: chartContractByFamily,
+      byEligibility: chartContractByEligibility,
+    },
+    exportContracts: {
+      candidateCount: exportContractCandidateCount,
+      violationCount: exportContractViolationCount,
+      byKind: exportContractByKind,
+      byRenderTarget: exportContractByRenderTarget,
+    },
     acceptanceFailures,
     fatalCount,
     degradedCount,

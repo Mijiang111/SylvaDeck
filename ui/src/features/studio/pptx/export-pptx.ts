@@ -22,6 +22,9 @@ import { waitForRenderableSurface } from "@/features/studio/runtime/studio/expor
 import type {
   GeneratedHtmlReport,
   GeneratedHtmlReportStyleProfile,
+  ExportObjectContract,
+  ExportObjectKind,
+  ExportRenderTarget,
   HtmlChartSpec,
   HtmlChartKind,
   HtmlPageVisualStyle,
@@ -38,10 +41,15 @@ import {
   type ExportPageFrame,
 } from "./export/collector";
 import {
+  buildExportChartContractFromSpec,
+  classifyUnstructuredChartElement,
+  completeExportChartContract,
   findChartContractElement,
   findChartPlotElement,
+  hasChartLikeEvidence,
   hasStructuredChartContract,
   hasUnstructuredChartPrimitives,
+  isSupportedChartFamily,
 } from "./export/recognition/chart";
 import {
   buildPptxExportDocument,
@@ -95,6 +103,8 @@ import {
   PPT_LAYOUT,
   PX_PER_INCH,
   type PptExportBubblePoint,
+  type PptExportChartContract,
+  type PptExportChartBlockedReason,
   type PptExportChartModel,
   type PptExportChartNativeStyle,
   type PptExportChartSeries,
@@ -136,6 +146,7 @@ type ChartFrameCandidate = {
 
 type ChartCollectionResult = {
   chartNodes: PptExportChartModel[];
+  textNodes: PptExportTextNode[];
   skipVisualIds: Set<string>;
   skipTextElements: HTMLElement[];
   skipPrimitiveWithinElements: HTMLElement[];
@@ -148,6 +159,25 @@ type TableCollectionResult = {
   skipTextElements: HTMLElement[];
   skipPrimitiveWithinElements: HTMLElement[];
   owners: ExportOwner[];
+};
+
+type SemanticExportObject = {
+  objectId: string;
+  element: HTMLElement;
+  objectKind: ExportObjectKind;
+  renderTarget: ExportRenderTarget;
+  forbiddenInterpretation: string[];
+  ownershipScope: {
+    ownsText: boolean;
+    ownsShapes: boolean;
+    ownsSvg: boolean;
+  };
+  contract?: ExportObjectContract;
+};
+
+type SemanticExportObjectRegistry = {
+  objects: SemanticExportObject[];
+  byElement: Map<HTMLElement, SemanticExportObject>;
 };
 
 type ParsedExportChartData = {
@@ -179,6 +209,7 @@ type SupportedNativeChartKind = Extract<
 
 type NormalizedChartContract = {
   chartKind: SupportedNativeChartKind;
+  chartContract: PptExportChartContract;
   labels: string[];
   series: PptExportChartSeries[];
   title?: string;
@@ -671,6 +702,258 @@ function createExportPagePlan(args: {
     : null;
 }
 
+function isExportObjectKind(value: string | null | undefined): value is ExportObjectKind {
+  return (
+    value === "native-chart" ||
+    value === "matrix" ||
+    value === "native-table" ||
+    value === "comparison-grid" ||
+    value === "metric-grid" ||
+    value === "card-grid" ||
+    value === "diagram" ||
+    value === "text"
+  );
+}
+
+function isExportRenderTarget(value: string | null | undefined): value is ExportRenderTarget {
+  return (
+    value === "native-chart" ||
+    value === "native-table" ||
+    value === "editable-shapes" ||
+    value === "editable-text" ||
+    value === "html-visual"
+  );
+}
+
+function parseExportContractAttribute(element: HTMLElement): ExportObjectContract | undefined {
+  const raw = element.getAttribute("data-export-contract");
+  if (!raw) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<ExportObjectContract>;
+    if (
+      typeof parsed.objectId !== "string" ||
+      !isExportObjectKind(parsed.objectKind) ||
+      !isExportRenderTarget(parsed.renderTarget)
+    ) {
+      return undefined;
+    }
+    return parsed as ExportObjectContract;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeExportContractList(value: string | null | undefined) {
+  return normalizeText(value ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function buildSemanticExportObjectFromElement(element: HTMLElement): SemanticExportObject | null {
+  const contract = parseExportContractAttribute(element);
+  const objectId = normalizeText(
+    element.getAttribute("data-export-object-id") ?? contract?.objectId ?? "",
+  );
+  const objectKind = element.getAttribute("data-semantic-kind") ?? contract?.objectKind;
+  const renderTarget = element.getAttribute("data-render-target") ?? contract?.renderTarget;
+  if (!objectId || !isExportObjectKind(objectKind) || !isExportRenderTarget(renderTarget)) {
+    return null;
+  }
+  const ownershipTokens = new Set(normalizeExportContractList(element.getAttribute("data-ownership-scope")));
+  return {
+    objectId,
+    element,
+    objectKind,
+    renderTarget,
+    forbiddenInterpretation:
+      normalizeExportContractList(element.getAttribute("data-forbidden-export")).length > 0
+        ? normalizeExportContractList(element.getAttribute("data-forbidden-export"))
+        : contract?.forbiddenInterpretation ?? [],
+    ownershipScope: {
+      ownsText: ownershipTokens.has("text") || Boolean(contract?.ownershipScope?.ownsText),
+      ownsShapes: ownershipTokens.has("shape") || Boolean(contract?.ownershipScope?.ownsShapes),
+      ownsSvg: ownershipTokens.has("svg") || Boolean(contract?.ownershipScope?.ownsSvg),
+    },
+    contract,
+  };
+}
+
+function semanticOwnerKindForExportObject(kind: ExportObjectKind): PptExportOwnerKind {
+  if (kind === "native-chart") {
+    return "chart";
+  }
+  if (kind === "native-table") {
+    return "table";
+  }
+  if (kind === "matrix") {
+    return "matrix";
+  }
+  if (kind === "diagram") {
+    return "diagram";
+  }
+  return "block";
+}
+
+function collectSemanticExportObjects(args: {
+  pageElement: HTMLElement;
+  pageNumber: number;
+  warnings: PptExportWarning[];
+  expectedContract?: ExportObjectContract | null;
+}): SemanticExportObjectRegistry {
+  const candidates = Array.from(
+    args.pageElement.querySelectorAll<HTMLElement>("[data-export-object-id],[data-semantic-kind]"),
+  );
+  const objects: SemanticExportObject[] = [];
+  const byElement = new Map<HTMLElement, SemanticExportObject>();
+  const seenIds = new Set<string>();
+
+  for (const element of candidates) {
+    const object = buildSemanticExportObjectFromElement(element);
+    if (!object) {
+      continue;
+    }
+    if (seenIds.has(object.objectId)) {
+      args.warnings.push({
+        code: "export-contract-duplicate-ownership",
+        severity: "degraded",
+        pageNumber: args.pageNumber,
+        sourceId: sourceElementIdForElement(args.pageElement, element, "export-object"),
+        sourceKind: "visual",
+        countsAgainstQuality: true,
+        exportObjectId: object.objectId,
+        exportObjectKind: object.objectKind,
+        exportRenderTarget: object.renderTarget,
+        message: `Export object ${object.objectId} on page ${args.pageNumber} appears more than once.`,
+      });
+      continue;
+    }
+    seenIds.add(object.objectId);
+    objects.push(object);
+    byElement.set(element, object);
+    args.warnings.push({
+      code: "export-contract-detected",
+      severity: "success",
+      pageNumber: args.pageNumber,
+      sourceId: sourceElementIdForElement(args.pageElement, element, "export-object"),
+      sourceKind:
+        object.objectKind === "native-table"
+          ? "table"
+          : object.objectKind === "native-chart"
+            ? "chart"
+            : "visual",
+      countsAgainstQuality: false,
+      exportObjectId: object.objectId,
+      exportObjectKind: object.objectKind,
+      exportRenderTarget: object.renderTarget,
+      message: `Export contract ${object.objectId} on page ${args.pageNumber} resolved as ${object.objectKind}.`,
+    });
+    if (object.objectKind === "native-table" && !semanticNativeTableHasData(object.element)) {
+      args.warnings.push({
+        code: "export-contract-native-table-missing-data",
+        severity: "degraded",
+        pageNumber: args.pageNumber,
+        sourceId: sourceElementIdForElement(args.pageElement, element, "export-object"),
+        sourceKind: "table",
+        countsAgainstQuality: true,
+        exportObjectId: object.objectId,
+        exportObjectKind: object.objectKind,
+        exportRenderTarget: object.renderTarget,
+        message: `Native-table contract ${object.objectId} on page ${args.pageNumber} did not expose rows and columns through table metadata or a real table.`,
+      });
+    }
+  }
+
+  const expected = args.expectedContract;
+  if (expected) {
+    const rendered = objects.find((object) => object.objectId === expected.objectId);
+    if (!rendered) {
+      args.warnings.push({
+        code: "export-contract-missing",
+        severity: "degraded",
+        pageNumber: args.pageNumber,
+        sourceKind: "page",
+        countsAgainstQuality: true,
+        exportObjectId: expected.objectId,
+        exportObjectKind: expected.objectKind,
+        exportRenderTarget: expected.renderTarget,
+        message: `Page ${args.pageNumber} promised export object ${expected.objectId}, but no DOM root carried matching semantic metadata.`,
+      });
+    } else if (rendered.objectKind !== expected.objectKind) {
+      args.warnings.push({
+        code: "export-contract-kind-mismatch",
+        severity: "degraded",
+        pageNumber: args.pageNumber,
+        sourceId: sourceElementIdForElement(args.pageElement, rendered.element, "export-object"),
+        sourceKind: "visual",
+        countsAgainstQuality: true,
+        exportObjectId: expected.objectId,
+        exportObjectKind: expected.objectKind,
+        exportRenderTarget: expected.renderTarget,
+        message: `Page ${args.pageNumber} promised ${expected.objectKind} for ${expected.objectId}, but the DOM marked it as ${rendered.objectKind}.`,
+      });
+    }
+  }
+
+  return { objects, byElement };
+}
+
+function collectSemanticExportOwners(args: {
+  pageElement: HTMLElement;
+  registry: SemanticExportObjectRegistry;
+}) {
+  return args.registry.objects
+    .filter(
+      (object) =>
+        object.ownershipScope.ownsText ||
+        object.ownershipScope.ownsShapes ||
+        object.ownershipScope.ownsSvg,
+    )
+    .map((object, index) =>
+      createExportOwner({
+        pageElement: args.pageElement,
+        element: object.element,
+        kind: semanticOwnerKindForExportObject(object.objectKind),
+        idPrefix: `export-${object.objectKind}`,
+        index,
+        ownsText: object.ownershipScope.ownsText,
+        ownsShapes: object.ownershipScope.ownsShapes,
+        ownsSvg: object.ownershipScope.ownsSvg,
+      }),
+    );
+}
+
+function closestSemanticExportObject(
+  registry: SemanticExportObjectRegistry | undefined,
+  element: Element,
+) {
+  if (!registry) {
+    return null;
+  }
+  let current: Element | null = element;
+  while (current) {
+    if (current instanceof HTMLElement) {
+      const object = registry.byElement.get(current);
+      if (object) {
+        return object;
+      }
+    }
+    current = current.parentElement;
+  }
+  return null;
+}
+
+function semanticObjectForbids(
+  registry: SemanticExportObjectRegistry | undefined,
+  element: Element,
+  interpretation: string,
+) {
+  const object = closestSemanticExportObject(registry, element);
+  return Boolean(object?.forbiddenInterpretation.includes(interpretation));
+}
+
 function warnHiddenPlaceholder(plan: ExportPagePlan, element: HTMLElement) {
   const placeholder = closestExportPlaceholder(element, plan.registry.pageElement);
   if (!placeholder || plan.registry.placeholderWarnings.has(placeholder)) {
@@ -872,6 +1155,53 @@ function parseExportChartData(element: HTMLElement): ParsedExportChartData | nul
   }
 }
 
+function pushChartContractDiagnostic(args: {
+  warnings: PptExportWarning[];
+  pageNumber: number;
+  contract: PptExportChartContract;
+  sourceId?: string;
+  message?: string;
+}) {
+  const blocked = args.contract.nativeEligibility === "blocked";
+  args.warnings.push({
+    code: blocked ? "chart-contract-blocked" : "chart-contract-detected",
+    severity: blocked ? "fatal" : "info",
+    countsAgainstQuality: blocked,
+    pageNumber: args.pageNumber,
+    sourceId: args.sourceId,
+    sourceKind: args.contract.family === "matrix" ? "matrix" : "chart",
+    chartFamily: args.contract.family,
+    chartContractConfidence: args.contract.confidence,
+    chartNativeEligibility: args.contract.nativeEligibility,
+    chartBlockedReason: args.contract.blockedReason,
+    chartReasonCodes: args.contract.reasonCodes,
+    message:
+      args.message ??
+      (blocked
+        ? `Chart contract on page ${args.pageNumber} was blocked: ${args.contract.blockedReason ?? "unknown"}.`
+        : `Chart contract on page ${args.pageNumber} resolved as ${args.contract.family}.`),
+  });
+}
+
+function blockedChartContractFromKind(args: {
+  kind: unknown;
+  source: PptExportChartContract["source"];
+  reason: PptExportChartBlockedReason;
+  diagnostic: string;
+}) {
+  const family = isSupportedChartFamily(args.kind) ? args.kind : "unknown";
+  return {
+    family,
+    confidence: "high",
+    source: args.source,
+    reasonCodes: [`${String(args.kind || "unknown")}-chart-contract`, "minimum-data-failed"],
+    ownerElementIds: [],
+    nativeEligibility: "blocked",
+    blockedReason: args.reason,
+    diagnostics: [args.diagnostic],
+  } satisfies PptExportChartContract;
+}
+
 function normalizeChartContractFromParsed(args: {
   parsed: ParsedExportChartData;
   pageNumber: number;
@@ -883,10 +1213,16 @@ function normalizeChartContractFromParsed(args: {
   const kind = args.parsed.kind;
   if (kind !== "bar" && kind !== "stacked" && kind !== "line" && kind !== "waterfall") {
     if (kind) {
-      args.warnings.push({
-        code: "chart-native-unsupported",
+      pushChartContractDiagnostic({
+        warnings: args.warnings,
         pageNumber: args.pageNumber,
-        message: `${kind} chart on page ${args.pageNumber} is not yet supported as a native PowerPoint chart.`,
+        contract: blockedChartContractFromKind({
+          kind,
+          source: "export-payload",
+          reason: isSupportedChartFamily(kind) ? "missing-data" : "ambiguous-family",
+          diagnostic: `${kind} export payload could not be normalized into a supported chart contract.`,
+        }),
+        message: `${kind} chart on page ${args.pageNumber} could not be normalized into the PPTX chart contract.`,
       });
     }
     return null;
@@ -924,16 +1260,33 @@ function normalizeChartContractFromParsed(args: {
     .filter((item) => item.values.length > 0);
 
   if (!inferredLabels.length || !clippedSeries.length) {
-    args.warnings.push({
-      code: "chart-native-unsupported",
+    pushChartContractDiagnostic({
+      warnings: args.warnings,
       pageNumber: args.pageNumber,
+      contract: blockedChartContractFromKind({
+        kind,
+        source: "export-payload",
+        reason: "missing-data",
+        diagnostic: "Export chart payload lacked labels or series values.",
+      }),
       message: `Chart on page ${args.pageNumber} did not expose enough structured data for editable PPTX export.`,
     });
     return null;
   }
 
+  const chartContract = {
+    family: kind,
+    confidence: "high",
+    source: "export-payload",
+    reasonCodes: [`export-payload-${kind}`, "minimum-data-ok"],
+    ownerElementIds: [],
+    nativeEligibility: "native-required",
+    diagnostics: [],
+  } satisfies PptExportChartContract;
+
   return {
     chartKind: kind,
+    chartContract,
     labels: inferredLabels,
     series: clippedSeries,
     title: normalizeText(args.parsed.title ?? args.fallbackTitle ?? "") || undefined,
@@ -1010,6 +1363,20 @@ function normalizeChartContractFromSpec(args: {
   pageNumber: number;
   warnings: PptExportWarning[];
 }): NormalizedChartContract | null {
+  const chartContract = buildExportChartContractFromSpec({
+    spec: args.spec,
+    source: "spec",
+  });
+  if (chartContract.nativeEligibility === "blocked") {
+    pushChartContractDiagnostic({
+      warnings: args.warnings,
+      pageNumber: args.pageNumber,
+      contract: chartContract,
+      message: `${args.spec.kind} chart on page ${args.pageNumber} did not expose enough structured data for editable PPTX export.`,
+    });
+    return null;
+  }
+
   if (args.spec.kind === "bubble") {
     const points = args.spec.points
       .map((point, index) => ({
@@ -1023,9 +1390,15 @@ function normalizeChartContractFromSpec(args: {
       .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y) && Number.isFinite(point.size));
 
     if (!points.length) {
-      args.warnings.push({
-        code: "chart-native-unsupported",
+      pushChartContractDiagnostic({
+        warnings: args.warnings,
         pageNumber: args.pageNumber,
+        contract: blockedChartContractFromKind({
+          kind: "bubble",
+          source: "spec",
+          reason: "missing-data",
+          diagnostic: "Bubble chart spec had no finite points.",
+        }),
         message: `Bubble chart on page ${args.pageNumber} did not expose enough structured point data for editable PPTX export.`,
       });
       return null;
@@ -1033,6 +1406,7 @@ function normalizeChartContractFromSpec(args: {
 
     return {
       chartKind: "bubble",
+      chartContract,
       labels: points.map((point) => point.label),
       series: [],
       bubblePoints: points,
@@ -1064,9 +1438,15 @@ function normalizeChartContractFromSpec(args: {
       }))
       .filter((item) => item.label);
     if (!items.length) {
-      args.warnings.push({
-        code: "chart-native-unsupported",
+      pushChartContractDiagnostic({
+        warnings: args.warnings,
         pageNumber: args.pageNumber,
+        contract: blockedChartContractFromKind({
+          kind: "matrix",
+          source: "spec",
+          reason: "missing-data",
+          diagnostic: "Matrix chart spec had no items.",
+        }),
         message: `Matrix chart on page ${args.pageNumber} did not expose enough structured item data for editable PPTX export.`,
       });
       return null;
@@ -1095,6 +1475,7 @@ function normalizeChartContractFromSpec(args: {
       : null;
     return {
       chartKind: "matrix",
+      chartContract,
       labels: [],
       series: [],
       title: normalizeText(args.spec.title) || undefined,
@@ -1154,9 +1535,15 @@ function normalizeChartContractFromSpec(args: {
     .filter((item) => item.values.length > 0);
 
   if (!labels.length || !series.length) {
-    args.warnings.push({
-      code: "chart-native-unsupported",
+    pushChartContractDiagnostic({
+      warnings: args.warnings,
       pageNumber: args.pageNumber,
+      contract: blockedChartContractFromKind({
+        kind: args.spec.kind,
+        source: "spec",
+        reason: "missing-data",
+        diagnostic: "Series chart spec lacked labels or series values.",
+      }),
       message: `Chart on page ${args.pageNumber} did not expose enough structured data for editable PPTX export.`,
     });
     return null;
@@ -1164,6 +1551,7 @@ function normalizeChartContractFromSpec(args: {
 
   return {
     chartKind: args.spec.kind,
+    chartContract,
     labels,
     series,
     title: normalizeText(args.spec.title) || undefined,
@@ -1247,6 +1635,55 @@ function inferChartLayoutRole(frame: ChartFrameCandidate) {
   }
 
   return "chart-panel" as const;
+}
+
+function elementTextMatchesChartHeading(element: HTMLElement, heading: string) {
+  const text = normalizeMultilineText(element.innerText || element.textContent || "");
+  return text === heading || text.startsWith(`${heading} `);
+}
+
+function frameHasExportableDomHeading(frame: ChartFrameCandidate, heading: string | undefined) {
+  const normalizedHeading = normalizeText(heading ?? "");
+  if (!normalizedHeading) {
+    return false;
+  }
+
+  return Array.from(
+    frame.element.querySelectorAll<HTMLElement>(
+      [
+        "[data-html-block-id]",
+        '[data-html-fit-role="content"]',
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "p",
+        ".lede",
+        ".eyebrow",
+      ].join(","),
+    ),
+  ).some((element) => elementTextMatchesChartHeading(element, normalizedHeading));
+}
+
+function shouldRenderInlineHeadingForNativeChart(
+  frame: ChartFrameCandidate | null,
+  normalized: NormalizedChartContract,
+) {
+  if (!frame) {
+    return normalized.showInlineHeading;
+  }
+  const title = normalizeText(normalized.title ?? "");
+  const subtitle = normalizeText(normalized.subtitle ?? "");
+  const hasSubstantiveHeading = title.length >= 16 || subtitle.length >= 16;
+  if (!hasSubstantiveHeading) {
+    return false;
+  }
+  if (frameHasExportableDomHeading(frame, title) && !frame.element.classList.contains("html-chart-module")) {
+    return false;
+  }
+  return true;
 }
 
 function buildTextNodeFromElement(args: {
@@ -1735,6 +2172,84 @@ function collectLooseContentTextNodes(args: {
   return dedupeTextNodes(textNodes);
 }
 
+function collectStructuredChartModuleHeadingTextNodes(args: {
+  pageElement: HTMLElement;
+  theme: PptExportThemeSnapshot;
+  plan?: ExportPagePlan | null;
+}) {
+  const nodes: PptExportTextNode[] = [];
+  const modules = Array.from(
+    args.pageElement.querySelectorAll<HTMLElement>(`.html-chart-module[${HTML_CHART_SPEC_ATTRIBUTE}]`),
+  );
+
+  for (const moduleElement of modules) {
+    const spec = parseHtmlChartSpec(moduleElement.getAttribute(HTML_CHART_SPEC_ATTRIBUTE));
+    if (!spec) {
+      continue;
+    }
+    const title = normalizeText(spec.title ?? "");
+    const subtitle = normalizeText(spec.subtitle || spec.insight || "");
+    if (!title && !subtitle) {
+      continue;
+    }
+    const rect = measureElementRect(args.pageElement, moduleElement);
+    if (!rect.w || !rect.h) {
+      continue;
+    }
+    const ordering = nodeOrderingForElement({
+      plan: args.plan,
+      element: moduleElement,
+      layerRole: "text",
+      offset: 6,
+    });
+    const sourceId = sourceElementIdForElement(args.pageElement, moduleElement, "chart-module-heading");
+    if (title) {
+      nodes.push({
+        kind: "text",
+        sourceElementId: `${sourceId}:title`,
+        ownerKind: "chart",
+        sourceOrder: ordering.sourceOrder,
+        zIndex: ordering.zIndex,
+        zOrder: ordering.zOrder,
+        layerRole: ordering.layerRole,
+        x: pxToInches(rect.x),
+        y: pxToInches(rect.y),
+        w: pxToInches(rect.w),
+        h: pxToInches(30),
+        text: title,
+        fontSize: pxFontToPoints(18),
+        fontFamily: "Iowan Old Style",
+        color: args.theme.textPrimary,
+        bold: true,
+        fillColor: null,
+      });
+    }
+    if (subtitle) {
+      nodes.push({
+        kind: "text",
+        sourceElementId: `${sourceId}:subtitle`,
+        ownerKind: "chart",
+        sourceOrder: (ordering.sourceOrder ?? 0) + 1,
+        zIndex: ordering.zIndex,
+        zOrder: ordering.zOrder,
+        layerRole: ordering.layerRole,
+        x: pxToInches(rect.x),
+        y: pxToInches(rect.y + 34),
+        w: pxToInches(rect.w),
+        h: pxToInches(24),
+        text: subtitle,
+        fontSize: pxFontToPoints(13),
+        fontFamily: "Avenir Next",
+        color: args.theme.textMuted,
+        bold: false,
+        fillColor: null,
+      });
+    }
+  }
+
+  return dedupeTextNodes(nodes);
+}
+
 function collectDiagramElements(pageElement: HTMLElement) {
   return Array.from(pageElement.querySelectorAll<HTMLElement>("[data-html-diagram-spec]"));
 }
@@ -2195,6 +2710,7 @@ function collectSvgPrimitiveNodes(args: {
   const nodes: PptExportVisualNode[] = [];
   const svgs = Array.from(args.pageElement.querySelectorAll<SVGSVGElement>("svg")).filter(
     (svg) =>
+      !closestNativeChartContractElement(svg) &&
       !args.skipWithinElements?.some((container) => container.contains(svg)) &&
       !isHiddenForExport({
         element: svg,
@@ -2262,7 +2778,7 @@ function collectSvgPrimitiveNodes(args: {
               dashArray,
               owner,
               sourceOrder: primitiveOrder,
-      zIndex: primitiveZIndex,
+              zIndex: primitiveZIndex,
               canvasLayer: primitiveCanvasLayer.canvasLayer,
               canvasLayerOrder: primitiveCanvasLayer.canvasLayerOrder,
             });
@@ -2620,6 +3136,14 @@ function hasVisibleComputedShapePaint(args: {
   return alphaIsVisible(fillPaint) || Boolean(borderPaint && borderWidth > 0);
 }
 
+function closestNativeChartContractElement(element: Element) {
+  const moduleElement = element.closest<HTMLElement>(
+    `[data-html-module-kind="chart"][${HTML_CHART_SPEC_ATTRIBUTE}]`,
+  );
+  const spec = moduleElement ? parseHtmlChartSpec(moduleElement.getAttribute(HTML_CHART_SPEC_ATTRIBUTE)) : null;
+  return spec && spec.kind !== "matrix" ? moduleElement : null;
+}
+
 function collectOwnerPrimitiveShapeElements(args: {
   pageElement: HTMLElement;
   owners?: ExportOwner[];
@@ -2725,22 +3249,48 @@ function resolveShapeClipBounds(pageElement: HTMLElement, element: HTMLElement):
   return pageBounds;
 }
 
-function collectChartFrames(pageElement: HTMLElement) {
+function collectChartFrames(
+  pageElement: HTMLElement,
+  semanticRegistry?: SemanticExportObjectRegistry,
+) {
   const view = pageElement.ownerDocument.defaultView;
   if (!view) {
     return [];
   }
 
-  const candidates = Array.from(
+  const explicitCandidates = Array.from(
     pageElement.querySelectorAll<HTMLElement>(
       [
         '[data-html-visual-kind="chart-frame"]',
+        '[data-html-module-kind="chart"]',
         `[${HTML_CHART_SPEC_ATTRIBUTE}]`,
         "[data-export-chart]",
       ].join(","),
     ),
-  )
+  );
+  const diagnosticCandidates = Array.from(
+    pageElement.querySelectorAll<HTMLElement>("article,aside,figure,section,div"),
+  ).filter((element) => {
+    if (element === pageElement || explicitCandidates.some((candidate) => candidate.contains(element))) {
+      return false;
+    }
+    const rect = measureElementRect(pageElement, element);
+    if (rect.w < 180 || rect.h < 110) {
+      return false;
+    }
+    if (rect.w > PPT_LAYOUT.pageWidthPx * 0.9 && rect.h > PPT_LAYOUT.pageHeightPx * 0.82) {
+      return false;
+    }
+    return (
+      !semanticObjectForbids(semanticRegistry, element, "native-chart") &&
+      hasUnstructuredChartPrimitives(element)
+    );
+  });
+  const candidates = [...explicitCandidates, ...diagnosticCandidates]
     .filter((element) => {
+      if (semanticObjectForbids(semanticRegistry, element, "native-chart")) {
+        return false;
+      }
       if (
         isHiddenForExport({
           element,
@@ -2754,10 +3304,14 @@ function collectChartFrames(pageElement: HTMLElement) {
         return true;
       }
       const moduleKind = element.getAttribute("data-html-module-kind");
+      if (moduleKind === "chart") {
+        return true;
+      }
       return (
         (!moduleKind || moduleKind === "chart") &&
         (element.getAttribute("data-html-visual-kind") === "chart-frame" ||
-          Boolean(findChartContractElement(element)))
+          Boolean(findChartContractElement(element)) ||
+          hasChartLikeEvidence(element))
       );
     })
     .map((element, index) => ({
@@ -2766,12 +3320,13 @@ function collectChartFrames(pageElement: HTMLElement) {
       rect: measureElementRect(pageElement, element),
     }));
 
-  return candidates.filter((candidate, index) => {
+  const filteredCandidates = candidates.filter((candidate, index) => {
     const structured = hasStructuredChartContract(candidate.element);
     const contractElement = findChartContractElement(candidate.element);
     const hasContractDescendant = Boolean(contractElement && contractElement !== candidate.element);
+    const chartLikeEvidence = hasChartLikeEvidence(candidate.element);
     const exportable =
-      structured || hasContractDescendant || hasUnstructuredChartPrimitives(candidate.element);
+      structured || hasContractDescendant || hasUnstructuredChartPrimitives(candidate.element) || chartLikeEvidence;
     const hasStructuredDescendant = candidates.some(
       (other) =>
         other !== candidate &&
@@ -2828,23 +3383,77 @@ function collectChartFrames(pageElement: HTMLElement) {
 
     return candidates.findIndex((entry) => entry.element === candidate.element) === index;
   });
+
+  return dedupeChartFrameCandidates(filteredCandidates);
 }
 
-function warnIfUnsupportedStructuredChart(args: {
-  element: HTMLElement;
-  warnings: PptExportWarning[];
-  pageNumber: number;
-}) {
-  const spec = parseHtmlChartSpec(args.element.getAttribute(HTML_CHART_SPEC_ATTRIBUTE));
-  args.warnings.push({
-    code: "chart-native-unsupported",
-    severity: "info",
-    countsAgainstQuality: false,
-    pageNumber: args.pageNumber,
-    message: spec
-      ? `${spec.kind} chart on page ${args.pageNumber} skipped its native data relationship but kept editable DOM geometry.`
-      : `Chart frame on page ${args.pageNumber} kept editable DOM geometry without a native data relationship.`,
-  });
+function chartFrameContractFingerprint(candidate: ChartFrameCandidate) {
+  const contractElement = findChartContractElement(candidate.element) ?? candidate.element;
+  const spec = contractElement.getAttribute(HTML_CHART_SPEC_ATTRIBUTE);
+  if (spec) {
+    return `spec:${spec}`;
+  }
+  const exportChart = contractElement.getAttribute("data-export-chart");
+  return exportChart ? `export:${exportChart}` : null;
+}
+
+function rectIntersectionArea(
+  left: ChartFrameCandidate["rect"],
+  right: ChartFrameCandidate["rect"],
+) {
+  const x1 = Math.max(left.x, right.x);
+  const y1 = Math.max(left.y, right.y);
+  const x2 = Math.min(left.x + left.w, right.x + right.w);
+  const y2 = Math.min(left.y + left.h, right.y + right.h);
+  return Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+}
+
+function chartFrameCandidatesOverlap(left: ChartFrameCandidate, right: ChartFrameCandidate) {
+  if (left.element.contains(right.element) || right.element.contains(left.element)) {
+    return true;
+  }
+  const intersection = rectIntersectionArea(left.rect, right.rect);
+  if (intersection <= 0) {
+    return false;
+  }
+  const leftArea = Math.max(1, left.rect.w * left.rect.h);
+  const rightArea = Math.max(1, right.rect.w * right.rect.h);
+  return intersection / Math.min(leftArea, rightArea) > 0.6;
+}
+
+function chartFrameCandidatePriority(candidate: ChartFrameCandidate) {
+  const contractElement = findChartContractElement(candidate.element);
+  const hasContractDescendant = Boolean(contractElement && contractElement !== candidate.element);
+  const structured = hasStructuredChartContract(candidate.element);
+  const area = candidate.rect.w * candidate.rect.h;
+  return (hasContractDescendant ? 3 : structured ? 2 : 1) * 1_000_000_000 + area;
+}
+
+function dedupeChartFrameCandidates(candidates: ChartFrameCandidate[]) {
+  const deduped: ChartFrameCandidate[] = [];
+  for (const candidate of candidates) {
+    const fingerprint = chartFrameContractFingerprint(candidate);
+    if (!fingerprint) {
+      deduped.push(candidate);
+      continue;
+    }
+
+    const duplicateIndex = deduped.findIndex(
+      (existing) =>
+        chartFrameContractFingerprint(existing) === fingerprint &&
+        chartFrameCandidatesOverlap(existing, candidate),
+    );
+    if (duplicateIndex < 0) {
+      deduped.push(candidate);
+      continue;
+    }
+
+    const existing = deduped[duplicateIndex]!;
+    if (chartFrameCandidatePriority(candidate) > chartFrameCandidatePriority(existing)) {
+      deduped[duplicateIndex] = candidate;
+    }
+  }
+  return deduped;
 }
 
 function collectTableElements(pageElement: HTMLElement) {
@@ -2891,6 +3500,15 @@ function readTableSpecFromElement(element: HTMLElement) {
     columns,
     rows: dataRows,
   };
+}
+
+function semanticNativeTableHasData(element: HTMLElement) {
+  if (readTableSpecFromElement(element)) {
+    return true;
+  }
+  return Array.from(
+    element.querySelectorAll<HTMLElement>(`[${HTML_TABLE_SPEC_ATTRIBUTE}],table`),
+  ).some((candidate) => Boolean(readTableSpecFromElement(candidate)));
 }
 
 function normalizeTableRows(spec: HtmlTableSpec) {
@@ -2954,6 +3572,7 @@ function collectTableModels(args: {
   warnings: PptExportWarning[];
   pageNumber: number;
   plan?: ExportPagePlan | null;
+  semanticRegistry?: SemanticExportObjectRegistry;
 }): TableCollectionResult {
   const tableNodes: PptExportTableModel[] = [];
   const skipVisualIds = new Set<string>();
@@ -2966,6 +3585,26 @@ function collectTableModels(args: {
   for (const [index, element] of tableElements.entries()) {
     const rect = args.pageElement ? measureElementRect(args.pageElement, element) : null;
     if (!rect?.w || !rect.h) {
+      continue;
+    }
+    const semanticObject = closestSemanticExportObject(args.semanticRegistry, element);
+    if (
+      semanticObject &&
+      semanticObject.objectKind !== "native-table" &&
+      semanticObject.forbiddenInterpretation.includes("native-table")
+    ) {
+      args.warnings.push({
+        code: "export-contract-forbidden-violation",
+        severity: "degraded",
+        pageNumber: args.pageNumber,
+        sourceId: sourceElementIdForElement(args.pageElement!, element, "table"),
+        sourceKind: "table",
+        countsAgainstQuality: true,
+        exportObjectId: semanticObject.objectId,
+        exportObjectKind: semanticObject.objectKind,
+        exportRenderTarget: semanticObject.renderTarget,
+        message: `Export contract ${semanticObject.objectId} forbids native-table interpretation; table-like markup was left to editable shapes/text.`,
+      });
       continue;
     }
 
@@ -3172,6 +3811,10 @@ function collectVisualShapeNodes(args: {
     ) {
       continue;
     }
+    const nativeChartAncestor = closestNativeChartContractElement(element);
+    if (nativeChartAncestor && nativeChartAncestor !== element) {
+      continue;
+    }
 
     if (readAttribute(element, "data-export-omit") === "true") {
       continue;
@@ -3339,6 +3982,15 @@ function normalizeSceneChartDataModel(args: {
     if (labels.length && series.length) {
       return {
         chartKind: args.chart.chartKind as Extract<ModuleChartKind, "bar" | "stacked" | "line" | "waterfall">,
+        chartContract: {
+          family: isSupportedChartFamily(args.chart.chartKind) ? args.chart.chartKind : "bar",
+          confidence: "high",
+          source: "scene",
+          reasonCodes: ["scene-chart-data", "minimum-data-ok"],
+          ownerElementIds: [],
+          nativeEligibility: "native-required",
+          diagnostics: [],
+        },
         labels,
         series,
         title: normalizeText(args.chart.title ?? "") || undefined,
@@ -3361,6 +4013,15 @@ function normalizeSceneChartDataModel(args: {
         ModuleChartKind,
         "bar" | "stacked" | "line" | "waterfall"
       >,
+      chartContract: {
+        family: isSupportedChartFamily(args.chart.chartKind) ? args.chart.chartKind : "bar",
+        confidence: "medium",
+        source: "scene",
+        reasonCodes: ["scene-series-values", "minimum-data-ok"],
+        ownerElementIds: [],
+        nativeEligibility: "native-required",
+        diagnostics: [],
+      },
       labels: args.chart.series.map((series) => normalizeText(series.label)).filter(Boolean),
       series: [
         {
@@ -3382,9 +4043,15 @@ function normalizeSceneChartDataModel(args: {
     };
   }
 
-  args.warnings.push({
-    code: "chart-native-unsupported",
+  pushChartContractDiagnostic({
+    warnings: args.warnings,
     pageNumber: args.pageNumber,
+    contract: blockedChartContractFromKind({
+      kind: args.chart.chartKind,
+      source: "scene",
+      reason: "missing-data",
+      diagnostic: "Scene chart object lacked categories/series data.",
+    }),
     message: `Chart on page ${args.pageNumber} did not expose enough structured data for native PPT export.`,
   });
   return null;
@@ -3397,13 +4064,17 @@ function collectChartModels(args: {
   warnings: PptExportWarning[];
   pageNumber: number;
   plan?: ExportPagePlan | null;
+  semanticRegistry?: SemanticExportObjectRegistry;
 }): ChartCollectionResult {
   const chartNodes: PptExportChartModel[] = [];
+  const textNodes: PptExportTextNode[] = [];
   const skipVisualIds = new Set<string>();
   const skipTextElements: HTMLElement[] = [];
   const skipPrimitiveWithinElements: HTMLElement[] = [];
   const owners: ExportOwner[] = [];
-  const chartFrames = args.pageElement ? collectChartFrames(args.pageElement) : [];
+  const chartFrames = args.pageElement
+    ? collectChartFrames(args.pageElement, args.semanticRegistry)
+    : [];
   const sceneCharts = (args.scene?.objects ?? []).filter(
     (object): object is SlideSceneChartObject => object.kind === "chart",
   );
@@ -3445,10 +4116,25 @@ function collectChartModels(args: {
   const skipUnsupportedFrame = (frame: ChartFrameCandidate) => {
     skipTextElements.push(frame.element);
     addFrameOwner(frame);
-    warnIfUnsupportedStructuredChart({
-      element: frame.element,
+    const contract =
+      classifyUnstructuredChartElement(frame.element) ??
+      blockedChartContractFromKind({
+        kind: parseHtmlChartSpec(frame.element.getAttribute(HTML_CHART_SPEC_ATTRIBUTE))?.kind,
+        source: hasStructuredChartContract(frame.element) ? "spec" : "text-layout",
+        reason: "missing-data",
+        diagnostic: "Chart frame could not be normalized into a supported export contract.",
+      });
+    pushChartContractDiagnostic({
       warnings: args.warnings,
       pageNumber: args.pageNumber,
+      sourceId: frame.visualId,
+      contract,
+      message:
+        contract.nativeEligibility === "blocked"
+          ? `Chart-like object on page ${args.pageNumber} was blocked from silent shape export: ${
+              contract.blockedReason ?? "missing-data"
+            }.`
+          : undefined,
     });
   };
 
@@ -3464,6 +4150,20 @@ function collectChartModels(args: {
           : resolveChartRenderRect(args.pageElement, frame)
         : null;
     const semanticSpec = frame ? semanticSpecFromNormalizedChart(normalized) : undefined;
+    const chartContract = completeExportChartContract(normalized.chartContract, {
+      bounds: pxRectToInches(chartRect ?? frame?.rect ?? {
+        x: sceneChart?.x ?? 0,
+        y: sceneChart?.y ?? 0,
+        w: sceneChart?.w ?? 0,
+        h: sceneChart?.h ?? 0,
+      }),
+      ownerElementIds: [
+        frame
+          ? sourceElementIdForElement(args.pageElement!, frame.element, "chart")
+          : normalized.title ?? sceneChart?.title ?? `chart-${chartNodes.length + 1}`,
+      ],
+      nativeEligibility: normalized.chartKind === "matrix" ? "matrix-shapes" : "native-required",
+    });
     if (frame) {
       const plotElement =
         args.pageElement && normalized.chartKind !== "matrix"
@@ -3485,7 +4185,8 @@ function collectChartModels(args: {
       } else if (normalized.chartKind === "matrix") {
         skipTextElements.push(frame.element);
       }
-      const keepOverlayText = directChartElement;
+      const keepOverlayText =
+        directChartElement || normalized.chartKind === "bubble" || normalized.chartKind === "waterfall";
       addFrameOwner(
         frame,
         normalized.chartKind,
@@ -3510,6 +4211,60 @@ function collectChartModels(args: {
               sourceOrder: sceneChart ? sceneCharts.indexOf(sceneChart) + 1 : chartNodes.length + 1,
             }),
           };
+    const shouldAddHeadingText = frame ? shouldRenderInlineHeadingForNativeChart(frame, normalized) : false;
+    if (shouldAddHeadingText && frame && args.pageElement) {
+      const title = normalizeText(normalized.title ?? "");
+      const subtitle = normalizeText(normalized.subtitle ?? "");
+      const headingOrdering = nodeOrderingForElement({
+        plan: args.plan,
+        element: frame.element,
+        layerRole: "text",
+        offset: 6,
+      });
+      const headingSourceId = sourceElementIdForElement(args.pageElement, frame.element, "chart-heading");
+      if (title) {
+        textNodes.push({
+          kind: "text",
+          sourceElementId: `${headingSourceId}:title`,
+          ownerKind: "chart",
+          sourceOrder: headingOrdering.sourceOrder,
+          zIndex: headingOrdering.zIndex,
+          zOrder: headingOrdering.zOrder,
+          layerRole: headingOrdering.layerRole,
+          x: pxToInches(frame.rect.x),
+          y: pxToInches(frame.rect.y),
+          w: pxToInches(frame.rect.w),
+          h: pxToInches(30),
+          text: title,
+          fontSize: pxFontToPoints(18),
+          fontFamily: "Iowan Old Style",
+          color: args.theme.textPrimary,
+          bold: true,
+          fillColor: null,
+        });
+      }
+      if (subtitle) {
+        textNodes.push({
+          kind: "text",
+          sourceElementId: `${headingSourceId}:subtitle`,
+          ownerKind: "chart",
+          sourceOrder: (headingOrdering.sourceOrder ?? 0) + 1,
+          zIndex: headingOrdering.zIndex,
+          zOrder: headingOrdering.zOrder,
+          layerRole: headingOrdering.layerRole,
+          x: pxToInches(frame.rect.x),
+          y: pxToInches(frame.rect.y + 34),
+          w: pxToInches(frame.rect.w),
+          h: pxToInches(24),
+          text: subtitle,
+          fontSize: pxFontToPoints(13),
+          fontFamily: "Avenir Next",
+          color: args.theme.textMuted,
+          bold: false,
+          fillColor: null,
+        });
+      }
+    }
     chartNodes.push({
       kind: "chart",
       sourceElementId: frame
@@ -3546,6 +4301,13 @@ function collectChartModels(args: {
       showInlineHeading: frame ? false : normalized.showInlineHeading,
       showNativeVisual: true,
       themeTokens,
+      chartContract,
+    });
+    pushChartContractDiagnostic({
+      warnings: args.warnings,
+      pageNumber: args.pageNumber,
+      sourceId: frame?.visualId,
+      contract: chartContract,
     });
     args.warnings.push({
       code: "native-chart-exported",
@@ -3637,8 +4399,31 @@ function collectChartModels(args: {
     skipUnsupportedFrame(frame);
   });
 
+  if (args.pageElement && chartNodes.length === 0) {
+    const pageText = normalizeMultilineText(args.pageElement.innerText || args.pageElement.textContent || "");
+    const chartLedWithoutContract =
+      /\bchart-led\b/i.test(pageText) ||
+      /\bwhat\s+the\s+(?:chart|range|plot)\s+says\b/i.test(pageText) ||
+      /\b(?:illustrative|primary|native|figure-first)\s+(?:chart|plot|line|range|proof)\b/i.test(pageText) ||
+      /\b(?:monetization evidence wall|matrix view|chart view)\b/i.test(pageText);
+    if (chartLedWithoutContract) {
+      pushChartContractDiagnostic({
+        warnings: args.warnings,
+        pageNumber: args.pageNumber,
+        contract: blockedChartContractFromKind({
+          kind: "unknown",
+          source: "text-layout",
+          reason: "missing-data",
+          diagnostic: "Page promised a chart-led proof surface but no exportable chart contract was produced.",
+        }),
+        message: `Page ${args.pageNumber} looks chart-led, but PPTX export found no native chart or matrix-shape chart contract.`,
+      });
+    }
+  }
+
   return {
     chartNodes,
+    textNodes: dedupeTextNodes(textNodes),
     skipVisualIds,
     owners: dedupeOwners(owners),
     skipTextElements: skipTextElements.filter((element, index) => skipTextElements.indexOf(element) === index),
@@ -3655,6 +4440,7 @@ function collectExportAnnotations(args: {
   scene?: SlideScene;
   warnings: PptExportWarning[];
   pageNumber: number;
+  expectedExportObjectContract?: ExportObjectContract | null;
 }): CollectExportAnnotationsResult {
   const theme = buildThemeSnapshot({
     pageElement: args.frame?.pageElement ?? null,
@@ -3686,6 +4472,12 @@ function collectExportAnnotations(args: {
     pageNumber: args.pageNumber,
     warnings: args.warnings,
   });
+  const semanticRegistry = collectSemanticExportObjects({
+    pageElement: args.frame.pageElement,
+    pageNumber: args.pageNumber,
+    warnings: args.warnings,
+    expectedContract: args.expectedExportObjectContract,
+  });
   const chartCollection = collectChartModels({
     pageElement: args.frame.pageElement,
     theme,
@@ -3693,6 +4485,7 @@ function collectExportAnnotations(args: {
     warnings: args.warnings,
     pageNumber: args.pageNumber,
     plan,
+    semanticRegistry,
   });
   const tableCollection = collectTableModels({
     pageElement: args.frame.pageElement,
@@ -3700,12 +4493,17 @@ function collectExportAnnotations(args: {
     warnings: args.warnings,
     pageNumber: args.pageNumber,
     plan,
+    semanticRegistry,
   });
   const diagramElements = collectDiagramElements(args.frame.pageElement);
   const exportOwners = dedupeOwners([
     ...chartCollection.owners,
     ...tableCollection.owners,
     ...collectDiagramOwners(args.frame.pageElement),
+    ...collectSemanticExportOwners({
+      pageElement: args.frame.pageElement,
+      registry: semanticRegistry,
+    }),
   ]);
   if (plan) {
     plan.owners = exportOwners;
@@ -3774,12 +4572,29 @@ function collectExportAnnotations(args: {
         skipTextWithinElements,
         plan,
       }),
+      ...collectStructuredChartModuleHeadingTextNodes({
+        pageElement: args.frame.pageElement,
+        theme,
+        plan,
+      }),
+      ...chartCollection.textNodes,
       ...ownedTextNodes,
     ]),
     shapeNodes,
     chartNodes: chartCollection.chartNodes,
     tableNodes: tableCollection.tableNodes,
   };
+}
+
+function findExpectedExportObjectContract(
+  report: GeneratedHtmlReport,
+  pageNumber: number,
+) {
+  return (
+    report.exportContract?.pages
+      .find((page) => page.pageNumber === pageNumber)
+      ?.objects.find((object) => object.pageNumber === pageNumber) ?? null
+  );
 }
 
 function normalizeSlideModel(args: {
@@ -3813,6 +4628,10 @@ function normalizeSlideModel(args: {
     scene: pageDraft?.scene,
     warnings,
     pageNumber,
+    expectedExportObjectContract: findExpectedExportObjectContract(
+      args.htmlReport,
+      pageNumber,
+    ),
   });
 
   const slide: PptExportSlideModel = {
@@ -4063,6 +4882,12 @@ export async function exportProjectToPptx(args: {
     diagnostics,
   });
   const qualityReport = buildPptxExportQualityReport(exportDocument);
+  const blockingChartContract = diagnostics.find(
+    (diagnostic) => diagnostic.code === "chart-contract-blocked",
+  );
+  if ((import.meta.env.DEV || import.meta.env.MODE === "test") && blockingChartContract) {
+    throw new Error(`PPTX chart export contract blocked: ${blockingChartContract.message}`);
+  }
 
   const PptxGenJS = await loadPptxGen();
   const pptx = new PptxGenJS();

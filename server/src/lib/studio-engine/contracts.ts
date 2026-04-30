@@ -19,6 +19,12 @@ import type {
   HtmlPageAnimationManifest,
   ModuleUsageMode,
   HtmlOutputMode,
+  DeckExportContract,
+  ExportObjectContract,
+  ExportObjectKind,
+  ExportOwnershipScope,
+  ExportRenderTarget,
+  PageExportContract,
   StudioBridgeLaunchMode,
   PageOverflowCause,
   PageCompositionFingerprint,
@@ -42,12 +48,31 @@ export type {
   HtmlPageAnimationManifest,
   ModuleUsageMode,
   HtmlOutputMode,
+  DeckExportContract,
+  ExportObjectContract,
+  ExportObjectKind,
+  ExportOwnershipScope,
+  ExportRenderTarget,
+  PageExportContract,
   StudioBridgeLaunchMode,
   PageOverflowCause,
   PageCompositionFingerprint,
 } from "./schemas.js";
 
 export type GeneratedReportStyleProfile = ReturnType<typeof toGeneratedReportStyleProfile>;
+
+export type GeneratedHtmlReport = {
+  title: string;
+  html: string;
+  pageCount: number;
+  pageTitles: string[];
+  htmlOutputMode?: HtmlOutputMode;
+  animationStructure?: HtmlAnimationStructure;
+  styleProfileId?: string;
+  styleProfile?: GeneratedReportStyleProfile;
+  exportContract?: DeckExportContract;
+};
+
 export type Studio3dHeroReferenceName =
   | "object-grammar-chip-platform"
   | "composition-families"
@@ -183,6 +208,9 @@ export type StudioAiWorkspacePromptMeta = {
   preflightCoreTask?: string | null;
   preflightEvidenceTier?: StudioEvidenceTier | null;
   preflightIncludes3dActivation?: boolean;
+  preflightRouteKind?: StudioTaskRoutePrimaryKind | null;
+  preflightRouteConfidence?: StudioTaskRouteConfidence | null;
+  preflightWorkspaceMode?: StudioTaskRoute["workspaceMode"] | null;
 };
 export type StudioGenerateStage =
   | "preflight"
@@ -234,16 +262,7 @@ export type StudioGenerateStreamEvent =
       type: "final_report";
       runId: string;
       model: string | null;
-      report: {
-        title: string;
-        html: string;
-        pageCount: number;
-        pageTitles: string[];
-        htmlOutputMode?: HtmlOutputMode;
-        animationStructure?: HtmlAnimationStructure;
-        styleProfileId?: string;
-        styleProfile?: GeneratedReportStyleProfile;
-      };
+      report: GeneratedHtmlReport;
     }
   | {
       type: "error";
@@ -764,8 +783,48 @@ export type StudioPageMission = {
   structureCue: "matrix" | "quadrant" | "chart" | null;
 };
 
+export type StudioTaskRoutePrimaryKind =
+  | "explicit-page-blueprint"
+  | "source-backed-analysis"
+  | "chart-matrix-figure"
+  | "process-flow"
+  | "visual-hero-3d"
+  | "ambiguous-brief"
+  | "generic-presentation";
+
+export type StudioTaskRouteConfidence = "high" | "medium" | "low";
+
+export type StudioTaskRouteCapabilities = {
+  chart: boolean;
+  matrix: boolean;
+  flow: boolean;
+  threeD: boolean;
+  sourceBacked: boolean;
+  freeformLayout: boolean;
+};
+
+export type StudioTaskRoutePageBlueprint = {
+  pageNumber: number;
+  title: string;
+  storyClaim: string;
+  evidenceNotes: string[];
+  layoutCue: StudioPageMission["structureCue"] | "flow" | "3d" | null;
+  primaryVisual: string | null;
+  rawText: string;
+};
+
+export type StudioTaskRoute = {
+  primaryKind: StudioTaskRoutePrimaryKind;
+  confidence: StudioTaskRouteConfidence;
+  reasonCodes: string[];
+  capabilities: StudioTaskRouteCapabilities;
+  pageBlueprint: StudioTaskRoutePageBlueprint[];
+  workspaceMode: "page-scoped" | "full-brief";
+};
+
 export type StudioPreflightPlan = {
   rawBrief: string;
+  route: StudioTaskRoute;
   subject: string;
   deliverable: string;
   pageCount: number | null;
@@ -780,6 +839,7 @@ export type StudioPreflightPlan = {
   visualThinking: StudioVisualThinking;
   capabilityActivations: StudioCapabilityActivation[];
   assumptionPolicy: string[];
+  exportContract: DeckExportContract;
 };
 
 export type SemanticCorrectionResult = {

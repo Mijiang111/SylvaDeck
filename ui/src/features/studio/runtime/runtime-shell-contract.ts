@@ -202,6 +202,10 @@ export function formatPptxWarningSummary(
       return "Complex gradient was flattened because it could not be represented as native PowerPoint fill.";
     case "chart-image-fallback":
       return "Chart was exported as an image to preserve visibility.";
+    case "chart-contract-detected":
+      return "Chart export contract was classified before rendering.";
+    case "chart-contract-blocked":
+      return "Chart-like content did not expose enough data for native PPTX chart export.";
     case "chart-native-unsupported":
       return "Chart type is not natively supported by the current PPTX renderer.";
     case "table-native-unsupported":

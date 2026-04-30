@@ -5,6 +5,8 @@ import {
 import type {
   ChartDensity,
   ChartSpec,
+  DeckExportContract,
+  ExportObjectContract,
   GeneratedReportStyleProfile,
   HtmlAnimationPage,
   HtmlAnimationStructure,
@@ -264,6 +266,10 @@ const promptScaffoldLeakPatterns: Array<[RegExp, string]> = [
   [/\bthis page must answer exactly one\b/i, "page argument instruction"],
   [/\bat most\s+2\s+short\s+(?:bullets|callouts)\b/i, "copy-budget instruction"],
   [/\b(?:using|tied to|based on)\s+the supplied brief\b/i, "supplied brief instruction"],
+  [
+    /\b(?:page thesis|page mission|supplied page mission|page rendered only from supplied|no additional metrics are introduced|illustrative trajectory|source basis:\s*page rendered)\b/i,
+    "generation meta-copy",
+  ],
 ];
 
 function decodeBasicHtmlEntities(text: string) {
@@ -964,6 +970,18 @@ function resolveDeterministicRenderTheme(profile: DeckStyleProfile): Determinist
   };
 }
 
+function usesInstitutionalSquareSurfaces(theme: DeterministicRenderTheme) {
+  return theme.profileId === "general-consulting" || theme.profileId === "finance";
+}
+
+function surfaceBorderRadius(theme: DeterministicRenderTheme, fallbackPx: number) {
+  return `${usesInstitutionalSquareSurfaces(theme) ? 0 : fallbackPx}px`;
+}
+
+function svgCornerRadius(theme: DeterministicRenderTheme, fallbackPx: number) {
+  return usesInstitutionalSquareSurfaces(theme) ? 0 : fallbackPx;
+}
+
 function decorateSectionWithStyleMetadata(sectionHtml: string, styleProfile: GeneratedReportStyleProfile) {
   return sectionHtml.replace(
     /<section\b([^>]*)>/i,
@@ -1019,12 +1037,85 @@ export function extractSinglePageSection(html: string) {
   return sectionMatch[0].trim();
 }
 
+export type PageExportContractDiagnostic = {
+  code:
+    | "primary-export-object-metadata-missing"
+    | "primary-export-object-kind-mismatch"
+    | "primary-export-object-render-target-missing";
+  severity: "warning";
+  pageNumber: number;
+  objectId: string;
+  message: string;
+};
+
+function readHtmlAttribute(tagHtml: string, name: string) {
+  const match = tagHtml.match(new RegExp(`\\s${name}=(["'])([\\s\\S]*?)\\1`, "i"));
+  return match?.[2] ?? null;
+}
+
+function findElementOpenTagByExportObjectId(sectionHtml: string, objectId: string) {
+  const escapedObjectId = objectId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const tagMatch = sectionHtml.match(
+    new RegExp(`<[^>]+\\sdata-export-object-id=(["'])${escapedObjectId}\\1[^>]*>`, "i"),
+  );
+  return tagMatch?.[0] ?? null;
+}
+
+function validatePrimaryExportObjectMetadata(args: {
+  sectionHtml: string;
+  pageNumber: number;
+  contract?: ExportObjectContract | null;
+}): PageExportContractDiagnostic[] {
+  const contract = args.contract;
+  if (!contract) {
+    return [];
+  }
+
+  const tag = findElementOpenTagByExportObjectId(args.sectionHtml, contract.objectId);
+  if (!tag) {
+    return [
+      {
+        code: "primary-export-object-metadata-missing",
+        severity: "warning",
+        pageNumber: args.pageNumber,
+        objectId: contract.objectId,
+        message: `Primary export object ${contract.objectId} is promised by contract but no root element carries data-export-object-id.`,
+      },
+    ];
+  }
+
+  const diagnostics: PageExportContractDiagnostic[] = [];
+  const semanticKind = readHtmlAttribute(tag, "data-semantic-kind");
+  if (semanticKind !== contract.objectKind) {
+    diagnostics.push({
+      code: "primary-export-object-kind-mismatch",
+      severity: "warning",
+      pageNumber: args.pageNumber,
+      objectId: contract.objectId,
+      message: `Primary export object ${contract.objectId} expected semantic kind ${contract.objectKind} but rendered ${semanticKind || "missing"}.`,
+    });
+  }
+
+  if (!readHtmlAttribute(tag, "data-render-target")) {
+    diagnostics.push({
+      code: "primary-export-object-render-target-missing",
+      severity: "warning",
+      pageNumber: args.pageNumber,
+      objectId: contract.objectId,
+      message: `Primary export object ${contract.objectId} is missing data-render-target metadata.`,
+    });
+  }
+
+  return diagnostics;
+}
+
 export function validateGeneratedPageHtml(args: {
   html: string;
   expectedPageNumber: number;
   expectedPageTitle: string;
   htmlOutputMode?: HtmlOutputMode;
   previousAnimationPage?: HtmlAnimationPage | null;
+  expectedExportObjectContract?: ExportObjectContract | null;
 }) {
   const cleanedHtml = extractHtmlDocument(args.html);
   if (!cleanedHtml || !/<(?:!DOCTYPE html|html[\s>])/i.test(cleanedHtml)) {
@@ -1060,6 +1151,11 @@ export function validateGeneratedPageHtml(args: {
     previousAnimationPage: args.previousAnimationPage,
   });
   const sectionHtml = sanitizedAnimation.sectionHtml;
+  const exportContractDiagnostics = validatePrimaryExportObjectMetadata({
+    sectionHtml,
+    pageNumber: args.expectedPageNumber,
+    contract: args.expectedExportObjectContract,
+  });
   const pageHtml = cleanedHtml.replace(rawSectionHtml, sectionHtml);
   const pageTitleMatches = extractPageTitles(cleanedHtml);
   const pageTitle = pageTitleMatches[0]?.trim();
@@ -1116,6 +1212,7 @@ export function validateGeneratedPageHtml(args: {
     pageHtml,
     sectionHtml,
     animationPage: sanitizedAnimation.animationPage,
+    exportContractDiagnostics,
   };
 }
 
@@ -1190,6 +1287,7 @@ export function buildSanitizedFinalReport(args: {
   styleProfile?: GeneratedReportStyleProfile;
   htmlOutputMode?: HtmlOutputMode;
   animationStructure?: HtmlAnimationStructure;
+  exportContract?: DeckExportContract;
 }) {
   const styledHtml = args.styleProfile
     ? decorateDeckHtmlWithStyleProfile(args.html, args.styleProfile)
@@ -1212,6 +1310,7 @@ export function buildSanitizedFinalReport(args: {
     animationStructure: sanitizeAnimationStructurePages(args.animationStructure?.pages ?? []),
     styleProfileId: args.styleProfile?.id,
     styleProfile: args.styleProfile,
+    exportContract: args.exportContract,
   };
 }
 
@@ -1237,7 +1336,7 @@ function renderMetricStrip(items: string[], theme: DeterministicRenderTheme) {
         `<div data-html-visual-kind="surface" style="border:1px solid ${withHexAlpha(
           theme.borderSubtle,
           0.9,
-        )};border-radius:22px;background:${theme.surfaceSecondary};padding:20px 22px;min-height:108px;"><div style="font-size:13px;letter-spacing:0.18em;text-transform:uppercase;color:${theme.accentSecondary};margin-bottom:12px;">Signal ${index + 1}</div><div style="font-size:22px;line-height:1.35;color:${theme.textPrimary};">${escapeHtml(
+        )};border-radius:${surfaceBorderRadius(theme, 22)};background:${theme.surfaceSecondary};padding:20px 22px;min-height:108px;"><div style="font-size:13px;letter-spacing:0.18em;text-transform:uppercase;color:${theme.accentSecondary};margin-bottom:12px;">Signal ${index + 1}</div><div style="font-size:22px;line-height:1.35;color:${theme.textPrimary};">${escapeHtml(
           item,
         )}</div></div>`,
     )
@@ -1345,7 +1444,7 @@ function renderBarChartSvg(spec: ChartSpec, theme: DeterministicRenderTheme) {
             )}" stroke="${withHexAlpha(theme.textMuted, 0.45)}" stroke-width="1" stroke-dasharray="5 6" />`
           : "";
         return `${connector}<g>
-          <rect x="${x}" y="${y}" width="${barWidth}" height="${h}" rx="4" fill="${color}" />
+          <rect x="${x}" y="${y}" width="${barWidth}" height="${h}" rx="${svgCornerRadius(theme, 4)}" fill="${color}" />
           <text x="${x + barWidth / 2}" y="${Math.max(top + 14, y - 10)}" text-anchor="middle" font-size="13" font-weight="700" fill="${theme.textPrimary}">${escapeHtml(
             formatConsultingChartValue(step.rawValue, spec.unit),
           )}</text>
@@ -1384,7 +1483,7 @@ function renderBarChartSvg(spec: ChartSpec, theme: DeterministicRenderTheme) {
             ? theme.textPrimary
             : theme.chartPalette[seriesIndex % Math.max(theme.chartPalette.length, 1)] ?? theme.accentPrimary);
         return `<g>
-          <rect x="${x}" y="${y}" width="${Math.max(14, barWidth - 8)}" height="${h}" rx="4" fill="${color}" opacity="${isHighlight ? 1 : 0.78}" />
+          <rect x="${x}" y="${y}" width="${Math.max(14, barWidth - 8)}" height="${h}" rx="${svgCornerRadius(theme, 4)}" fill="${color}" opacity="${isHighlight ? 1 : 0.78}" />
           <text x="${x + Math.max(14, barWidth - 8) / 2}" y="${value >= 0 ? Math.max(top + 14, y - 10) : y + h + 18}" text-anchor="middle" font-size="12" font-weight="700" fill="${theme.textPrimary}">${escapeHtml(
             formatConsultingChartValue(value, spec.unit),
           )}</text>
@@ -1459,7 +1558,7 @@ function renderStackedChartSvg(spec: ChartSpec, theme: DeterministicRenderTheme)
         const nextY = yFor(cumulative);
         const segmentHeight = Math.max(4, cursorY - nextY);
         cursorY = nextY;
-        return `<rect x="${x}" y="${nextY}" width="${barWidth}" height="${segmentHeight}" rx="4" fill="${series.color ?? colors[seriesIndex % colors.length]}" opacity="${seriesIndex === 0 ? 0.95 : 0.78}" />`;
+        return `<rect x="${x}" y="${nextY}" width="${barWidth}" height="${segmentHeight}" rx="${svgCornerRadius(theme, 4)}" fill="${series.color ?? colors[seriesIndex % colors.length]}" opacity="${seriesIndex === 0 ? 0.95 : 0.78}" />`;
       }).join("");
       return `<g>${segments}<text x="${x + barWidth / 2}" y="${Math.max(top + 14, cursorY - 10)}" text-anchor="middle" font-size="13" font-weight="700" fill="${theme.textPrimary}">${escapeHtml(
         formatConsultingChartValue(totals[categoryIndex] ?? 0, spec.unit),
@@ -1669,7 +1768,7 @@ function renderChartPanelForSpec(args: {
   )}" style="border:1px solid ${withHexAlpha(
     theme.borderSubtle,
     0.95,
-  )};border-radius:8px;background:${theme.surfacePrimary};padding:${densitySettings.padding};min-height:${densitySettings.minHeight}px;display:flex;flex-direction:column;gap:${densitySettings.gap}px;box-shadow:none;">
+  )};border-radius:${surfaceBorderRadius(theme, 8)};background:${theme.surfacePrimary};padding:${densitySettings.padding};min-height:${densitySettings.minHeight}px;display:flex;flex-direction:column;gap:${densitySettings.gap}px;box-shadow:none;">
     <div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:${densitySettings.headerGap}px;align-items:start;border-bottom:1px solid ${withHexAlpha(theme.borderSubtle, 0.82)};padding-bottom:14px;">
       <div>
         <div style="font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:${theme.accentSecondary};font-weight:800;margin-bottom:8px;">Exhibit</div>
@@ -1925,7 +2024,7 @@ function renderStructuredGanttSvg(spec: StructuredDiagramSpec, theme: Determinis
       const milestone = task.milestone
         ? `<circle cx="${endX}" cy="${y + rowHeight / 2}" r="8" fill="${theme.textPrimary}" data-gantt-milestone="true" />`
         : "";
-      return `<g data-gantt-task-id="${escapeHtml(task.id)}" data-gantt-track-id="${escapeHtml(task.trackId)}"><line x1="${left}" y1="${y + rowHeight}" x2="${chartLeft + chartWidth}" y2="${y + rowHeight}" stroke="${theme.borderSubtle}" stroke-width="1" /><text x="${left}" y="${y + rowHeight / 2}" dominant-baseline="middle" font-size="19" font-weight="650" fill="${theme.textPrimary}">${escapeHtml(task.label)}</text><rect x="${startX}" y="${y + rowHeight / 2 - 13}" width="${width}" height="26" rx="13" fill="${barColor}" opacity="0.9" />${milestone}</g>`;
+      return `<g data-gantt-task-id="${escapeHtml(task.id)}" data-gantt-track-id="${escapeHtml(task.trackId)}"><line x1="${left}" y1="${y + rowHeight}" x2="${chartLeft + chartWidth}" y2="${y + rowHeight}" stroke="${theme.borderSubtle}" stroke-width="1" /><text x="${left}" y="${y + rowHeight / 2}" dominant-baseline="middle" font-size="19" font-weight="650" fill="${theme.textPrimary}">${escapeHtml(task.label)}</text><rect x="${startX}" y="${y + rowHeight / 2 - 13}" width="${width}" height="26" rx="${svgCornerRadius(theme, 13)}" fill="${barColor}" opacity="0.9" />${milestone}</g>`;
     })
     .join("");
 
@@ -1936,7 +2035,11 @@ function renderStructuredGanttSvg(spec: StructuredDiagramSpec, theme: Determinis
   </svg>`;
 }
 
-function renderStructuredDiagramPageSection(recipe: PageRecipe, theme: DeterministicRenderTheme) {
+function renderStructuredDiagramPageSection(
+  recipe: PageRecipe,
+  theme: DeterministicRenderTheme,
+  exportObjectContract?: ExportObjectContract | null,
+) {
   const spec = recipe.structuredDiagramSpec;
   if (!spec) {
     return "";
@@ -1962,7 +2065,7 @@ function renderStructuredDiagramPageSection(recipe: PageRecipe, theme: Determini
         spec.kind === "gantt" ? "Gantt / Roadmap" : spec.kind === "swimlane" ? "Swimlane flow" : "Flowchart",
       )}</div>
     </header>
-    ${diagramSvg}
+    <main ${exportContractDataAttributes(exportObjectContract)} style="position:absolute;inset:0;">${diagramSvg}</main>
   </section>`;
 }
 
@@ -1980,7 +2083,7 @@ function renderHeroProofSection(recipe: PageRecipe, theme: DeterministicRenderTh
       <div data-html-visual-kind="surface" style="border:1px solid ${withHexAlpha(
         theme.borderSubtle,
         0.9,
-      )};border-radius:30px;background:${theme.surfacePrimary};padding:28px 30px;">
+      )};border-radius:${surfaceBorderRadius(theme, 30)};background:${theme.surfacePrimary};padding:28px 30px;">
         <div style="font-size:13px;letter-spacing:0.18em;text-transform:uppercase;color:${theme.accentSecondary};margin-bottom:14px;">Supporting logic</div>
         <ul style="margin:0;padding-left:24px;">${renderListItems(recipe.supportBullets, theme)}</ul>
       </div>
@@ -1994,7 +2097,7 @@ function renderHeroProofSection(recipe: PageRecipe, theme: DeterministicRenderTh
               `<div data-html-visual-kind="${index === 0 ? "highlight" : "surface"}" style="border:1px solid ${withHexAlpha(
                 theme.borderSubtle,
                 0.85,
-              )};border-radius:26px;background:${index === 0 ? theme.surfaceSecondary : theme.surfacePrimary};padding:24px 24px;"><div style="font-size:13px;letter-spacing:0.18em;text-transform:uppercase;color:${theme.accentSecondary};margin-bottom:10px;">Evidence ${index + 1}</div><div style="font-size:24px;line-height:1.45;color:${theme.textPrimary};">${escapeHtml(
+              )};border-radius:${surfaceBorderRadius(theme, 26)};background:${index === 0 ? theme.surfaceSecondary : theme.surfacePrimary};padding:24px 24px;"><div style="font-size:13px;letter-spacing:0.18em;text-transform:uppercase;color:${theme.accentSecondary};margin-bottom:10px;">Evidence ${index + 1}</div><div style="font-size:24px;line-height:1.45;color:${theme.textPrimary};">${escapeHtml(
                 item,
               )}</div></div>`,
           ))
@@ -2068,12 +2171,12 @@ function renderChartInsightSection(recipe: PageRecipe, theme: DeterministicRende
       ${recipe.chartSpec?.composite === "decision-footer" ? `<div data-html-visual-kind="annotation" style="border:1px solid ${withHexAlpha(
         theme.borderSubtle,
         0.9,
-      )};border-radius:24px;background:${theme.surfaceSecondary};padding:22px 24px;font-size:24px;line-height:1.45;color:${theme.textPrimary};">${escapeHtml(
+      )};border-radius:${surfaceBorderRadius(theme, 24)};background:${theme.surfaceSecondary};padding:22px 24px;font-size:24px;line-height:1.45;color:${theme.textPrimary};">${escapeHtml(
         recipe.takeaway,
       )}</div>` : ""}
     </div>
     <aside data-html-layout-key="chart-right" style="display:flex;flex-direction:column;gap:16px;">
-      <div data-html-visual-kind="badge" style="display:inline-flex;align-self:flex-start;padding:10px 16px;border-radius:999px;border:1px solid ${withHexAlpha(
+      <div data-html-visual-kind="badge" style="display:inline-flex;align-self:flex-start;padding:10px 16px;border-radius:${surfaceBorderRadius(theme, 999)};border:1px solid ${withHexAlpha(
         theme.borderSubtle,
         0.9,
       )};background:${theme.surfacePrimary};font-size:13px;letter-spacing:0.18em;text-transform:uppercase;color:${theme.accentSecondary};">Data-driven view</div>
@@ -2082,7 +2185,7 @@ function renderChartInsightSection(recipe: PageRecipe, theme: DeterministicRende
       <div data-html-visual-kind="rail" style="border:1px solid ${withHexAlpha(
         theme.borderSubtle,
         0.9,
-      )};border-radius:24px;background:${theme.surfaceSecondary};padding:20px 22px;"><div style="font-size:13px;letter-spacing:0.18em;text-transform:uppercase;color:${theme.accentSecondary};margin-bottom:10px;">Decision</div><div style="font-size:24px;line-height:1.42;color:${theme.textPrimary};">${escapeHtml(
+      )};border-radius:${surfaceBorderRadius(theme, 24)};background:${theme.surfaceSecondary};padding:20px 22px;"><div style="font-size:13px;letter-spacing:0.18em;text-transform:uppercase;color:${theme.accentSecondary};margin-bottom:10px;">Decision</div><div style="font-size:24px;line-height:1.42;color:${theme.textPrimary};">${escapeHtml(
         recipe.takeaway,
       )}</div></div>
     </aside>
@@ -2110,7 +2213,7 @@ function renderSequenceSection(recipe: PageRecipe, theme: DeterministicRenderThe
             `<div data-html-visual-kind="surface" style="border:1px solid ${withHexAlpha(
               theme.borderSubtle,
               0.9,
-            )};border-radius:28px;background:${theme.surfacePrimary};padding:22px 24px;min-height:180px;"><div style="font-size:13px;letter-spacing:0.18em;text-transform:uppercase;color:${theme.accentSecondary};margin-bottom:18px;">Step ${index + 1}</div><div style="font-size:26px;line-height:1.38;color:${theme.textPrimary};">${escapeHtml(
+            )};border-radius:${surfaceBorderRadius(theme, 28)};background:${theme.surfacePrimary};padding:22px 24px;min-height:180px;"><div style="font-size:13px;letter-spacing:0.18em;text-transform:uppercase;color:${theme.accentSecondary};margin-bottom:18px;">Step ${index + 1}</div><div style="font-size:26px;line-height:1.38;color:${theme.textPrimary};">${escapeHtml(
               item,
             )}</div></div>`,
         )
@@ -2147,7 +2250,7 @@ function renderComparisonSection(recipe: PageRecipe, theme: DeterministicRenderT
             `<div data-html-visual-kind="${index === 0 ? "highlight" : "surface"}" style="border:1px solid ${withHexAlpha(
               theme.borderSubtle,
               0.85,
-            )};border-radius:24px;background:${index === 0 ? theme.surfaceSecondary : theme.surfacePrimary};padding:20px 22px;"><div style="font-size:13px;letter-spacing:0.18em;text-transform:uppercase;color:${theme.accentSecondary};margin-bottom:10px;">Comparison ${index + 1}</div><div style="font-size:23px;line-height:1.42;color:${theme.textPrimary};">${escapeHtml(
+            )};border-radius:${surfaceBorderRadius(theme, 24)};background:${index === 0 ? theme.surfaceSecondary : theme.surfacePrimary};padding:20px 22px;"><div style="font-size:13px;letter-spacing:0.18em;text-transform:uppercase;color:${theme.accentSecondary};margin-bottom:10px;">Comparison ${index + 1}</div><div style="font-size:23px;line-height:1.42;color:${theme.textPrimary};">${escapeHtml(
               item,
             )}</div></div>`,
         )
@@ -2157,6 +2260,25 @@ function renderComparisonSection(recipe: PageRecipe, theme: DeterministicRenderT
       )}</div>
     </aside>
   </div>`;
+}
+
+function exportContractDataAttributes(contract?: ExportObjectContract | null) {
+  if (!contract) {
+    return "";
+  }
+  const ownershipScope = [
+    contract.ownershipScope.ownsText ? "text" : "",
+    contract.ownershipScope.ownsShapes ? "shape" : "",
+    contract.ownershipScope.ownsSvg ? "svg" : "",
+  ].filter(Boolean).join(",");
+  return [
+    `data-export-object-id="${escapeHtml(contract.objectId)}"`,
+    `data-semantic-kind="${escapeHtml(contract.objectKind)}"`,
+    `data-render-target="${escapeHtml(contract.renderTarget)}"`,
+    `data-ownership-scope="${escapeHtml(ownershipScope)}"`,
+    `data-forbidden-export="${escapeHtml(contract.forbiddenInterpretation.join(","))}"`,
+    `data-export-contract="${escapeHtml(JSON.stringify(contract))}"`,
+  ].join(" ");
 }
 
 function renderResearchFigureSection(recipe: PageRecipe, theme: DeterministicRenderTheme) {
@@ -2180,10 +2302,14 @@ function renderResearchFigureSection(recipe: PageRecipe, theme: DeterministicRen
   </div>`;
 }
 
-export function composeDeterministicPageSection(recipe: PageRecipe, styleProfile: DeckStyleProfile) {
+export function composeDeterministicPageSection(
+  recipe: PageRecipe,
+  styleProfile: DeckStyleProfile,
+  exportObjectContract?: ExportObjectContract | null,
+) {
   const theme = resolveDeterministicRenderTheme(styleProfile);
   if (recipe.structuredDiagramSpec) {
-    return renderStructuredDiagramPageSection(recipe, theme);
+    return renderStructuredDiagramPageSection(recipe, theme, exportObjectContract);
   }
 
   const moduleLabel = recipe.diagramSpec ? "Scientific diagram" : recipe.moduleBinding?.label ?? "Built-in renderer";
@@ -2210,14 +2336,14 @@ export function composeDeterministicPageSection(recipe: PageRecipe, styleProfile
           recipe.insight,
         )}</div>
       </div>
-      <div data-html-visual-kind="badge" style="display:inline-flex;align-items:center;padding:10px 14px;border-radius:999px;border:1px solid ${withHexAlpha(
+      <div data-html-visual-kind="badge" style="display:inline-flex;align-items:center;padding:10px 14px;border-radius:${surfaceBorderRadius(theme, 999)};border:1px solid ${withHexAlpha(
         theme.borderSubtle,
         0.9,
       )};background:${theme.surfacePrimary};font-size:12px;letter-spacing:0.18em;text-transform:uppercase;color:${theme.accentSecondary};">${escapeHtml(
         moduleLabel,
       )}</div>
     </header>
-    <main style="flex:1;display:block;">${body}</main>
+    <main ${exportContractDataAttributes(exportObjectContract)} style="flex:1;display:block;">${body}</main>
   </section>`;
 }
 

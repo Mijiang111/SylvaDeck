@@ -1516,6 +1516,55 @@ export type HtmlAnimationStructure = {
   pages: HtmlAnimationPage[];
 };
 
+export type ExportObjectKind =
+  | "native-chart"
+  | "matrix"
+  | "native-table"
+  | "comparison-grid"
+  | "metric-grid"
+  | "card-grid"
+  | "diagram"
+  | "text";
+
+export type ExportRenderTarget =
+  | "native-chart"
+  | "native-table"
+  | "editable-shapes"
+  | "editable-text"
+  | "html-visual";
+
+export type ExportOwnershipScope = {
+  rootId: string;
+  ownsText: boolean;
+  ownsShapes: boolean;
+  ownsSvg: boolean;
+  childRoles: string[];
+};
+
+export type ExportObjectContract = {
+  objectId: string;
+  pageNumber: number;
+  pageStory: string;
+  primaryVisualObject: string;
+  objectKind: ExportObjectKind;
+  dataContract: Record<string, unknown> | null;
+  renderTarget: ExportRenderTarget;
+  ownershipScope: ExportOwnershipScope;
+  forbiddenInterpretation: string[];
+};
+
+export type PageExportContract = {
+  pageNumber: number;
+  pageStory: string;
+  primaryVisualObject: string;
+  objects: ExportObjectContract[];
+};
+
+export type DeckExportContract = {
+  version: 1;
+  pages: PageExportContract[];
+};
+
 export type GeneratedHtmlReport = {
   title: string;
   html: string;
@@ -1529,6 +1578,7 @@ export type GeneratedHtmlReport = {
   visualStructure?: HtmlVisualStructure;
   layoutStructure?: HtmlLayoutStructure;
   canvasOverrides?: GeneratedHtmlReportCanvasOverrides;
+  exportContract?: DeckExportContract;
 };
 
 export type GeneratedDraftAsset = {

@@ -396,15 +396,31 @@ function patchBubbleSeriesXml(serXml: string, chartNode: PptxExportChartNode) {
   return withoutExistingDataPoints.replace(/<\/c:tx>/, `</c:tx>${pointXml}`);
 }
 
+function patchBubbleChartSeriesXml(bubbleChartXml: string, chartNode: PptxExportChartNode) {
+  const seriesBlocks = Array.from(bubbleChartXml.matchAll(tagBlockPattern("c:ser"))).map((match) => match[0] ?? "");
+  if (!seriesBlocks.length) {
+    return bubbleChartXml;
+  }
+
+  const preferredSeriesIndex = Math.max(
+    0,
+    seriesBlocks.findIndex((serXml) => /<c:bubbleSize\b/i.test(serXml)),
+  );
+  let seriesIndex = 0;
+  return bubbleChartXml.replace(tagBlockPattern("c:ser"), (serXml) => {
+    const shouldKeep = seriesIndex === preferredSeriesIndex;
+    seriesIndex += 1;
+    return shouldKeep ? patchBubbleSeriesXml(serXml, chartNode) : "";
+  });
+}
+
 function patchBubbleChartXml(xml: string, chartNode: PptxExportChartNode) {
   if (chartNode.chartKind !== "bubble") {
     return xml;
   }
   const bubbleScale = Math.round(clamp(chartNode.style?.bubbleScale ?? 70, 1, 300));
   return patchChartTypeBlock(xml, "bubbleChart", (bubbleChartXml) => {
-    let nextBubbleChartXml = patchFirstTagBlock(bubbleChartXml, "c:ser", (serXml) =>
-      patchBubbleSeriesXml(serXml, chartNode),
-    );
+    let nextBubbleChartXml = patchBubbleChartSeriesXml(bubbleChartXml, chartNode);
     nextBubbleChartXml = nextBubbleChartXml.replace(/<c:dLbls\b[\s\S]*?<\/c:dLbls>/g, "");
     nextBubbleChartXml = nextBubbleChartXml.replace(
       /(<\/c:ser>)/,
