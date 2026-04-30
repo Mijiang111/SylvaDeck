@@ -5,6 +5,7 @@ import {
 import { createProjectBundle } from "@/features/studio/state";
 import type {
   HtmlOutputMode,
+  DeckExportContract,
   WorkbenchGenerationMode,
   WorkbenchModuleUsageMode,
 } from "@/features/studio/types";
@@ -30,6 +31,7 @@ export type StartAiConversationFromPromptArgs = {
   moduleUsageMode?: WorkbenchModuleUsageMode;
   htmlOutputMode?: HtmlOutputMode;
   requestedPageCount?: number | null;
+  exportContract?: DeckExportContract | null;
   queueGeneration?: boolean;
 };
 
@@ -62,6 +64,7 @@ export function startAiConversationFromPrompt(
   const moduleUsageMode = args.moduleUsageMode ?? "disabled";
   const htmlOutputMode = args.htmlOutputMode ?? "static";
   const requestedPageCount = args.requestedPageCount ?? null;
+  const exportContract = args.exportContract ?? undefined;
   const queueGeneration = args.queueGeneration ?? true;
   const clarificationSuggestion = detectImplicitLongFormClarification(nextPrompt, {
     generationMode,
@@ -95,6 +98,7 @@ export function startAiConversationFromPrompt(
       moduleUsageMode,
       htmlOutputMode,
       requestedPageCount,
+      exportContract,
       longFormClarification:
         clarificationSuggestion?.trigger === "explicit-8-9-pages"
           ? {
@@ -122,6 +126,7 @@ export function startAiConversationFromPrompt(
           "moduleUsageMode",
           "htmlOutputMode",
           "requestedPageCount",
+          "exportContract",
           "briefMessages",
           "workflowStage",
         ],

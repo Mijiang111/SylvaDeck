@@ -473,6 +473,7 @@ export function resolveGenerationIntent(
     generationMode,
     moduleUsageMode: intent?.moduleUsageMode ?? "disabled",
     htmlOutputMode: intent?.htmlOutputMode ?? "static",
+    exportContract: intent?.exportContract ?? null,
     requestedPageCount:
       generationMode === "long-form"
         ? requestedPageCount && requestedPageCount >= 10

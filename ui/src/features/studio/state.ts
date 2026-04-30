@@ -257,9 +257,34 @@ function cloneConversationMessages(messages: ConversationMessage[]) {
   }));
 }
 
+function cloneDeckExportContract(contract?: DeckExportContract | null): DeckExportContract | undefined {
+  if (!contract) {
+    return undefined;
+  }
+  return {
+    version: 1,
+    pages: contract.pages.map((page) => ({
+      ...page,
+      objects: page.objects.map((object) => ({
+        ...object,
+        dataContract:
+          object.dataContract === null
+            ? null
+            : JSON.parse(JSON.stringify(object.dataContract)) as Record<string, unknown>,
+        ownershipScope: {
+          ...object.ownershipScope,
+          childRoles: [...object.ownershipScope.childRoles],
+        },
+        forbiddenInterpretation: [...object.forbiddenInterpretation],
+      })),
+    })),
+  };
+}
+
 function cloneProjectSnapshot(snapshot: WorkbenchProjectSnapshot): WorkbenchProjectSnapshot {
   return {
     ...snapshot,
+    exportContract: cloneDeckExportContract(snapshot.exportContract),
     longFormClarification: { ...snapshot.longFormClarification },
     deckOptimization: { ...snapshot.deckOptimization },
     starterBindings: { ...snapshot.starterBindings },
@@ -289,6 +314,7 @@ function clonePublishSnapshots(entries: PublishSnapshot[]) {
 function cloneProject(project: WorkbenchProject): WorkbenchProject {
   return {
     ...project,
+    exportContract: cloneDeckExportContract(project.exportContract),
     longFormClarification: { ...project.longFormClarification },
     deckOptimization: { ...project.deckOptimization },
     starterBindings: { ...project.starterBindings },
@@ -410,6 +436,7 @@ function createProjectSnapshot(args: {
   generationMode: WorkbenchGenerationMode;
   moduleUsageMode: WorkbenchProject["moduleUsageMode"];
   requestedPageCount: number | null;
+  exportContract?: DeckExportContract | null;
   longFormClarification: WorkbenchLongFormClarificationState;
   deckOptimization: WorkbenchDeckOptimizationState;
   pages: LayoutPage[];
@@ -436,6 +463,7 @@ function createProjectSnapshot(args: {
     generationMode: args.generationMode,
     moduleUsageMode: args.moduleUsageMode,
     requestedPageCount: args.requestedPageCount,
+    exportContract: cloneDeckExportContract(args.exportContract),
     longFormClarification: { ...args.longFormClarification },
     deckOptimization: { ...args.deckOptimization },
     pages: args.pages.map((page) => ({
@@ -501,6 +529,7 @@ function createStoredProjectRecord(args: {
   generationMode?: WorkbenchGenerationMode;
   moduleUsageMode?: WorkbenchProject["moduleUsageMode"];
   requestedPageCount?: number | null;
+  exportContract?: DeckExportContract | null;
   longFormClarification?: WorkbenchLongFormClarificationState;
   deckOptimization?: WorkbenchDeckOptimizationState;
   briefMessages?: ConversationMessage[];
@@ -546,6 +575,7 @@ function createStoredProjectRecord(args: {
       Number.isInteger(args.requestedPageCount) && (args.requestedPageCount ?? 0) >= 1
         ? args.requestedPageCount ?? null
         : null,
+    exportContract: cloneDeckExportContract(args.exportContract),
     longFormClarification: normalizeLongFormClarificationState(args.longFormClarification),
     deckOptimization: normalizeDeckOptimizationState(args.deckOptimization),
     briefMessages: cloneConversationMessages(args.briefMessages ?? []),
@@ -1179,6 +1209,14 @@ function normalizeDeckExportContract(value: unknown, pageCount: number): DeckExp
   return pages.length ? { version: 1, pages } : undefined;
 }
 
+function resolveDeckExportContractPageLimit(value: unknown, fallbackPageCount: number) {
+  if (!value || typeof value !== "object") {
+    return fallbackPageCount;
+  }
+  const pages = (value as Partial<DeckExportContract>).pages;
+  return Array.isArray(pages) ? Math.max(fallbackPageCount, pages.length) : fallbackPageCount;
+}
+
 function normalizeProjectSnapshot(
   snapshot: unknown,
   templateIdHint: TemplateId = DEFAULT_TEMPLATE_ID,
@@ -1230,6 +1268,10 @@ function normalizeProjectSnapshot(
       Number.isInteger(candidate.requestedPageCount) && (candidate.requestedPageCount ?? 0) >= 1
         ? candidate.requestedPageCount ?? null
         : null,
+    exportContract: normalizeDeckExportContract(
+      candidate.exportContract,
+      resolveDeckExportContractPageLimit(candidate.exportContract, normalizedPages.length),
+    ),
     longFormClarification: normalizeLongFormClarificationState(candidate.longFormClarification),
     deckOptimization: normalizeDeckOptimizationState(candidate.deckOptimization),
     pages: normalizedPages,
@@ -1409,6 +1451,10 @@ function normalizeStoredProject(
       Number.isInteger(candidate.requestedPageCount) && (candidate.requestedPageCount ?? 0) >= 1
         ? candidate.requestedPageCount ?? null
         : null,
+    exportContract: normalizeDeckExportContract(
+      candidate.exportContract,
+      resolveDeckExportContractPageLimit(candidate.exportContract, normalizedPages.length),
+    ),
     longFormClarification: normalizeLongFormClarificationState(candidate.longFormClarification),
     deckOptimization: normalizeDeckOptimizationState(candidate.deckOptimization),
     briefMessages,
@@ -2499,6 +2545,7 @@ export function createProjectBundle(args: {
   moduleUsageMode?: WorkbenchProject["moduleUsageMode"];
   htmlOutputMode?: WorkbenchProject["htmlOutputMode"];
   requestedPageCount?: number | null;
+  exportContract?: DeckExportContract | null;
   longFormClarification?: WorkbenchLongFormClarificationState;
   deckOptimization?: WorkbenchDeckOptimizationState;
   briefMessages?: ConversationMessage[];
@@ -2528,6 +2575,7 @@ export function createProjectBundle(args: {
     generationMode: args.generationMode,
     moduleUsageMode: args.moduleUsageMode,
     requestedPageCount: args.requestedPageCount,
+    exportContract: args.exportContract,
     longFormClarification: args.longFormClarification,
     deckOptimization: args.deckOptimization,
     briefMessages: args.briefMessages,
@@ -2549,6 +2597,7 @@ export function serializeProjectBundle(args: {
   moduleUsageMode?: WorkbenchProject["moduleUsageMode"];
   htmlOutputMode?: WorkbenchProject["htmlOutputMode"];
   requestedPageCount?: number | null;
+  exportContract?: DeckExportContract | null;
   longFormClarification?: WorkbenchLongFormClarificationState;
   deckOptimization?: WorkbenchDeckOptimizationState;
   briefMessages?: ConversationMessage[];
@@ -2660,6 +2709,7 @@ export function recordProjectGeneration(args: {
         generationMode: project.generationMode,
         moduleUsageMode: project.moduleUsageMode,
         requestedPageCount: project.requestedPageCount,
+        exportContract: project.exportContract,
         longFormClarification: project.longFormClarification,
         deckOptimization: project.deckOptimization,
         pages: args.pages,
@@ -2694,6 +2744,7 @@ export function recordProjectGeneration(args: {
         generationMode: project.generationMode,
         moduleUsageMode: project.moduleUsageMode,
         requestedPageCount: project.requestedPageCount,
+        exportContract: project.exportContract,
         longFormClarification: project.longFormClarification,
         deckOptimization: { autoOptimizedReportKey: null, autoOptimizedVersion: null },
         pages: args.pages,
@@ -2778,6 +2829,7 @@ export function importProjectBundle(bundle: WorkbenchProject, workspaceId?: stri
     generationMode: bundle.generationMode,
     moduleUsageMode: bundle.moduleUsageMode,
     requestedPageCount: bundle.requestedPageCount,
+    exportContract: bundle.exportContract,
     longFormClarification: bundle.longFormClarification,
     deckOptimization: bundle.deckOptimization,
     briefMessages: bundle.briefMessages,

@@ -330,6 +330,7 @@ export const createStudioBridgeLaunchRequestSchema = z.object({
   moduleUsageMode: moduleUsageModeSchema.optional().default("disabled"),
   htmlOutputMode: htmlOutputModeSchema.optional().default("static"),
   requestedPageCount: z.number().int().min(1).max(12).nullable().optional().default(null),
+  exportContract: deckExportContractSchema.optional(),
   mode: studioBridgeLaunchModeSchema.optional().default("inject-and-generate"),
 });
 
@@ -347,6 +348,7 @@ export const consumeStudioBridgeLaunchResponseSchema = z.object({
   moduleUsageMode: moduleUsageModeSchema.optional().default("disabled"),
   htmlOutputMode: htmlOutputModeSchema.optional().default("static"),
   requestedPageCount: z.number().int().min(1).max(12).nullable().optional().default(null),
+  exportContract: deckExportContractSchema.optional(),
   mode: studioBridgeLaunchModeSchema.optional().default("inject-and-generate"),
   expiresAt: z.string().datetime(),
 });

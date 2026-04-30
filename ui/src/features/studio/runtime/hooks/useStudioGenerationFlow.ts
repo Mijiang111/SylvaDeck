@@ -125,6 +125,7 @@ export function useStudioGenerationFlow(args: UseStudioGenerationFlowArgs) {
       moduleUsageMode?: WorkbenchProject["moduleUsageMode"];
       htmlOutputMode?: WorkbenchProject["htmlOutputMode"];
       requestedPageCount?: WorkbenchProject["requestedPageCount"];
+      exportContract?: WorkbenchProject["exportContract"] | null;
       suppressInferredPageCount?: boolean;
       starterPackId?: WorkbenchProject["starterPackId"];
       starterThemeId?: WorkbenchProject["starterThemeId"];
@@ -158,6 +159,7 @@ export function useStudioGenerationFlow(args: UseStudioGenerationFlowArgs) {
           : overrideIntent?.htmlOutputMode ?? lockedHtmlOutputMode,
       requestedPageCount:
         overrideIntent?.requestedPageCount ?? project?.requestedPageCount ?? null,
+      exportContract: overrideIntent?.exportContract ?? project?.exportContract ?? null,
       starterPackId: overrideIntent?.starterPackId ?? project?.starterPackId ?? null,
       starterThemeId: overrideIntent?.starterThemeId ?? project?.starterThemeId ?? null,
       starterApplicationMode:
@@ -228,6 +230,7 @@ export function useStudioGenerationFlow(args: UseStudioGenerationFlowArgs) {
           moduleUsageMode: generationIntent.moduleUsageMode,
           htmlOutputMode: generationIntent.htmlOutputMode,
           requestedPageCount: generationIntent.requestedPageCount,
+          exportContract: generationIntent.exportContract,
           pages: result.pages,
           generatedDraft: asset,
           workflowStage: "generated",
@@ -276,6 +279,7 @@ export function useStudioGenerationFlow(args: UseStudioGenerationFlowArgs) {
     project?.moduleUsageMode,
     project?.htmlOutputMode,
     project?.requestedPageCount,
+    project?.exportContract,
     project?.starterApplicationMode,
     project?.starterBindings,
     project?.starterPackId,

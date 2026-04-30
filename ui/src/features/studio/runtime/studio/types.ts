@@ -84,6 +84,7 @@ export type StudioPatchPayload = Partial<
     | "generationMode"
     | "moduleUsageMode"
     | "requestedPageCount"
+    | "exportContract"
     | "briefMessages"
     | "pages"
     | "generatedDraft"
@@ -173,6 +174,7 @@ export type StudioGenerationCommit = {
   moduleUsageMode: WorkbenchProject["moduleUsageMode"];
   htmlOutputMode: HtmlOutputMode;
   requestedPageCount: WorkbenchProject["requestedPageCount"];
+  exportContract?: WorkbenchProject["exportContract"] | null;
   pages: LayoutPage[];
   generatedDraft: GeneratedDraftAsset;
   workflowStage: WorkflowStage;

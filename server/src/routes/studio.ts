@@ -61,6 +61,7 @@ export function studioRoutes() {
         mode: payload.mode ?? "inject-and-generate",
         generationMode: payload.generationMode ?? "standard",
         requestedPageCount: payload.requestedPageCount ?? null,
+        exportContractPageCount: payload.exportContract?.pages.length ?? null,
       },
       "studio bridge launch created",
     );

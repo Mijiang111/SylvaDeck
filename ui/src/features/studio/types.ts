@@ -1606,6 +1606,7 @@ export type WorkbenchProjectSnapshot = {
   generationMode: WorkbenchGenerationMode;
   moduleUsageMode: WorkbenchModuleUsageMode;
   requestedPageCount: number | null;
+  exportContract?: DeckExportContract;
   longFormClarification: WorkbenchLongFormClarificationState;
   deckOptimization: WorkbenchDeckOptimizationState;
   pages: LayoutPage[];
@@ -1873,6 +1874,7 @@ export type WorkbenchProject = {
   generationMode: WorkbenchGenerationMode;
   moduleUsageMode: WorkbenchModuleUsageMode;
   requestedPageCount: number | null;
+  exportContract?: DeckExportContract;
   longFormClarification: WorkbenchLongFormClarificationState;
   deckOptimization: WorkbenchDeckOptimizationState;
   briefMessages: ConversationMessage[];

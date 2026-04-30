@@ -73,6 +73,7 @@ export function useStudioBridgeLaunchBootstrap(
           moduleUsageMode: payload.moduleUsageMode ?? "disabled",
           htmlOutputMode: payload.htmlOutputMode ?? "static",
           requestedPageCount: payload.requestedPageCount ?? null,
+          exportContract: payload.exportContract,
           queueGeneration: (payload.mode ?? "inject-and-generate") === "inject-and-generate",
         });
         if (!result.ok) {
