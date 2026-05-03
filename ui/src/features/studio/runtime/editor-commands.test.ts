@@ -28,6 +28,14 @@ const pageSelection: HtmlEditorSelectionObject = {
 const textSelection: HtmlEditorSelectionObject = {
   kind: "text",
   objectId: "page:1:text:headline",
+  object: {
+    selectedObjectId: "page:1:text:headline",
+    activeFacet: "text",
+    availableFacets: ["text"],
+    textBlockIds: ["headline"],
+    visualNodeIds: [],
+    rootNodeId: null,
+  },
   pageNumber: 1,
   pageTitle: "Operating Model",
   blockId: "headline",
@@ -53,6 +61,14 @@ const textSelection: HtmlEditorSelectionObject = {
 const visualSelection: HtmlEditorSelectionObject = {
   kind: "visual",
   objectId: "page:1:visual:chart",
+  object: {
+    selectedObjectId: "page:1:visual:chart",
+    activeFacet: "shape",
+    availableFacets: ["shape", "data"],
+    textBlockIds: [],
+    visualNodeIds: ["chart"],
+    rootNodeId: "chart",
+  },
   pageNumber: 1,
   pageTitle: "Operating Model",
   nodeId: "chart",

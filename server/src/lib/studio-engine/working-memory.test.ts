@@ -85,6 +85,18 @@ Page 1: "Tencent is a BBM V2 compounder" Story claim: focus the opener.`;
   assert.doesNotMatch(memory.primaryObject, /Page 1|Source constraint|Task:/i);
 });
 
+test("working memory ignores export metadata labels when resolving the primary object", () => {
+  const brief = `Create a production-grade PPTX-style investment deck titled "Tencent AI Compounder".
+Observed facts: Tencent revenue engines are diversified.
+Hard export contract rule: Every page must render exactly one primary visual object. Put semantic metadata on the root of that object: data-export-object-id, data-export-object-kind, data-render-target, data-export-contract, data-forbidden-interpretation, and data-quality-intent.
+Page 1: Tencent has four cash-flow engines, but AI monetization should be read through mix quality.
+Page 2: The AI opportunity clusters where Tencent already owns users.`;
+  const memory = resolveWorkingMemory(brief, 2);
+
+  assert.equal(memory.primaryObject, "Tencent AI Compounder");
+  assert.doesNotMatch(memory.primaryObject, /data-export|data-render|metadata/i);
+});
+
 test("acceptance checks fail when the audience bar leaks into the primary object", () => {
   const invalidMemory = {
     rawBrief: "placeholder",

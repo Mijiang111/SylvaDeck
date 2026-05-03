@@ -11,6 +11,13 @@ import {
   type PageFitMeasurement,
   type StudioGenerateStreamEvent,
 } from "./generation";
+import {
+  isCodexCliSoftWarning,
+  isCodexInstallReady,
+  type InstallStatusResponse,
+} from "./install";
+import { getPptxExportErrorMessage } from "./runtime/hooks/useStudioExportActions";
+import type { DeckExportContract } from "./types";
 
 function createMeasurement(overrides = {}) {
   return {
@@ -112,6 +119,63 @@ function buildFinalReportEvent(): StudioGenerateStreamEvent {
   };
 }
 
+function buildInstallStatus(
+  overrides: Partial<InstallStatusResponse> = {},
+): InstallStatusResponse {
+  const codex = {
+    id: "codex" as const,
+    label: "Codex",
+    visible: true,
+    supported: true,
+    detected: true,
+    authReady: true,
+    skillInstalled: true,
+    status: "ready",
+    installMode: "one-click",
+    targetPath: "~/.codex/skills/ppt-workbench-studio",
+    notes: [],
+  };
+  return {
+    serverHealthy: true,
+    repoPath: "/repo",
+    platform: "darwin",
+    nodeReady: true,
+    pnpmReady: true,
+    nodeVersion: "v24.0.0",
+    pnpmVersion: "10.0.0",
+    recommendedAgentId: "codex",
+    skillSourcePath: "/repo/skills/ppt-workbench-studio",
+    skillGithubUrl: "https://example.com/skill",
+    bootstrapCommands: {
+      onboard: "pnpm studio:onboard",
+      doctor: "pnpm studio:doctor",
+      dev: "pnpm dev",
+    },
+    agents: [codex],
+    ...overrides,
+  };
+}
+
+function buildCodexSoftReadyStatus() {
+  return buildInstallStatus({
+    agents: [
+      {
+        id: "codex",
+        label: "Codex",
+        visible: true,
+        supported: true,
+        detected: false,
+        authReady: true,
+        skillInstalled: true,
+        status: "missing-command",
+        installMode: "one-click",
+        targetPath: "~/.codex/skills/ppt-workbench-studio",
+        notes: ["Codex CLI not detected yet."],
+      },
+    ],
+  });
+}
+
 test("inferRequestedHtmlPageCount honors Chinese total page requests before one-page constraints", () => {
   const prompt = `做一份 6 页英文 PPT，主题是“Why our Studio should support Cursor, Codex, and Kimi as switchable providers”。
 
@@ -178,6 +242,63 @@ test("inferRequestedHtmlPageCount recognizes numeric Chinese single-page briefs"
   );
 });
 
+test("install gate allows local Studio when Codex CLI is missing but auth and skill are ready", () => {
+  const status = buildCodexSoftReadyStatus();
+
+  assert.equal(isCodexInstallReady(status), true);
+  assert.equal(isCodexCliSoftWarning(status), true);
+});
+
+test("install gate still blocks when core local dependencies are not ready", () => {
+  assert.equal(
+    isCodexInstallReady(buildInstallStatus({ serverHealthy: false })),
+    false,
+  );
+  assert.equal(
+    isCodexInstallReady(buildInstallStatus({ nodeReady: false })),
+    false,
+  );
+  assert.equal(
+    isCodexInstallReady(buildInstallStatus({ pnpmReady: false })),
+    false,
+  );
+});
+
+test("install gate still blocks when Codex auth or skill is missing", () => {
+  assert.equal(
+    isCodexInstallReady(buildInstallStatus({
+      agents: [
+        {
+          ...buildCodexSoftReadyStatus().agents[0]!,
+          authReady: false,
+          status: "missing-auth",
+        },
+      ],
+    })),
+    false,
+  );
+  assert.equal(
+    isCodexInstallReady(buildInstallStatus({
+      agents: [
+        {
+          ...buildCodexSoftReadyStatus().agents[0]!,
+          skillInstalled: false,
+          status: "missing-skill",
+        },
+      ],
+    })),
+    false,
+  );
+});
+
+test("PPTX export error message preserves fatal pipeline details for the UI", () => {
+  const error = new Error(
+    "PPTX export blocked: visual-chart-rasterization-failed on page 1.",
+  );
+
+  assert.match(getPptxExportErrorMessage(error), /visual-chart-rasterization-failed/);
+});
+
 test("resolveGenerationIntent defaults htmlOutputMode to static", () => {
   const intent = resolveGenerationIntent("Create a 4-page HTML report.");
 
@@ -195,13 +316,17 @@ test("resolveGenerationIntent preserves animated preview mode before first gener
 });
 
 test("createGenerationRequestPayload forwards explicit export contracts", () => {
-  const exportContract = {
+  const exportContract: DeckExportContract = {
     version: 1,
     pages: [
       {
         pageNumber: 1,
         pageStory: "External matrix story",
         primaryVisualObject: "Market matrix",
+        layoutArchetype: "matrix-first",
+        visualGrammar: "consulting",
+        composition: "center-canvas-annotation-ring",
+        density: "executive",
         objects: [
           {
             objectId: "p1-external-matrix",
@@ -210,7 +335,15 @@ test("createGenerationRequestPayload forwards explicit export contracts", () => 
             primaryVisualObject: "Market matrix",
             objectKind: "matrix",
             dataContract: {
-              expected: "matrix-object",
+              type: "matrix",
+              axes: {
+                x: { label: "Growth" },
+                y: { label: "Share" },
+              },
+              items: [
+                { label: "Core", x: 0.7, y: 0.6 },
+              ],
+              renderTarget: "editable-shapes",
             },
             renderTarget: "editable-shapes",
             ownershipScope: {
@@ -225,7 +358,7 @@ test("createGenerationRequestPayload forwards explicit export contracts", () => 
         ],
       },
     ],
-  } as const;
+  };
 
   const payload = createGenerationRequestPayload("Build a market matrix.", undefined, {
     requestedPageCount: null,

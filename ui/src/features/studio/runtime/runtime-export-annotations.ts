@@ -5,7 +5,10 @@ import {
 } from "@/features/studio/html-report-canvas";
 import { findHtmlAnimationPage } from "@/features/studio/html-report-animation";
 import { collectHtmlLayoutCandidates } from "@/features/studio/html-report-layout";
-import { collectHtmlEditableCandidates } from "@/features/studio/html-report-structure";
+import {
+  collectHtmlEditableCandidates,
+  editableSourceTagMatchesElement,
+} from "@/features/studio/html-report-structure";
 import { HTML_FIT_ROLE_ATTRIBUTE } from "@/features/studio/html-fit-role";
 import { canonicalizeDataBackedModulesOnPage } from "@/features/studio/html-report-data-modules";
 import {
@@ -26,6 +29,7 @@ import {
   PREVIEW_SELECTION_ORDERS,
   PREVIEW_TEXT_PRIORITY_BLOCK_KINDS,
 } from "./preview-selection";
+import { buildHtmlCanvasObjects } from "./editor-selection-model";
 
 export type HtmlReportPagePreview = {
   pageNumber: number;
@@ -75,7 +79,11 @@ function collectElementAttributes(element: Element) {
   }, {});
 }
 
-function annotatePreviewPageBlocks(pageElement: Element, pageStructure: HtmlEditablePage | null) {
+function annotatePreviewPageBlocks(
+  pageElement: Element,
+  pageStructure: HtmlEditablePage | null,
+  canvasObjects: ReturnType<typeof buildHtmlCanvasObjects>,
+) {
   if (!pageStructure) {
     return;
   }
@@ -86,16 +94,27 @@ function annotatePreviewPageBlocks(pageElement: Element, pageStructure: HtmlEdit
     if (!element) {
       return;
     }
-    if (element.tagName.toLowerCase() !== block.sourceTag.toLowerCase()) {
+    if (!editableSourceTagMatchesElement(element, block.sourceTag)) {
       return;
     }
 
     element.setAttribute("data-html-block-id", block.id);
     element.setAttribute("data-html-block-kind", block.kind);
+    const object = canvasObjects.find((entry) => entry.textBlockIds.includes(block.id));
+    if (object) {
+      element.setAttribute("data-html-object-id", object.id);
+      if (object.exportObjectId) {
+        element.setAttribute("data-html-export-object-id", object.exportObjectId);
+      }
+    }
   });
 }
 
-function annotatePreviewVisualNodes(pageElement: Element, visualPage: HtmlVisualPage | null) {
+function annotatePreviewVisualNodes(
+  pageElement: Element,
+  visualPage: HtmlVisualPage | null,
+  canvasObjects: ReturnType<typeof buildHtmlCanvasObjects>,
+) {
   if (!visualPage) {
     return;
   }
@@ -112,6 +131,13 @@ function annotatePreviewVisualNodes(pageElement: Element, visualPage: HtmlVisual
 
     element.setAttribute("data-html-visual-id", node.id);
     element.setAttribute("data-html-visual-kind", node.kind);
+    const object = canvasObjects.find((entry) => entry.visualNodeIds.includes(node.id));
+    if (object) {
+      element.setAttribute("data-html-object-id", object.id);
+      if (object.exportObjectId) {
+        element.setAttribute("data-html-export-object-id", object.exportObjectId);
+      }
+    }
     if (node.parentId) {
       element.setAttribute("data-html-visual-parent-id", node.parentId);
     }
@@ -452,9 +478,13 @@ function buildHtmlReportPageDocument(
   });
 
   const pageClone = pageElement.cloneNode(true) as Element;
+  const canvasObjects = buildHtmlCanvasObjects({
+    report,
+    pageNumber,
+  });
   canonicalizeDataBackedModulesOnPage(pageClone);
-  annotatePreviewPageBlocks(pageClone, pageStructure);
-  annotatePreviewVisualNodes(pageClone, visualPage);
+  annotatePreviewPageBlocks(pageClone, pageStructure, canvasObjects);
+  annotatePreviewVisualNodes(pageClone, visualPage, canvasObjects);
   annotatePreviewPageExportMetadata(pageClone, pageStyle);
   annotatePreviewVisualNodesForExport({
     pageElement: pageClone,
@@ -1541,6 +1571,8 @@ function buildHtmlReportPageDocument(
                 fitParticipation,
                 blockId,
                 blockKind,
+                objectId: current.getAttribute("data-html-object-id"),
+                exportObjectId: current.getAttribute("data-html-export-object-id"),
                 visualKind: current.getAttribute("data-html-visual-kind"),
                 sharesSource: Boolean(current.getAttribute("data-html-visual-id")),
                 atomizationRole: current.getAttribute("data-html-visual-atomization-role"),
@@ -1562,6 +1594,8 @@ function buildHtmlReportPageDocument(
                 fitParticipation,
                 visualNodeId,
                 visualKind,
+                objectId: current.getAttribute("data-html-object-id"),
+                exportObjectId: current.getAttribute("data-html-export-object-id"),
                 blockKind: current.getAttribute("data-html-block-kind"),
                 sharesSource: Boolean(current.getAttribute("data-html-block-id")),
                 atomizationRole: current.getAttribute("data-html-visual-atomization-role"),
@@ -1780,6 +1814,8 @@ function buildHtmlReportPageDocument(
           target: "block",
           blockId: blockCandidate.blockId,
           blockKind: blockCandidate.blockKind,
+          objectId: blockCandidate.objectId || undefined,
+          exportObjectId: blockCandidate.exportObjectId || undefined,
           rect: buildSelectionRectPayload(blockElement),
           fontSize: Number.isFinite(fontSize) ? fontSize : undefined,
           fontFamily: computed.fontFamily || undefined,
@@ -1809,6 +1845,8 @@ function buildHtmlReportPageDocument(
           target: "visual",
           visualNodeId: visualCandidate.visualNodeId,
           visualKind: visualCandidate.visualKind,
+          objectId: visualCandidate.objectId || undefined,
+          exportObjectId: visualCandidate.exportObjectId || undefined,
           rect: buildSelectionRectPayload(visualCandidate.element),
         };
       }

@@ -139,8 +139,9 @@ export type WorkbenchStudioStore = {
   setSaveState: (saveState: StudioSaveState, lastError?: string | null) => void;
   markSaved: (savedAt: string) => void;
   selectPage: (pageId: string) => void;
-  selectHtmlBlock: (pageNumber: number, blockId: string) => void;
-  selectVisualNode: (pageNumber: number, nodeId: string) => void;
+  selectHtmlBlock: (pageNumber: number, blockId: string, objectId?: string | null) => void;
+  selectVisualNode: (pageNumber: number, nodeId: string, objectId?: string | null) => void;
+  setSelectionFacet: (facet: StudioSelectionState["activeFacet"]) => void;
   clearSelection: (tab?: StudioInspectorTab) => void;
   recordHtmlOverflow: (pageNumber: number, overflows: boolean) => void;
   undo: () => void;
@@ -178,6 +179,8 @@ export const DEFAULT_LIBRARY_STATE: StudioLibraryState = {
 
 export const DEFAULT_SELECTION_STATE: StudioSelectionState = {
   activePageId: "",
+  selectedObjectId: null,
+  activeFacet: null,
   selectedHtmlBlockId: null,
   selectedVisualNodeId: null,
   htmlPageOverflows: {},

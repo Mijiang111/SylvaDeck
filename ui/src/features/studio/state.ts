@@ -35,6 +35,7 @@ import type {
   ConversationMessage,
   DeckExportContract,
   DraftProvider,
+  ExportDataContract,
   ExportObjectContract,
   ExportObjectKind,
   ExportRenderTarget,
@@ -46,6 +47,10 @@ import type {
   LayoutPage,
   MetricFact,
   NarrativeItem,
+  PageComposition,
+  PageDensity,
+  PageLayoutArchetype,
+  PageVisualGrammar,
   PublishSnapshot,
   PublishSnapshotFormat,
   SerializableWorkbenchDraft,
@@ -270,7 +275,7 @@ function cloneDeckExportContract(contract?: DeckExportContract | null): DeckExpo
         dataContract:
           object.dataContract === null
             ? null
-            : JSON.parse(JSON.stringify(object.dataContract)) as Record<string, unknown>,
+            : JSON.parse(JSON.stringify(object.dataContract)) as ExportDataContract,
         ownershipScope: {
           ...object.ownershipScope,
           childRoles: [...object.ownershipScope.childRoles],
@@ -1088,6 +1093,7 @@ function normalizeGeneratedHtmlReport(value: unknown): GeneratedHtmlReport {
 
 function isExportObjectKind(value: unknown): value is ExportObjectKind {
   return (
+    value === "chart-visual" ||
     value === "native-chart" ||
     value === "matrix" ||
     value === "native-table" ||
@@ -1101,12 +1107,73 @@ function isExportObjectKind(value: unknown): value is ExportObjectKind {
 
 function isExportRenderTarget(value: unknown): value is ExportRenderTarget {
   return (
+    value === "visual-snapshot" ||
     value === "native-chart" ||
     value === "native-table" ||
     value === "editable-shapes" ||
     value === "editable-text" ||
     value === "html-visual"
   );
+}
+
+function isPageLayoutArchetype(value: unknown): value is PageLayoutArchetype {
+  return (
+    value === "single-dominant-visual" ||
+    value === "hero-metric" ||
+    value === "chart-with-insight-rail" ||
+    value === "matrix-first" ||
+    value === "bubble-landscape" ||
+    value === "timeline-led" ||
+    value === "process-flow" ||
+    value === "swimlane" ||
+    value === "benchmark-table" ||
+    value === "decision-tree" ||
+    value === "layered-stack" ||
+    value === "market-map" ||
+    value === "portfolio-grid" ||
+    value === "capability-model" ||
+    value === "funnel" ||
+    value === "risk-heatmap" ||
+    value === "thesis-evidence-board" ||
+    value === "before-after" ||
+    value === "flywheel" ||
+    value === "operating-model" ||
+    value === "annotation-stage" ||
+    value === "evidence-wall" ||
+    value === "case-timeline" ||
+    value === "bridge-explanation"
+  );
+}
+
+function isPageVisualGrammar(value: unknown): value is PageVisualGrammar {
+  return (
+    value === "consulting" ||
+    value === "equity-research" ||
+    value === "technical-system" ||
+    value === "product-strategy" ||
+    value === "operating-model" ||
+    value === "scientific-figure"
+  );
+}
+
+function isPageComposition(value: unknown): value is PageComposition {
+  return (
+    value === "dominant-left-rail-right" ||
+    value === "dominant-right-rail-left" ||
+    value === "top-title-full-bleed-visual" ||
+    value === "center-canvas-annotation-ring" ||
+    value === "two-column-contrast" ||
+    value === "three-band-narrative" ||
+    value === "grid-with-hierarchy"
+  );
+}
+
+function isPageDensity(value: unknown): value is PageDensity {
+  return value === "sparse" || value === "executive" || value === "dense";
+}
+
+function isExportObjectRole(value: unknown): value is ExportObjectContract["objectRole"] {
+  return value === "primary" || value === "secondary" || value === "annotation" || value === "source";
 }
 
 function normalizeExportObjectContract(value: unknown, pageNumber: number): ExportObjectContract | null {
@@ -1122,6 +1189,11 @@ function normalizeExportObjectContract(value: unknown, pageNumber: number): Expo
   ) {
     return null;
   }
+  const objectKind = candidate.objectKind === "native-chart" ? "chart-visual" : candidate.objectKind;
+  const renderTarget =
+    candidate.renderTarget === "native-chart" && objectKind === "chart-visual"
+      ? "visual-snapshot"
+      : candidate.renderTarget;
   const ownershipScope =
     candidate.ownershipScope && typeof candidate.ownershipScope === "object"
       ? candidate.ownershipScope
@@ -1133,13 +1205,14 @@ function normalizeExportObjectContract(value: unknown, pageNumber: number): Expo
     primaryVisualObject:
       typeof candidate.primaryVisualObject === "string"
         ? candidate.primaryVisualObject.trim()
-        : candidate.objectKind,
-    objectKind: candidate.objectKind,
+        : objectKind,
+    objectKind,
+    objectRole: isExportObjectRole(candidate.objectRole) ? candidate.objectRole : undefined,
     dataContract:
       candidate.dataContract && typeof candidate.dataContract === "object" && !Array.isArray(candidate.dataContract)
-        ? candidate.dataContract
+        ? candidate.dataContract as ExportDataContract
         : null,
-    renderTarget: candidate.renderTarget,
+    renderTarget,
     ownershipScope: {
       rootId:
         typeof ownershipScope?.rootId === "string" && ownershipScope.rootId.trim()
@@ -1164,6 +1237,111 @@ function normalizeExportObjectContract(value: unknown, pageNumber: number): Expo
           .slice(0, 16)
       : [],
   };
+}
+
+function compositionForPageLayoutArchetype(layoutArchetype: PageLayoutArchetype): PageComposition {
+  switch (layoutArchetype) {
+    case "chart-with-insight-rail":
+      return "dominant-left-rail-right";
+    case "bubble-landscape":
+    case "matrix-first":
+    case "market-map":
+    case "risk-heatmap":
+    case "flywheel":
+    case "annotation-stage":
+      return "center-canvas-annotation-ring";
+    case "timeline-led":
+    case "process-flow":
+    case "swimlane":
+    case "decision-tree":
+    case "layered-stack":
+    case "funnel":
+    case "operating-model":
+    case "case-timeline":
+    case "bridge-explanation":
+      return "three-band-narrative";
+    case "before-after":
+      return "two-column-contrast";
+    case "single-dominant-visual":
+    case "hero-metric":
+      return "top-title-full-bleed-visual";
+    case "benchmark-table":
+    case "portfolio-grid":
+    case "capability-model":
+    case "thesis-evidence-board":
+    case "evidence-wall":
+    default:
+      return "grid-with-hierarchy";
+  }
+}
+
+function inferDefaultPageLayoutArchetype(
+  pageCandidate: Partial<DeckExportContract["pages"][number]>,
+  objects: ExportObjectContract[],
+): PageLayoutArchetype {
+  const primaryObjectId =
+    typeof pageCandidate.primaryObjectId === "string" && pageCandidate.primaryObjectId.trim()
+      ? pageCandidate.primaryObjectId.trim()
+      : null;
+  const primaryObject =
+    objects.find((object) => object.objectId === primaryObjectId) ??
+    objects.find((object) => object.objectRole === "primary") ??
+    objects[0] ??
+    null;
+  const text = [
+    pageCandidate.pageStory,
+    pageCandidate.primaryVisualObject,
+    primaryObject?.objectKind,
+    primaryObject?.primaryVisualObject,
+    primaryObject?.dataContract?.type,
+  ]
+    .filter((item): item is string => typeof item === "string")
+    .join(" ")
+    .toLowerCase();
+
+  if (primaryObject?.dataContract?.type === "chart-bubble" || /\bbubble\b|气泡图|氣泡圖/.test(text)) {
+    return "bubble-landscape";
+  }
+  if (/\b(?:waterfall|valuation\s+bridge|economics\s+bridge|upside\s+waterfall|value\s+bridge)\b|瀑布图|瀑布圖|桥接|橋接/.test(text)) {
+    return "bridge-explanation";
+  }
+  if (/\b(?:before[-\s/]+after|before\s+and\s+after)\b|前后对比|前後對比/.test(text)) {
+    return "before-after";
+  }
+  if (/\b(?:flywheel|virtuous\s+cycle|reinforcing\s+loop)\b|飞轮|飛輪|正循环|正循環/.test(text)) {
+    return "flywheel";
+  }
+  if (primaryObject?.objectKind === "matrix" || /\b(?:matrix|quadrant|2x2|bcg)\b|矩阵|矩陣|四象限/.test(text)) {
+    return "matrix-first";
+  }
+  if (primaryObject?.objectKind === "native-table" || /\b(?:table|benchmark)\b|表格/.test(text)) {
+    return "benchmark-table";
+  }
+  if (primaryObject?.objectKind === "chart-visual") {
+    return "chart-with-insight-rail";
+  }
+  if (/\b(?:swimlane|lane)\b|泳道/.test(text)) {
+    return "swimlane";
+  }
+  if (/\b(?:operating\s+model|governance\s+model|roles?\s+and\s+cadence)\b|运营模式|營運模式|治理模式/.test(text)) {
+    return "operating-model";
+  }
+  if (/\b(?:annotation\s+stage|annotated\s+figure|figure\s+stage|callout\s+ring|moat|ecosystem)\b|标注|標注|生态|生態/.test(text)) {
+    return "annotation-stage";
+  }
+  if (/\b(?:evidence\s+wall|proof\s+wall|fact\s+base|evidence\s+hierarchy)\b|证据墙|證據牆|事实墙|事實牆/.test(text)) {
+    return "evidence-wall";
+  }
+  if (primaryObject?.objectKind === "diagram" || /\b(?:process|flow|workflow|timeline)\b|流程|时间线|時間線/.test(text)) {
+    if (/\b(?:case|rollout|implementation|lesson|turning\s+point)\b|案例|复盘|復盤/.test(text)) {
+      return "case-timeline";
+    }
+    return /\b(?:timeline)\b|时间线|時間線/.test(text) ? "timeline-led" : "process-flow";
+  }
+  if (primaryObject?.objectKind === "metric-grid" || /\b(?:metric|kpi|big number)\b|指标|指標/.test(text)) {
+    return "hero-metric";
+  }
+  return "thesis-evidence-board";
 }
 
 function normalizeDeckExportContract(value: unknown, pageCount: number): DeckExportContract | undefined {
@@ -1195,15 +1373,42 @@ function normalizeDeckExportContract(value: unknown, pageCount: number): DeckExp
       if (!objects.length) {
         return null;
       }
-      return {
+      const primaryObjectId =
+        typeof pageCandidate.primaryObjectId === "string" && pageCandidate.primaryObjectId.trim()
+          ? pageCandidate.primaryObjectId.trim()
+          : objects.find((object) => object.objectRole === "primary")?.objectId ??
+            (objects.length === 1 ? objects[0]?.objectId : undefined);
+      const defaultLayoutArchetype = inferDefaultPageLayoutArchetype(pageCandidate, objects);
+      const layoutArchetype = isPageLayoutArchetype(pageCandidate.layoutArchetype)
+        ? pageCandidate.layoutArchetype
+        : defaultLayoutArchetype;
+      const normalizedPage: DeckExportContract["pages"][number] = {
         pageNumber,
         pageStory: typeof pageCandidate.pageStory === "string" ? pageCandidate.pageStory.trim() : "",
         primaryVisualObject:
           typeof pageCandidate.primaryVisualObject === "string"
             ? pageCandidate.primaryVisualObject.trim()
             : objects[0]?.primaryVisualObject ?? "",
-        objects,
+        layoutArchetype,
+        visualGrammar: isPageVisualGrammar(pageCandidate.visualGrammar)
+          ? pageCandidate.visualGrammar
+          : "consulting",
+        composition: isPageComposition(pageCandidate.composition)
+          ? pageCandidate.composition
+          : compositionForPageLayoutArchetype(layoutArchetype),
+        density: isPageDensity(pageCandidate.density) ? pageCandidate.density : "executive",
+        objects: objects.map((object) => ({
+          ...object,
+          objectRole:
+            object.objectId === primaryObjectId
+              ? "primary"
+              : object.objectRole ?? "secondary",
+        })),
       };
+      if (primaryObjectId) {
+        normalizedPage.primaryObjectId = primaryObjectId;
+      }
+      return normalizedPage;
     })
     .filter((page): page is DeckExportContract["pages"][number] => Boolean(page));
   return pages.length ? { version: 1, pages } : undefined;

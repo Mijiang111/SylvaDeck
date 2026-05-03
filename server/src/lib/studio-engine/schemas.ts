@@ -115,6 +115,7 @@ export const htmlAnimationStructureSchema = z.object({
   pages: z.array(htmlAnimationPageSchema).max(12),
 });
 export const exportObjectKindSchema = z.enum([
+  "chart-visual",
   "native-chart",
   "matrix",
   "native-table",
@@ -125,12 +126,14 @@ export const exportObjectKindSchema = z.enum([
   "text",
 ]);
 export const exportRenderTargetSchema = z.enum([
+  "visual-snapshot",
   "native-chart",
   "native-table",
   "editable-shapes",
   "editable-text",
   "html-visual",
 ]);
+export const exportObjectRoleSchema = z.enum(["primary", "secondary", "annotation", "source"]);
 export const exportOwnershipScopeSchema = z.object({
   rootId: z.string().min(1).max(160),
   ownsText: z.boolean(),
@@ -138,21 +141,218 @@ export const exportOwnershipScopeSchema = z.object({
   ownsSvg: z.boolean(),
   childRoles: z.array(z.string().min(1).max(80)).max(24),
 });
+const exportDataAxisContractSchema = z.object({
+  label: z.string().min(1).max(120).optional(),
+  unit: z.string().max(40).optional(),
+  min: z.number().optional(),
+  max: z.number().optional(),
+});
+const exportDataSeriesContractSchema = z.object({
+  name: z.string().min(1).max(120),
+  values: z.array(z.number()).min(1).max(200),
+  color: z.string().max(80).nullable().optional(),
+  axis: z.enum(["primary", "secondary"]).optional(),
+  role: z.enum(["bar", "line"]).optional(),
+});
+const exportSeriesChartDataContractSchema = z.object({
+  type: z.enum(["chart-bar", "chart-stacked", "chart-line"]),
+  categories: z.array(z.string().min(1).max(160)).min(1).max(200),
+  series: z.array(exportDataSeriesContractSchema).min(1).max(40),
+  axis: z.object({
+    x: exportDataAxisContractSchema.optional(),
+    y: exportDataAxisContractSchema.optional(),
+  }).optional(),
+  colors: z.array(z.string().min(1).max(80)).max(40).optional(),
+  style: z.record(z.unknown()).optional(),
+  stackMode: z.enum(["absolute", "percent"]).optional(),
+  totals: z.array(z.number()).max(200).optional(),
+  lineStyle: z.record(z.unknown()).optional(),
+  markers: z.boolean().optional(),
+});
+const exportComboChartDataContractSchema = z.object({
+  type: z.literal("chart-combo"),
+  categories: z.array(z.string().min(1).max(160)).min(1).max(200),
+  barSeries: z.array(exportDataSeriesContractSchema).min(1).max(20),
+  lineSeries: z.array(exportDataSeriesContractSchema).min(1).max(20),
+  primaryAxis: exportDataAxisContractSchema.optional(),
+  secondaryAxis: exportDataAxisContractSchema.optional(),
+  colors: z.array(z.string().min(1).max(80)).max(40).optional(),
+  style: z.record(z.unknown()).optional(),
+});
+const exportWaterfallChartDataContractSchema = z.object({
+  type: z.literal("chart-waterfall"),
+  steps: z.array(z.object({
+    id: z.string().min(1).max(120).optional(),
+    label: z.string().min(1).max(160),
+    value: z.number(),
+    kind: z.enum(["start", "increase", "decrease", "subtotal", "end"]).optional(),
+    color: z.string().max(80).nullable().optional(),
+  })).min(1).max(200),
+  start: z.number().optional(),
+  end: z.number().optional(),
+  subtotalIds: z.array(z.string().min(1).max(120)).max(40).optional(),
+  axis: z.object({
+    x: exportDataAxisContractSchema.optional(),
+    y: exportDataAxisContractSchema.optional(),
+  }).optional(),
+  colors: z.array(z.string().min(1).max(80)).max(40).optional(),
+  style: z.record(z.unknown()).optional(),
+});
+const exportBubbleChartDataContractSchema = z.object({
+  type: z.literal("chart-bubble"),
+  points: z.array(z.object({
+    x: z.number(),
+    y: z.number(),
+    size: z.number().positive(),
+    label: z.string().min(1).max(160),
+    color: z.string().max(80).nullable().optional(),
+    group: z.string().max(120).nullable().optional(),
+  })).min(1).max(200),
+  xAxis: exportDataAxisContractSchema.optional(),
+  yAxis: exportDataAxisContractSchema.optional(),
+  sizeAxis: exportDataAxisContractSchema.optional(),
+  colors: z.array(z.string().min(1).max(80)).max(40).optional(),
+  style: z.record(z.unknown()).optional(),
+});
+const exportMatrixDataContractSchema = z.object({
+  type: z.literal("matrix"),
+  variant: z.enum(["point-map", "asset-card-map"]).optional(),
+  axes: z.object({
+    x: exportDataAxisContractSchema.extend({ label: z.string().min(1).max(120) }),
+    y: exportDataAxisContractSchema.extend({ label: z.string().min(1).max(120) }),
+  }),
+  quadrants: z.array(z.object({
+    id: z.string().min(1).max(120).optional(),
+    label: z.string().min(1).max(160),
+    x: z.number().min(0).max(1),
+    y: z.number().min(0).max(1),
+    w: z.number().min(0).max(1),
+    h: z.number().min(0).max(1),
+    color: z.string().max(80).nullable().optional(),
+    textColor: z.string().max(80).nullable().optional(),
+  })).max(12).optional(),
+  items: z.array(z.object({
+    id: z.string().min(1).max(120).optional(),
+    x: z.number().min(0).max(1),
+    y: z.number().min(0).max(1),
+    label: z.string().min(1).max(160),
+    detail: z.string().max(240).optional(),
+    color: z.string().max(80).nullable().optional(),
+  })).min(1).max(80),
+  labels: z.array(z.string().min(1).max(120)).max(20).optional(),
+  callout: z.object({
+    title: z.string().min(1).max(160),
+    body: z.string().max(300).optional(),
+    x: z.number().min(0).max(1).optional(),
+    y: z.number().min(0).max(1).optional(),
+    w: z.number().min(0).max(1).optional(),
+    h: z.number().min(0).max(1).optional(),
+  }).nullable().optional(),
+  renderTarget: z.literal("editable-shapes"),
+});
+const exportTableDataContractSchema = z.object({
+  type: z.literal("table"),
+  columns: z.array(z.object({
+    id: z.string().min(1).max(120).optional(),
+    label: z.string().min(1).max(160),
+    type: z.enum(["text", "number", "date", "percent", "currency"]).optional(),
+  })).min(1).max(80),
+  rows: z.array(z.array(z.string().max(400))).min(1).max(500),
+  cellRoles: z.record(z.string()).optional(),
+  headerPolicy: z.enum(["first-row", "none"]).optional(),
+  nativeTableAllowed: z.literal(true),
+  sourceNote: z.string().max(300).optional(),
+});
+const exportMissingDataContractSchema = z.object({
+  type: z.literal("missing-data"),
+  expected: z.enum(["native-chart", "native-table", "matrix"]),
+  reason: z.string().min(1).max(240),
+  requiredFields: z.array(z.string().min(1).max(80)).min(1).max(20),
+});
+export const exportDataContractSchema = z.discriminatedUnion("type", [
+  exportSeriesChartDataContractSchema,
+  exportComboChartDataContractSchema,
+  exportWaterfallChartDataContractSchema,
+  exportBubbleChartDataContractSchema,
+  exportMatrixDataContractSchema,
+  exportTableDataContractSchema,
+  exportMissingDataContractSchema,
+]);
 export const exportObjectContractSchema = z.object({
   objectId: z.string().min(1).max(160),
   pageNumber: z.number().int().min(1).max(200),
   pageStory: z.string().max(500),
   primaryVisualObject: z.string().max(240),
   objectKind: exportObjectKindSchema,
-  dataContract: z.record(z.unknown()).nullable(),
+  objectRole: exportObjectRoleSchema.optional(),
+  dataContract: exportDataContractSchema.nullable(),
   renderTarget: exportRenderTargetSchema,
   ownershipScope: exportOwnershipScopeSchema,
   forbiddenInterpretation: z.array(z.string().min(1).max(80)).max(16),
+}).superRefine((contract, ctx) => {
+  if (contract.objectKind === "native-chart" || contract.renderTarget === "native-chart") {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: contract.objectKind === "native-chart" ? ["objectKind"] : ["renderTarget"],
+      message:
+        "native-chart export is currently unsupported in public exportContract; use objectKind chart-visual with renderTarget visual-snapshot.",
+    });
+  }
 });
+export const pageLayoutArchetypeSchema = z.enum([
+  "single-dominant-visual",
+  "hero-metric",
+  "chart-with-insight-rail",
+  "matrix-first",
+  "comparison-grid",
+  "bubble-landscape",
+  "timeline-led",
+  "process-flow",
+  "swimlane",
+  "benchmark-table",
+  "decision-tree",
+  "layered-stack",
+  "market-map",
+  "portfolio-grid",
+  "capability-model",
+  "funnel",
+  "risk-heatmap",
+  "thesis-evidence-board",
+  "before-after",
+  "flywheel",
+  "operating-model",
+  "annotation-stage",
+  "evidence-wall",
+  "case-timeline",
+  "bridge-explanation",
+]);
+export const pageVisualGrammarSchema = z.enum([
+  "consulting",
+  "equity-research",
+  "technical-system",
+  "product-strategy",
+  "operating-model",
+  "scientific-figure",
+]);
+export const pageCompositionSchema = z.enum([
+  "dominant-left-rail-right",
+  "dominant-right-rail-left",
+  "top-title-full-bleed-visual",
+  "center-canvas-annotation-ring",
+  "two-column-contrast",
+  "three-band-narrative",
+  "grid-with-hierarchy",
+]);
+export const pageDensitySchema = z.enum(["sparse", "executive", "dense"]);
 export const pageExportContractSchema = z.object({
   pageNumber: z.number().int().min(1).max(200),
   pageStory: z.string().max(500),
   primaryVisualObject: z.string().max(240),
+  primaryObjectId: z.string().min(1).max(160).optional(),
+  layoutArchetype: pageLayoutArchetypeSchema.optional(),
+  visualGrammar: pageVisualGrammarSchema.optional(),
+  composition: pageCompositionSchema.optional(),
+  density: pageDensitySchema.optional(),
   objects: z.array(exportObjectContractSchema).min(1).max(20),
 });
 export const deckExportContractSchema = z.object({
@@ -593,7 +793,12 @@ export type HtmlAnimationStructure = z.infer<typeof htmlAnimationStructureSchema
 export type ExportObjectKind = z.infer<typeof exportObjectKindSchema>;
 export type ExportRenderTarget = z.infer<typeof exportRenderTargetSchema>;
 export type ExportOwnershipScope = z.infer<typeof exportOwnershipScopeSchema>;
+export type ExportDataContract = z.infer<typeof exportDataContractSchema>;
 export type ExportObjectContract = z.infer<typeof exportObjectContractSchema>;
+export type PageLayoutArchetype = z.infer<typeof pageLayoutArchetypeSchema>;
+export type PageVisualGrammar = z.infer<typeof pageVisualGrammarSchema>;
+export type PageComposition = z.infer<typeof pageCompositionSchema>;
+export type PageDensity = z.infer<typeof pageDensitySchema>;
 export type PageExportContract = z.infer<typeof pageExportContractSchema>;
 export type DeckExportContract = z.infer<typeof deckExportContractSchema>;
 export type PageOverflowCause = z.infer<typeof pageOverflowCauseSchema>;

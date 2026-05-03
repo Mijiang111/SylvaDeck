@@ -13,6 +13,10 @@ function buildConversationExportContract(): DeckExportContract {
         pageNumber: 1,
         pageStory: "Bridge matrix story",
         primaryVisualObject: "Bridge matrix",
+        layoutArchetype: "matrix-first",
+        visualGrammar: "consulting",
+        composition: "center-canvas-annotation-ring",
+        density: "executive",
         objects: [
           {
             objectId: "p1-bridge-matrix",
@@ -21,7 +25,15 @@ function buildConversationExportContract(): DeckExportContract {
             primaryVisualObject: "Bridge matrix",
             objectKind: "matrix",
             dataContract: {
-              expected: "matrix-object",
+              type: "matrix",
+              axes: {
+                x: { label: "Growth" },
+                y: { label: "Share" },
+              },
+              items: [
+                { label: "Core", x: 0.7, y: 0.6 },
+              ],
+              renderTarget: "editable-shapes",
             },
             renderTarget: "editable-shapes",
             ownershipScope: {

@@ -52,7 +52,7 @@ function nativeEligibilityForFamily(
   if (family === "matrix") {
     return "matrix-shapes";
   }
-  return "native-required";
+  return "visual-snapshot";
 }
 
 function boundsToContractBounds(bounds?: PptxExportBounds): PptxExportBounds | undefined {
@@ -121,7 +121,7 @@ export function buildExportChartContractFromSpec(args: {
     bounds: args.bounds,
     ownerElementIds: args.ownerElementIds,
     blockedReason: blockedReason ?? undefined,
-    diagnostics: blockedReason ? [`${args.spec.kind} chart contract is missing minimum native data.`] : [],
+    diagnostics: blockedReason ? [`${args.spec.kind} chart contract is missing minimum chart data.`] : [],
   });
 }
 

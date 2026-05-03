@@ -20,12 +20,17 @@ import type {
   ModuleUsageMode,
   HtmlOutputMode,
   DeckExportContract,
+  ExportDataContract,
   ExportObjectContract,
   ExportObjectKind,
   ExportOwnershipScope,
   ExportRenderTarget,
+  PageComposition,
   PageExportContract,
+  PageDensity,
+  PageLayoutArchetype,
   StudioBridgeLaunchMode,
+  PageVisualGrammar,
   PageOverflowCause,
   PageCompositionFingerprint,
 } from "./schemas.js";
@@ -49,12 +54,17 @@ export type {
   ModuleUsageMode,
   HtmlOutputMode,
   DeckExportContract,
+  ExportDataContract,
   ExportObjectContract,
   ExportObjectKind,
   ExportOwnershipScope,
   ExportRenderTarget,
+  PageComposition,
   PageExportContract,
+  PageDensity,
+  PageLayoutArchetype,
   StudioBridgeLaunchMode,
+  PageVisualGrammar,
   PageOverflowCause,
   PageCompositionFingerprint,
 } from "./schemas.js";
@@ -122,8 +132,10 @@ export type StudioStageTraceEntry = {
 export type StudioAiWorkspaceStage = "planning" | "page" | "repair";
 
 export type StudioAiWorkspaceBlockId =
+  | "creative-brief"
   | "raw-brief"
   | "ai-understanding"
+  | "semantic-objects"
   | "visual-thinking"
   | "user-task"
   | "working-hypothesis"
@@ -223,6 +235,9 @@ export type StudioGenerateStage =
   | `page-${number}`
   | `page-recipe-${number}`
   | `page-render-${number}`
+  | `page-contract-repair-${number}`
+  | `page-render-contract-repair-${number}`
+  | `repair-page-contract-repair-${number}`
   | `repair-page-${number}`;
 
 export type StudioGenerateStreamEvent =
@@ -808,7 +823,7 @@ export type StudioTaskRoutePageBlueprint = {
   title: string;
   storyClaim: string;
   evidenceNotes: string[];
-  layoutCue: StudioPageMission["structureCue"] | "flow" | "3d" | null;
+  layoutCue: StudioPageMission["structureCue"] | "flow" | "3d" | "comparison-grid" | null;
   primaryVisual: string | null;
   rawText: string;
 };
@@ -820,6 +835,18 @@ export type StudioTaskRoute = {
   capabilities: StudioTaskRouteCapabilities;
   pageBlueprint: StudioTaskRoutePageBlueprint[];
   workspaceMode: "page-scoped" | "full-brief";
+};
+
+export type StudioSemanticWarningCode =
+  | "business-ai-scientific-visual-drift"
+  | "comparison-grid-mislabeled-as-matrix"
+  | "required-labels-over-budget";
+
+export type StudioSemanticWarning = {
+  code: StudioSemanticWarningCode;
+  severity: "soft-warning";
+  pageNumber: number | null;
+  message: string;
 };
 
 export type StudioPreflightPlan = {
@@ -840,6 +867,7 @@ export type StudioPreflightPlan = {
   capabilityActivations: StudioCapabilityActivation[];
   assumptionPolicy: string[];
   exportContract: DeckExportContract;
+  semanticWarnings: StudioSemanticWarning[];
 };
 
 export type SemanticCorrectionResult = {

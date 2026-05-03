@@ -5,6 +5,7 @@ import type {
   ExportObjectContract,
   HtmlAnimationPage,
   HtmlOutputMode,
+  PageExportContract,
   PageRecipe,
 } from "./contracts.js";
 import {
@@ -100,6 +101,8 @@ export function renderDeterministicPageFromRecipe(args: {
   reportStyleProfile?: GeneratedReportStyleProfile;
   htmlOutputMode?: HtmlOutputMode;
   exportObjectContract?: ExportObjectContract | null;
+  exportObjectContracts?: readonly ExportObjectContract[] | null;
+  pageExportContract?: Pick<PageExportContract, "layoutArchetype" | "visualGrammar"> | null;
 }) {
   const sanitizedRecipe = sanitizeDeterministicRecipe(args.recipe);
   return validateGeneratedPageHtml({
@@ -109,6 +112,7 @@ export function renderDeterministicPageFromRecipe(args: {
         sanitizedRecipe,
         args.styleProfile,
         args.exportObjectContract,
+        args.pageExportContract,
       ),
       styleProfile: args.reportStyleProfile,
       htmlOutputMode: args.htmlOutputMode,
@@ -117,6 +121,8 @@ export function renderDeterministicPageFromRecipe(args: {
     expectedPageTitle: sanitizedRecipe.pageTitle,
     htmlOutputMode: args.htmlOutputMode,
     expectedExportObjectContract: args.exportObjectContract,
+    expectedExportObjectContracts: args.exportObjectContracts,
+    expectedPageExportContract: args.pageExportContract,
   });
 }
 
@@ -127,6 +133,8 @@ export function recoverDeterministicPageAfterRenderFailures(args: {
   reportStyleProfile?: GeneratedReportStyleProfile;
   htmlOutputMode?: HtmlOutputMode;
   exportObjectContract?: ExportObjectContract | null;
+  exportObjectContracts?: readonly ExportObjectContract[] | null;
+  pageExportContract?: Pick<PageExportContract, "layoutArchetype" | "visualGrammar"> | null;
   model: string;
   primaryError?: unknown;
   fallbackError?: unknown;
@@ -138,6 +146,8 @@ export function recoverDeterministicPageAfterRenderFailures(args: {
     reportStyleProfile: args.reportStyleProfile,
     htmlOutputMode: args.htmlOutputMode,
     exportObjectContract: args.exportObjectContract,
+    exportObjectContracts: args.exportObjectContracts,
+    pageExportContract: args.pageExportContract,
   });
 
   return {

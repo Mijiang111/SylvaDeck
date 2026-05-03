@@ -12,6 +12,9 @@ import {
 
 const SEMANTIC_EDITABLE_SELECTOR = "h1, h2, h3, h4, h5, h6, p, ul, ol";
 const GENERIC_TEXT_SELECTOR = "div, span";
+const SVG_TEXT_SELECTOR = "svg text, svg tspan";
+const OBJECT_ANCHOR_SELECTOR = "[data-studio-object-id],[data-export-object-id]";
+const DATA_MODULE_SELECTOR = "[data-html-module-kind]";
 const INLINE_TEXT_TAGS = new Set(["A", "B", "BR", "CODE", "EM", "I", "SMALL", "SPAN", "STRONG", "SUB", "SUP"]);
 const MAX_EDITABLE_BLOCKS_PER_PAGE = 40;
 
@@ -27,12 +30,15 @@ function sanitizeBlockItems(items: string[]) {
 }
 
 function parseInlineFontSize(element: Element) {
-  const value = (element as HTMLElement).style?.fontSize?.trim() ?? "";
+  const value =
+    (element as HTMLElement | SVGElement).style?.fontSize?.trim() ||
+    element.getAttribute("font-size")?.trim() ||
+    "";
   if (!value) {
     return undefined;
   }
 
-  const match = value.match(/^([0-9]+(?:\.[0-9]+)?)px$/i);
+  const match = value.match(/^([0-9]+(?:\.[0-9]+)?)(?:px)?$/i);
   if (!match) {
     return undefined;
   }
@@ -91,6 +97,19 @@ function buildElementSourcePath(root: Element, element: Element) {
   }
 
   return parts.reverse().join(".");
+}
+
+function editableSourceTagForElement(element: Element) {
+  const tagName = element.tagName.toLowerCase();
+  return tagName === "text" || tagName === "tspan" ? `svg:${tagName}` : tagName;
+}
+
+export function editableSourceTagMatchesElement(element: Element, sourceTag: string) {
+  const normalizedSourceTag = sourceTag.toLowerCase();
+  return (
+    editableSourceTagForElement(element) === normalizedSourceTag ||
+    element.tagName.toLowerCase() === normalizedSourceTag
+  );
 }
 
 function createTextBlock(
@@ -191,10 +210,154 @@ function isEditableGenericTextContainer(element: Element) {
   return normalized.length > 0;
 }
 
+function metadataTokens(value: string | null | undefined) {
+  return new Set(
+    (value ?? "")
+      .split(",")
+      .map((token) => token.trim())
+      .filter(Boolean),
+  );
+}
+
+function chartSeriesHasMinimumData(contract: { categories?: unknown; series?: unknown }) {
+  const categories = Array.isArray(contract.categories) ? contract.categories : [];
+  const series = Array.isArray(contract.series) ? contract.series : [];
+  return (
+    categories.length > 0 &&
+    series.length > 0 &&
+    series.every((entry) => {
+      const values = entry && typeof entry === "object" ? (entry as { values?: unknown }).values : null;
+      return Array.isArray(values) && values.length === categories.length;
+    })
+  );
+}
+
+function chartDataContractHasMinimumData(contract: unknown) {
+  if (!contract || typeof contract !== "object") {
+    return false;
+  }
+  const typed = contract as Record<string, unknown>;
+  if (typed.type === "chart-bar" || typed.type === "chart-line" || typed.type === "chart-stacked") {
+    return chartSeriesHasMinimumData(typed);
+  }
+  if (typed.type === "chart-combo") {
+    return (
+      chartSeriesHasMinimumData({ categories: typed.categories, series: typed.barSeries }) &&
+      chartSeriesHasMinimumData({ categories: typed.categories, series: typed.lineSeries })
+    );
+  }
+  if (typed.type === "chart-waterfall") {
+    return Array.isArray(typed.steps) && typed.steps.length > 0;
+  }
+  if (typed.type === "chart-bubble") {
+    return Array.isArray(typed.points) && typed.points.length > 0;
+  }
+  return false;
+}
+
+function objectRootHasCompleteChartDataContract(objectRoot: Element) {
+  const raw = objectRoot.getAttribute("data-export-contract");
+  if (!raw) {
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(raw) as { dataContract?: unknown };
+    return chartDataContractHasMinimumData(parsed.dataContract);
+  } catch {
+    return false;
+  }
+}
+
+function objectRootHasChartModuleEvidence(objectRoot: Element) {
+  return Boolean(
+    objectRoot.querySelector('[data-html-module-kind="chart"][data-html-chart-spec],[data-html-module-kind="chart"][data-export-chart]') ||
+    (
+      objectRoot.getAttribute("data-html-module-kind") === "chart" &&
+      (objectRoot.hasAttribute("data-html-chart-spec") || objectRoot.hasAttribute("data-export-chart"))
+    ),
+  );
+}
+
+function isHiddenLikeEditableElement(element: Element) {
+  const style = (element as HTMLElement | SVGElement).style;
+  const styleText = (element.getAttribute("style") ?? "").toLowerCase();
+  return (
+    element.hasAttribute("hidden") ||
+    element.getAttribute("aria-hidden") === "true" ||
+    element.getAttribute("data-html-canvas-placeholder") === "true" ||
+    style.display === "none" ||
+    style.visibility === "hidden" ||
+    style.opacity === "0" ||
+    styleText.includes("display:none") ||
+    styleText.includes("display: none") ||
+    styleText.includes("visibility:hidden") ||
+    styleText.includes("visibility: hidden") ||
+    styleText.includes("opacity:0") ||
+    styleText.includes("opacity: 0")
+  );
+}
+
+function objectRootAllowsSvgText(element: Element) {
+  const objectRoot = element.closest(OBJECT_ANCHOR_SELECTOR);
+  if (!objectRoot || isHiddenLikeEditableElement(objectRoot)) {
+    return false;
+  }
+
+  const moduleRoot = element.closest(DATA_MODULE_SELECTOR);
+  const moduleKind = moduleRoot?.getAttribute("data-html-module-kind")?.trim();
+  if (moduleKind === "chart" || moduleKind === "table") {
+    return false;
+  }
+
+  const objectKind =
+    objectRoot.getAttribute("data-export-object-kind")?.trim() ||
+    objectRoot.getAttribute("data-semantic-kind")?.trim();
+  if (objectKind === "diagram" || objectKind === "matrix") {
+    return true;
+  }
+  if (
+    objectKind === "chart-visual" &&
+    !objectRootHasChartModuleEvidence(objectRoot) &&
+    !objectRootHasCompleteChartDataContract(objectRoot)
+  ) {
+    return true;
+  }
+
+  return metadataTokens(objectRoot.getAttribute("data-ownership-scope")).has("text");
+}
+
+function isSvgTextElement(element: Element) {
+  const tagName = element.tagName.toUpperCase();
+  return tagName === "TEXT" || tagName === "TSPAN";
+}
+
+function hasEditableTspanChildren(element: Element) {
+  return Array.from(element.querySelectorAll(":scope > tspan")).some((child) =>
+    normalizeStructureText(child.textContent ?? "") &&
+    !isHiddenLikeEditableElement(child),
+  );
+}
+
+function isEditableSvgTextElement(element: Element) {
+  if (!isSvgTextElement(element) || isHiddenLikeEditableElement(element)) {
+    return false;
+  }
+  if (!objectRootAllowsSvgText(element)) {
+    return false;
+  }
+  if (element.tagName.toUpperCase() === "TEXT" && hasEditableTspanChildren(element)) {
+    return false;
+  }
+  return normalizeStructureText(element.textContent ?? "").length > 0;
+}
+
 export function collectHtmlEditableCandidates(page: Element) {
-  return Array.from(page.querySelectorAll(`${SEMANTIC_EDITABLE_SELECTOR}, ${GENERIC_TEXT_SELECTOR}`)).filter(
+  return Array.from(page.querySelectorAll(`${SEMANTIC_EDITABLE_SELECTOR}, ${GENERIC_TEXT_SELECTOR}, ${SVG_TEXT_SELECTOR}`)).filter(
     (element) => {
       const tagName = element.tagName.toUpperCase();
+      if (tagName === "TEXT" || tagName === "TSPAN") {
+        return isEditableSvgTextElement(element);
+      }
       if (tagName === "UL" || tagName === "OL") {
         return true;
       }
@@ -235,6 +398,7 @@ function extractPageBlocks(page: Element) {
 
   candidates.forEach((element, sourceIndex) => {
     const tagName = element.tagName.toUpperCase();
+    const sourceTag = editableSourceTagForElement(element);
     const parsedFontSize = parseInlineFontSize(element);
     let block: HtmlEditableBlock | null = null;
 
@@ -244,7 +408,7 @@ function extractPageBlocks(page: Element) {
       );
       block = createListBlock(
         `block-${sourceIndex + 1}`,
-        tagName.toLowerCase(),
+        sourceTag,
         sourceIndex,
         items,
         parsedFontSize ?? inferFallbackFontSize(tagName, "list"),
@@ -253,17 +417,27 @@ function extractPageBlocks(page: Element) {
       block = createTextBlock(
         `block-${sourceIndex + 1}`,
         "paragraph",
-        tagName.toLowerCase(),
+        sourceTag,
         sourceIndex,
         element.textContent ?? "",
         parsedFontSize ?? inferFallbackFontSize(tagName, "paragraph"),
+      );
+    } else if (tagName === "TEXT" || tagName === "TSPAN") {
+      const inferredKind = inferGenericTextKind(element.textContent ?? "");
+      block = createTextBlock(
+        `block-${sourceIndex + 1}`,
+        inferredKind,
+        sourceTag,
+        sourceIndex,
+        element.textContent ?? "",
+        parsedFontSize ?? inferFallbackFontSize(tagName, inferredKind),
       );
     } else if (tagName === "DIV" || tagName === "SPAN") {
       const inferredKind = inferGenericTextKind(element.textContent ?? "");
       block = createTextBlock(
         `block-${sourceIndex + 1}`,
         inferredKind,
-        tagName.toLowerCase(),
+        sourceTag,
         sourceIndex,
         element.textContent ?? "",
         parsedFontSize ?? inferFallbackFontSize(tagName, inferredKind),
@@ -273,7 +447,7 @@ function extractPageBlocks(page: Element) {
       block = createTextBlock(
         `block-${sourceIndex + 1}`,
         inferredKind,
-        tagName.toLowerCase(),
+        sourceTag,
         sourceIndex,
         element.textContent ?? "",
         parsedFontSize ?? inferFallbackFontSize(tagName, inferredKind),
@@ -285,10 +459,20 @@ function extractPageBlocks(page: Element) {
     }
 
     block.sourcePath = buildElementSourcePath(page, element);
+    const objectRoot = element.closest(OBJECT_ANCHOR_SELECTOR);
+    if (objectRoot) {
+      const studioObjectId = objectRoot.getAttribute("data-studio-object-id")?.trim() || undefined;
+      const exportObjectId = objectRoot.getAttribute("data-export-object-id")?.trim() || undefined;
+      block.studioObjectId = studioObjectId;
+      block.exportObjectId = exportObjectId;
+      block.objectId = exportObjectId ?? studioObjectId;
+    }
 
-    const signature = block.text
-      ? `${block.kind}:${block.text.toLowerCase()}`
-      : `${block.kind}:${(block.items ?? []).join("|").toLowerCase()}`;
+    const signature = block.sourceTag.startsWith("svg:")
+      ? `${block.kind}:${block.sourceTag}:${block.sourcePath ?? ""}:${(block.text ?? block.items?.join("|") ?? "").toLowerCase()}`
+      : block.text
+        ? `${block.kind}:${block.text.toLowerCase()}`
+        : `${block.kind}:${(block.items ?? []).join("|").toLowerCase()}`;
     if (seen.has(signature)) {
       return;
     }
@@ -492,7 +676,7 @@ export function updateGeneratedHtmlReportBlock(args: {
 
   const candidates = collectHtmlEditableCandidates(page);
   const element = candidates[targetBlock.sourceIndex];
-  if (!element) {
+  if (!element || !editableSourceTagMatchesElement(element, targetBlock.sourceTag)) {
     return args.report;
   }
 
@@ -517,7 +701,7 @@ export function updateGeneratedHtmlReportBlock(args: {
   }
 
   if (typeof args.fontSize === "number" && Number.isFinite(args.fontSize) && args.fontSize > 0) {
-    (element as HTMLElement).style.fontSize = `${Math.round(args.fontSize)}px`;
+    (element as HTMLElement | SVGElement).style.fontSize = `${Math.round(args.fontSize)}px`;
   }
 
   const nextHtml = createSerializableHtml(document);

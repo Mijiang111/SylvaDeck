@@ -20,6 +20,10 @@ function buildBridgeExportContract(pageCount = 1): DeckExportContract {
         pageNumber,
         pageStory: `Market map story ${pageNumber}`,
         primaryVisualObject: "Market matrix",
+        layoutArchetype: "matrix-first",
+        visualGrammar: "consulting",
+        composition: "center-canvas-annotation-ring",
+        density: "executive",
         objects: [
           {
             objectId,
@@ -28,7 +32,15 @@ function buildBridgeExportContract(pageCount = 1): DeckExportContract {
             primaryVisualObject: "Market matrix",
             objectKind: "matrix",
             dataContract: {
-              expected: "matrix-object",
+              type: "matrix",
+              axes: {
+                x: { label: "Growth" },
+                y: { label: "Share" },
+              },
+              items: [
+                { label: "Core", x: 0.7, y: 0.6 },
+              ],
+              renderTarget: "editable-shapes",
             },
             renderTarget: "editable-shapes",
             ownershipScope: {

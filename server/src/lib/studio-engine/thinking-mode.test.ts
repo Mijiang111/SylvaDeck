@@ -520,7 +520,7 @@ test("template contract workspace only lists semantic slots and preserves decora
   assert.match(text, /locked template furniture/i);
 });
 
-test("deep valuation prompt uses the raw-brief-first page workspace", () => {
+test("deep valuation prompt uses the creative-brief-first page workspace", () => {
   const brief = "1 page Top Ibank level Codex Product Valuation";
   const inputs = segmentThinkingInputs(brief);
   const profile = resolveStudioComplexityProfile({
@@ -572,10 +572,11 @@ test("deep valuation prompt uses the raw-brief-first page workspace", () => {
     },
   });
 
-  assertPromptOrder(prompt, "## Raw brief", "## AI understanding");
-  assertPromptOrder(prompt, "## AI understanding", "## Current page mission");
-  assertPromptOrder(prompt, "## Current page mission", "## Visual thinking");
-  assertPromptOrder(prompt, "## Visual thinking", "## Active capability cards");
+  assertPromptOrder(prompt, "## Creative brief", "## Page intent");
+  assertPromptOrder(prompt, "## Page intent", "## Primary visual");
+  assertPromptOrder(prompt, "## Primary visual", "## Evidence and boundaries");
+  assertPromptOrder(prompt, "## Evidence and boundaries", "## Semantic objects");
+  assertPromptOrder(prompt, "## Semantic objects", "## Active capability cards");
   assertPromptOrder(prompt, "## Active capability cards", "## Output rules");
   assert.equal(prompt.includes("## Task rigor brief"), false);
   assert.equal(prompt.includes("## Renderer brief"), false);
@@ -588,7 +589,7 @@ test("deep valuation prompt uses the raw-brief-first page workspace", () => {
   assert.match(prompt, /Subject: Codex/);
 });
 
-test("skill-backed page prompt keeps a compact raw-brief-first workspace", () => {
+test("skill-backed page prompt keeps a compact creative-brief-first workspace", () => {
   const context = resolveDeckThinkingMode(SHIPPING_CASE_STUDY_PROMPT, null);
   const synthesis = buildStudioBriefSynthesis({
     brief: SHIPPING_CASE_STUDY_PROMPT,
@@ -703,10 +704,11 @@ test("skill-backed page prompt keeps a compact raw-brief-first workspace", () =>
   });
 
   assert.ok(prompt.includes("## AI workspace"));
-  assertPromptOrder(prompt, "## Raw brief", "## AI understanding");
-  assertPromptOrder(prompt, "## AI understanding", "## Current page mission");
-  assertPromptOrder(prompt, "## Current page mission", "## Visual thinking");
-  assertPromptOrder(prompt, "## Visual thinking", "## Active capability cards");
+  assertPromptOrder(prompt, "## Creative brief", "## Page intent");
+  assertPromptOrder(prompt, "## Page intent", "## Primary visual");
+  assertPromptOrder(prompt, "## Primary visual", "## Evidence and boundaries");
+  assertPromptOrder(prompt, "## Evidence and boundaries", "## Semantic objects");
+  assertPromptOrder(prompt, "## Semantic objects", "## Active capability cards");
   assertPromptOrder(prompt, "## Active capability cards", "## Output rules");
   assert.equal(prompt.includes("## Selected template contract"), false);
   assert.equal(prompt.includes("## Private layout plan"), false);
@@ -758,7 +760,7 @@ test("fallback page prompt uses the same compact workspace and filters 3D templa
   });
 
   assert.ok(prompt.includes("## AI workspace"));
-  assertPromptOrder(prompt, "## Raw brief", "## AI understanding");
+  assertPromptOrder(prompt, "## Creative brief", "## Page intent");
   assert.equal(prompt.includes("## Selected template contract"), false);
   assert.equal(prompt.includes("## Private layout plan"), false);
   assert.equal(prompt.includes("template.3d-cutaway"), false);
@@ -817,7 +819,7 @@ test("explicit 3D page prompt may include one 3D template and 3D card", () => {
   assert.match(prompt, /crafted and premium|product-vision reveal|product-grade composition/i);
   assert.match(prompt, /fabricated pseudo-3D hero object|fabricated object/i);
   assert.match(prompt, /perspective, visible thickness, overlap or occlusion/i);
-  assert.match(prompt, /flat cards, glass panels, dashboard tiles/i);
+  assert.match(prompt, /flat cards, dashboard tiles, glass panels/i);
   assert.match(prompt, /Dominant visual anchor: one fabricated pseudo-3D hero object/i);
   assert.match(prompt, /premium surface treatment|elegant compact annotations|crafted, premium/i);
   assert.equal(prompt.includes("Keep the page light, restrained, and professional."), false);
@@ -870,10 +872,10 @@ test("sparse OpenAI renderer prompt uses synthesis instead of fake evidence", ()
     },
   });
 
-  assertPromptOrder(prompt, "## Raw brief", "## AI understanding");
-  assertPromptOrder(prompt, "## AI understanding", "## Current page mission");
+  assertPromptOrder(prompt, "## Creative brief", "## Page intent");
+  assertPromptOrder(prompt, "## Page intent", "## Primary visual");
   assert.ok(
-    prompt.includes("Do not fabricate citations, precise market sizes, valuation multiples, revenue numbers, or recent factual claims."),
+    prompt.includes("Hard metrics, dates, citations, and chart data need supplied evidence"),
   );
   assert.equal(prompt.includes("page ppt for OpenAI: 1"), false);
   assert.equal(prompt.includes("Evidence callouts: page ppt for OpenAI: 1"), false);
@@ -1032,7 +1034,7 @@ This source text describes a premium, beautiful, cinematic product launch and a 
   });
 
   assert.equal(prompt.includes("Craft direction:"), false);
-  assert.ok(prompt.includes("Keep the page light, restrained, and professional."));
+  assert.ok(prompt.includes("Keep the composition restrained, confident, and professional."));
 });
 
 test("no-template sparse brief keeps freeform layout internal and visible only as a compact visual operator", () => {
@@ -1080,15 +1082,15 @@ test("no-template sparse brief keeps freeform layout internal and visible only a
     },
   });
 
-  assertPromptOrder(prompt, "## AI understanding", "## Current page mission");
-  assertPromptOrder(prompt, "## Current page mission", "## Visual thinking");
+  assertPromptOrder(prompt, "## Evidence and boundaries", "## Semantic objects");
+  assertPromptOrder(prompt, "## Page intent", "## Primary visual");
   assert.equal(prompt.includes("## Task rigor brief"), false);
   assert.equal(prompt.includes("## Proof plan"), false);
   assert.equal(prompt.includes("## Layout strategy"), false);
   assert.equal(prompt.includes("## Private layout plan"), false);
   assert.match(prompt, /Visual operator: freeform family (poster-claim|center-stage-figure)/);
-  assert.ok(prompt.includes("If no template is active, do not default to a generic left/right split."));
-  assert.ok(prompt.includes("Use Visual thinking privately before writing HTML."));
+  assert.ok(prompt.includes("Use a coherent light-theme visual system"));
+  assert.ok(prompt.includes("## Output rules"));
 });
 
 test("no-template case-study prompt prefers story progression freeform layout", () => {
@@ -1182,9 +1184,9 @@ test("deep academic result prompts keep deep layout internal while preserving a 
     },
   });
 
-  assert.ok(prompt.includes("## AI understanding"));
-  assert.ok(prompt.includes("## Visual thinking"));
-  assert.ok(prompt.includes("## Current page mission"));
+  assert.ok(prompt.includes("## Evidence and boundaries"));
+  assert.ok(prompt.includes("## Primary visual"));
+  assert.ok(prompt.includes("## Page intent"));
   assert.equal(prompt.includes("## Task rigor brief"), false);
   assert.equal(prompt.includes("## Proof plan"), false);
   assert.equal(prompt.includes("## Layout strategy"), false);

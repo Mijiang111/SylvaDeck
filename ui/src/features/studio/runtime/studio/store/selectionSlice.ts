@@ -7,6 +7,7 @@ type SelectionSlice = Pick<
   | "selectPage"
   | "selectHtmlBlock"
   | "selectVisualNode"
+  | "setSelectionFacet"
   | "clearSelection"
   | "recordHtmlOverflow"
 >;
@@ -19,6 +20,8 @@ export const createSelectionSlice: WorkbenchStudioSlice<SelectionSlice> = (set) 
       selection: {
         ...state.selection,
         activePageId: pageId,
+        selectedObjectId: null,
+        activeFacet: null,
         selectedHtmlBlockId: null,
         selectedVisualNodeId: null,
       },
@@ -31,11 +34,13 @@ export const createSelectionSlice: WorkbenchStudioSlice<SelectionSlice> = (set) 
     }));
   },
 
-  selectHtmlBlock(pageNumber, blockId) {
+  selectHtmlBlock(pageNumber, blockId, objectId) {
     set((state) => ({
       selection: {
         ...state.selection,
         activePageId: String(pageNumber),
+        selectedObjectId: objectId ?? `page:${pageNumber}:text:${blockId}`,
+        activeFacet: "text",
         selectedHtmlBlockId: blockId,
         selectedVisualNodeId: null,
       },
@@ -49,11 +54,13 @@ export const createSelectionSlice: WorkbenchStudioSlice<SelectionSlice> = (set) 
     }));
   },
 
-  selectVisualNode(pageNumber, nodeId) {
+  selectVisualNode(pageNumber, nodeId, objectId) {
     set((state) => ({
       selection: {
         ...state.selection,
         activePageId: String(pageNumber),
+        selectedObjectId: objectId ?? `page:${pageNumber}:visual:${nodeId}`,
+        activeFacet: "shape",
         selectedHtmlBlockId: null,
         selectedVisualNodeId: nodeId,
       },
@@ -67,10 +74,21 @@ export const createSelectionSlice: WorkbenchStudioSlice<SelectionSlice> = (set) 
     }));
   },
 
+  setSelectionFacet(facet) {
+    set((state) => ({
+      selection: {
+        ...state.selection,
+        activeFacet: facet,
+      },
+    }));
+  },
+
   clearSelection(tab = "page") {
     set((state) => ({
       selection: {
         ...state.selection,
+        selectedObjectId: null,
+        activeFacet: null,
         selectedHtmlBlockId: null,
         selectedVisualNodeId: null,
       },

@@ -1,7 +1,10 @@
 import type {
+  ExportDataContract,
   ExportObjectKind,
   ExportRenderTarget,
   HtmlChartKind,
+  PageLayoutArchetype,
+  PageVisualGrammar,
 } from "@/features/studio/types";
 
 export const PPT_LAYOUT = {
@@ -23,6 +26,7 @@ export type PptExportDiagnosticCode =
   | "gradient-flattened"
   | "native-chart-exported"
   | "hybrid-chart-exported"
+  | "visual-chart-exported"
   | "text-owned"
   | "shape-owned"
   | "dom-geometry-chart-visible"
@@ -37,12 +41,27 @@ export type PptExportDiagnosticCode =
   | "export-contract-native-table-missing-data"
   | "export-contract-duplicate-ownership"
   | "export-contract-render-target-missing"
+  | "export-data-contract-missing"
+  | "export-data-contract-invalid"
+  | "export-data-contract-incompatible"
+  | "export-data-contract-minimum-data-missing"
+  | "page-archetype-detected"
+  | "page-archetype-repeated"
+  | "page-ir-metadata-missing"
+  | "unlabeled-fallback-used"
   | "chart-native-unsupported"
+  | "chart-dom-scene-mismatch"
   | "chart-image-fallback"
+  | "visual-chart-snapshot-missing"
+  | "visual-chart-rasterization-failed"
   | "table-native-unsupported"
   | "visual-clipped"
   | "xml-package-invalid"
   | "relationship-target-missing"
+  | "zero-size-ext"
+  | "slide-transparent-only"
+  | "contract-owner-rendered-nothing"
+  | "powerpoint-repair-risk-xml"
   | "ownership-conflict"
   | "container-text-suppressed"
   | "hidden-placeholder-skipped";
@@ -60,6 +79,7 @@ export type PptExportChartContractConfidence = "high" | "medium" | "low";
 
 export type PptExportChartContractSource =
   | "spec"
+  | "data-contract"
   | "export-payload"
   | "module"
   | "svg"
@@ -70,6 +90,7 @@ export type PptExportChartContractSource =
 export type PptExportChartNativeEligibility =
   | "native-required"
   | "native-eligible"
+  | "visual-snapshot"
   | "matrix-shapes"
   | "blocked";
 
@@ -118,9 +139,38 @@ export type PptExportDiagnostic = {
   exportObjectId?: string;
   exportObjectKind?: ExportObjectKind;
   exportRenderTarget?: ExportRenderTarget;
+  exportDataContractType?: ExportDataContract["type"];
+  pageLayoutArchetype?: PageLayoutArchetype;
+  pageVisualGrammar?: PageVisualGrammar;
 };
 
 export type PptExportWarning = PptExportDiagnostic;
+
+export type PptxContractRepairTier = "micro-patch" | "object-model" | "page-model";
+
+export type PptxContractRepairIssue = {
+  pageNumber?: number;
+  objectId: string;
+  code: PptExportDiagnosticCode;
+  message: string;
+  expected: {
+    objectKind?: ExportObjectKind;
+    renderTarget?: ExportRenderTarget;
+    dataContractType?: ExportDataContract["type"];
+  } | null;
+  actualMetadata: {
+    rootCount: number | null;
+    objectKind: ExportObjectKind | null;
+    renderTarget: ExportRenderTarget | null;
+    dataContractType: ExportDataContract["type"] | null;
+    ownershipScope: string | null;
+    forbiddenInterpretation: string[];
+  };
+  missingFields: string[];
+  ownershipConflict: string | null;
+  forbiddenInterpretation: string[];
+  repairTier: PptxContractRepairTier;
+};
 
 export type PptExportSolidPaint = {
   type: "solid";
@@ -224,11 +274,20 @@ export type PptExportVisualNode = {
   clipped?: boolean;
 };
 
-export type PptExportFallbackAsset = {
-  kind: "svg";
-  data: string;
-  reason: "gradient-image-fallback" | "gradient-flattened" | "chart-image-fallback";
-};
+export type PptExportFallbackAsset =
+  | {
+      kind: "svg" | "png";
+      data: string;
+      reason: "gradient-image-fallback" | "gradient-flattened" | "chart-image-fallback" | "visual-chart-exported";
+    }
+  | {
+      kind: "dom-snapshot";
+      data?: undefined;
+      reason: "visual-chart-exported";
+      snapshotId: string;
+      pageNumber: number;
+      exportObjectId?: string;
+    };
 
 export type PptExportChartLayoutRole =
   | "chart-panel"
@@ -376,6 +435,7 @@ export type PptExportSemanticChartSpec =
 export type PptExportChartModel = {
   kind: "chart";
   sourceElementId?: string;
+  exportObjectId?: string;
   sourceOrder?: number;
   zIndex?: number;
   zOrder?: number;
@@ -396,7 +456,8 @@ export type PptExportChartModel = {
     | "native-waterfall-chart"
     | "native-matrix-shapes"
     | "hybrid-waterfall"
-    | "chart-image";
+    | "chart-image"
+    | "visual-chart-snapshot";
   chartKind?: Extract<HtmlChartKind, "bar" | "stacked" | "line" | "waterfall" | "combo" | "bubble" | "matrix">;
   frameBounds?: PptxExportBounds;
   semanticSpec?: PptExportSemanticChartSpec;
@@ -421,6 +482,7 @@ export type PptExportChartModel = {
 export type PptExportTableModel = {
   kind: "table";
   sourceElementId?: string;
+  exportObjectId?: string;
   sourceOrder?: number;
   zIndex?: number;
   zOrder?: number;
@@ -495,6 +557,9 @@ export type PptxExportQualityIssue = {
   exportObjectId?: string;
   exportObjectKind?: ExportObjectKind;
   exportRenderTarget?: ExportRenderTarget;
+  exportDataContractType?: ExportDataContract["type"];
+  pageLayoutArchetype?: PageLayoutArchetype;
+  pageVisualGrammar?: PageVisualGrammar;
 };
 
 export type PptxExportNodeBase = {
@@ -579,8 +644,39 @@ export type PptxExportChartContractQualitySummary = {
 export type PptxExportObjectContractQualitySummary = {
   candidateCount: number;
   violationCount: number;
+  strongDataContractCount: number;
+  invalidDataContractCount: number;
+  unlabeledFallbackCount: number;
+  blockedCoreVisualCount: number;
+  contractIssueCount: number;
+  contractIssues: PptxContractRepairIssue[];
+  contractRepairIssueCount: number;
+  repairIssues: PptxContractRepairIssue[];
   byKind: Record<string, number>;
   byRenderTarget: Record<string, number>;
+  byDataContractType: Record<string, number>;
+};
+
+export type PptxExportPageArchetypeQualitySummary = {
+  sequence: Array<{
+    pageNumber: number;
+    archetype: PageLayoutArchetype;
+  }>;
+  byArchetype: Record<string, number>;
+  repeatedRunLength: number;
+  repeatedRunWarningCount: number;
+  metadataWarningCount: number;
+};
+
+export type PptxExportDeterministicConsumerQualitySummary = {
+  contractObjects: number;
+  snapshotObjects: number;
+  nativeTables: number;
+  matrixShapes: number;
+  legacyFallbacks: number;
+  blockedInterpretations: number;
+  contractMismatches: number;
+  rasterizationFailures: number;
 };
 
 export type PptxExportQualityReport = {
@@ -599,6 +695,8 @@ export type PptxExportQualityReport = {
   nativeChartCountByKind: Record<string, number>;
   chartContracts: PptxExportChartContractQualitySummary;
   exportContracts: PptxExportObjectContractQualitySummary;
+  deterministicConsumer: PptxExportDeterministicConsumerQualitySummary;
+  pageArchetypes: PptxExportPageArchetypeQualitySummary;
   acceptanceFailures: string[];
   fatalCount: number;
   degradedCount: number;

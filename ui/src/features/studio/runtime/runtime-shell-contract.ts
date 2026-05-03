@@ -86,6 +86,8 @@ export type StudioShellExportFlowContract = {
   bundleInput: string;
   setBundleInput: (value: string) => void;
   lastPptxExportResult: PptExportResult | null;
+  lastPptxExportError: string | null;
+  isPptxExporting: boolean;
   copyProjectBundleJson: () => Promise<void>;
   copyWorkspaceBundleJson: () => Promise<void>;
   handleImportBundle: () => Promise<void>;
@@ -194,6 +196,8 @@ export function formatPptxWarningSummary(
   switch (code) {
     case "native-chart-exported":
       return "Chart exported as a native editable PowerPoint chart.";
+    case "visual-chart-exported":
+      return "Chart exported as a stable visual PowerPoint snapshot.";
     case "hybrid-chart-exported":
       return "Chart page used a hybrid export to keep the figure visible and the explanation editable.";
     case "color-fallback":
@@ -201,7 +205,7 @@ export function formatPptxWarningSummary(
     case "gradient-flattened":
       return "Complex gradient was flattened because it could not be represented as native PowerPoint fill.";
     case "chart-image-fallback":
-      return "Chart was exported as an image to preserve visibility.";
+      return "Chart was exported as a visual snapshot to preserve visibility.";
     case "chart-contract-detected":
       return "Chart export contract was classified before rendering.";
     case "chart-contract-blocked":

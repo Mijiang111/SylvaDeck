@@ -25,6 +25,8 @@ function formatPptxWarningSummary(code: PptExportResult["warnings"][number]["cod
   switch (code) {
     case "native-chart-exported":
       return "Native editable chart export";
+    case "visual-chart-exported":
+      return "Stable visual chart export";
     case "hybrid-chart-exported":
       return "Hybrid chart page export";
     case "color-fallback":
@@ -32,7 +34,7 @@ function formatPptxWarningSummary(code: PptExportResult["warnings"][number]["cod
     case "gradient-flattened":
       return "Complex gradient was flattened because it could not be represented as native PowerPoint fill.";
     case "chart-image-fallback":
-      return "Chart was exported as an image to preserve visibility.";
+      return "Chart was exported as a visual snapshot to preserve visibility.";
     case "chart-native-unsupported":
       return "Chart type is not natively supported by the current PPTX renderer.";
     case "table-native-unsupported":

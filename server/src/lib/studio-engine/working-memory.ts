@@ -26,6 +26,8 @@ const GENERIC_OBJECT_PATTERN =
 const INVALID_OBJECT_EDGE_PATTERN = /^(?:of|for|to)\b|\b(?:of|for|to)$/i;
 const TASK_SHELL_PATTERN =
   /\b(?:\d+\s*pages?|page\s+\d+|page\s+ppt|ppt|slides?|deck|presentation|report|brief|memo)\b/gi;
+const EXPORT_METADATA_TOKEN_PATTERN =
+  /\b(?:data-export-[\w-]*|data-render-target|data-quality-intent|data-forbidden-interpretation|data-export-contract|semantic metadata)\b/i;
 
 type ParsedObjectCandidate = {
   value: string;
@@ -145,7 +147,7 @@ function extractExplicitObjectCue(text: string) {
   }
 
   const inlineMatch = normalizeStudioText(text).match(
-    /\b(?:subject|topic|focus|object|company|主题|主題|对象|對象|公司)\s*[:：]\s*([\s\S]*?)(?=\s+(?:source constraint|observed facts?|page plan|page\s*\d+|slide\s*\d+|layout|tone|anti-patterns|visual thesis|主题|主題|证据|證據)\s*[:：]|$)/i,
+    /\b(?:subject|topic|focus|company|主题|主題|对象|對象|公司)\s*[:：]\s*([\s\S]*?)(?=\s+(?:source constraint|observed facts?|page plan|page\s*\d+|slide\s*\d+|layout|tone|anti-patterns|visual thesis|主题|主題|证据|證據)\s*[:：]|$)/i,
   );
   const inlineCandidate = cleanObjectCandidate(inlineMatch?.[1] ?? "");
   if (inlineCandidate && isPlausibleObject(inlineCandidate)) {
@@ -166,6 +168,12 @@ function isPlausibleObject(text: string) {
     return false;
   }
   if (new RegExp(QUALITY_BAR_PATTERN.source, "i").test(text)) {
+    return false;
+  }
+  if (EXPORT_METADATA_TOKEN_PATTERN.test(text)) {
+    return false;
+  }
+  if (/^undefined$/i.test(text)) {
     return false;
   }
   return text.length >= 2;
@@ -260,6 +268,8 @@ function extractPrimaryObject(args: {
   }
 
   const specializedPatterns: Array<{ pattern: RegExp; confidence: WorkingMemorySlotConfidence }> = [
+    { pattern: /\b(?:deck|presentation|slides?|ppt|report)\s+titled\s+["“]([^"”]+)["”]/i, confidence: "medium" },
+    { pattern: /\b(?:deck|presentation|slides?|ppt|report)\s+titled\s+([^.;\n]+)/i, confidence: "medium" },
     { pattern: /\b(?:product\s+)?valuation\s+of\s+(.+)$/i, confidence: "high" },
     { pattern: /\b(?:technical\s+)?architecture\s+review\s+of\s+(.+)$/i, confidence: "high" },
     { pattern: /\bresearch\s+readout\s+(?:on|of|about)\s+(.+)$/i, confidence: "high" },

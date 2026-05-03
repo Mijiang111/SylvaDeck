@@ -31,7 +31,7 @@ export const PPTX_EXPORT_PIPELINE: readonly PptxExportPipelineBoundary[] = [
   {
     phase: "own",
     owns: ["single-owner node claims", "suppression reasons", "duplicate prevention"],
-    forbids: ["visual styling", "native chart XML patching"],
+    forbids: ["visual styling", "native chart XML generation"],
     output: "OwnershipPlan",
   },
   {
@@ -54,7 +54,7 @@ export const PPTX_EXPORT_PIPELINE: readonly PptxExportPipelineBoundary[] = [
   },
   {
     phase: "patch",
-    owns: ["native chart XML", "gradient/freeform XML", "package relationship resolution"],
+    owns: ["gradient/freeform XML", "package relationship resolution", "repair-risk XML validation"],
     forbids: ["DOM inspection", "layout ownership changes"],
     output: "PatchedPptxPackage",
   },
@@ -72,7 +72,7 @@ export const UNIVERSAL_PPTX_EXPORT_ALGORITHMS = [
   "color/theme normalization",
   "bounds and unit conversion",
   "canvas layer ordering",
-  "native chart style contract application",
+  "visual chart snapshot preservation",
   "package relationship resolution",
   "quality validation",
 ] as const;
@@ -81,7 +81,7 @@ export const SPECIALIZED_PPTX_EXPORT_ADAPTERS = [
   "McKinsey chart spec adapter",
   "matrix-vs-table disambiguation",
   "SVG/div chart fallback detector",
-  "bubble/waterfall/combo chart adapters",
+  "bubble/waterfall/combo visual chart adapters",
   "hidden placeholder guard",
   "pressure fixture regressions",
 ] as const;

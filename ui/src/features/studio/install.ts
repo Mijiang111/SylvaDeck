@@ -150,10 +150,23 @@ export function isCodexInstallReady(status: InstallStatusResponse | null) {
   const codex = getInstallAgent(status, "codex");
   return Boolean(
     status &&
+      status.serverHealthy &&
+      status.nodeReady &&
+      status.pnpmReady &&
       codex &&
       codex.supported &&
-      codex.detected &&
       codex.authReady &&
       codex.skillInstalled,
+  );
+}
+
+export function isCodexCliSoftWarning(status: InstallStatusResponse | null) {
+  const codex = getInstallAgent(status, "codex");
+  return Boolean(
+    status &&
+      isCodexInstallReady(status) &&
+      codex &&
+      !codex.detected &&
+      codex.status === "missing-command",
   );
 }

@@ -17,6 +17,7 @@ export type StudioMode = "library" | "brief" | "editor" | "author";
 export type StudioHomeSection = "library" | "ai" | "author";
 export type StudioEditView = "split" | "canvas";
 export type StudioInspectorTab = "page" | "text" | "visual" | "history" | "export";
+export type StudioSelectionFacet = "text" | "shape" | "data" | "export";
 export type StudioCanvasDrawer =
   | "pages"
   | "page"
@@ -138,6 +139,8 @@ export type StudioShellState = {
 
 export type StudioSelectionState = {
   activePageId: string;
+  selectedObjectId: string | null;
+  activeFacet: StudioSelectionFacet | null;
   selectedHtmlBlockId: string | null;
   selectedVisualNodeId: string | null;
   htmlPageOverflows: Record<number, boolean>;

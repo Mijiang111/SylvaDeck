@@ -48,6 +48,10 @@ async function copyToClipboard(text: string) {
   await navigator.clipboard.writeText(text);
 }
 
+export function getPptxExportErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "PPTX export failed.";
+}
+
 type UseStudioExportActionsArgs = {
   workspaceRepository: WorkspaceRepository;
   project: WorkbenchProject | null;
@@ -57,9 +61,17 @@ type UseStudioExportActionsArgs = {
 };
 
 export function useStudioExportActions(args: UseStudioExportActionsArgs) {
-  const { workspaceRepository, project, draft, generatedHtmlReport, publishedHref } = args;
+  const {
+    workspaceRepository,
+    project,
+    draft,
+    generatedHtmlReport,
+    publishedHref,
+  } = args;
   const [bundleInput, setBundleInputState] = useState("");
   const [lastPptxExportResult, setLastPptxExportResult] = useState<PptExportResult | null>(null);
+  const [lastPptxExportError, setLastPptxExportError] = useState<string | null>(null);
+  const [isPptxExporting, setIsPptxExporting] = useState(false);
 
   const library = useStudioLibraryState();
   const projectState = useStudioProjectState();
@@ -164,11 +176,18 @@ export function useStudioExportActions(args: UseStudioExportActionsArgs) {
       return;
     }
 
+    setLastPptxExportError(null);
+    setIsPptxExporting(true);
+    setStatusLine("Exporting PPTX...");
+
     const reportRoot = document.querySelector(
       "[data-ppt-report-root='studio-main']",
     ) as HTMLElement | null;
     if (!reportRoot) {
-      setStatusLine("The report surface is not ready for PPTX export yet.");
+      const message = "The report surface is not ready for PPTX export yet.";
+      setLastPptxExportError(message);
+      setStatusLine(message);
+      setIsPptxExporting(false);
       return;
     }
 
@@ -181,6 +200,7 @@ export function useStudioExportActions(args: UseStudioExportActionsArgs) {
         publishedUrl: publishUrl,
       });
       setLastPptxExportResult(result);
+      setLastPptxExportError(null);
       recordPublish("pptx", publishUrl);
       await flushStudioSnapshot();
       setStatusLine(
@@ -191,9 +211,11 @@ export function useStudioExportActions(args: UseStudioExportActionsArgs) {
             : `Downloaded editable PPTX, quality ${result.qualityReport.score}.`,
       );
     } catch (error) {
-      setStatusLine(
-        error instanceof Error ? error.message : "PPTX export failed.",
-      );
+      const message = getPptxExportErrorMessage(error);
+      setLastPptxExportError(message);
+      setStatusLine(message);
+    } finally {
+      setIsPptxExporting(false);
     }
   }, [
     draft,
@@ -219,6 +241,8 @@ export function useStudioExportActions(args: UseStudioExportActionsArgs) {
     bundleInput,
     setBundleInput,
     lastPptxExportResult,
+    lastPptxExportError,
+    isPptxExporting,
     copyProjectBundleJson,
     copyWorkspaceBundleJson,
     handleImportBundle,

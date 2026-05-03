@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { z } from "zod";
 import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
 import {
@@ -32,6 +33,18 @@ import {
   loadStudioAnalysisSkill,
   loadStudioLayoutRepairSkill,
 } from "../lib/studio-engine/skills.js";
+import { rasterizeStudioSnapshotJobs } from "../lib/studio-engine/rasterize-snapshots.js";
+
+const rasterizeSnapshotsRequestSchema = z.object({
+  pages: z.array(z.object({
+    pageNumber: z.number().int().positive(),
+    html: z.string().min(1),
+  })).min(1),
+  jobs: z.array(z.object({
+    pageNumber: z.number().int().positive(),
+    snapshotId: z.string().min(1),
+  })).min(1),
+});
 
 function normalizeGenerateRequestPageCount(
   payload: GenerateStudioReportRequest,
@@ -95,6 +108,21 @@ export function studioRoutes() {
     );
 
     res.json(payload);
+  });
+
+  router.post("/studio/export/rasterize-snapshots", validate(rasterizeSnapshotsRequestSchema), async (req, res) => {
+    const payload = req.body as z.infer<typeof rasterizeSnapshotsRequestSchema>;
+    try {
+      const results = await rasterizeStudioSnapshotJobs(payload);
+      res.json({ results });
+    } catch (error) {
+      const reason =
+        error instanceof Error && error.message.trim()
+          ? error.message
+          : "Snapshot rasterizer failed.";
+      logger.error({ err: error, reason }, "studio snapshot rasterizer failed");
+      res.status(500).json({ error: reason });
+    }
   });
 
   router.post("/studio/generate-html", validate(generateStudioReportRequestSchema), async (req, res) => {

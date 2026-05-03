@@ -39,8 +39,7 @@ import {
 const workspacePromptMetaCache = new Map<string, StudioAiWorkspacePromptMeta>();
 
 const WORKSPACE_VISIBLE_TEXT_GUARDRAILS = [
-  "Workspace labels are instructions, not slide copy. Never render labels like Raw brief, AI understanding, Visual thinking, Current page mission, Active capability cards, Current working hypothesis, Unknowns and evidence boundary, User task brief, Task rigor brief, Renderer brief, Proof plan, Layout strategy, Private layout plan, Source material, Page intent, Selected starter pack, Selected template contract, Capability cards, Output rules, or Page argument contract.",
-  "Translate the page mission and AI understanding into audience-facing copy. Do not show scaffold labels such as Headline claim, Support bullet 1, Evidence callout, Brief digest, One-page thesis, layout plan, proof plan, visual thinking, reasoning, step 1, selected deep family, or supplied brief.",
+  "Internal field names, workspace headings, route labels, and planning titles are private context; translate them into audience-facing copy.",
 ];
 
 function cleanCapabilityLine(line: string) {
@@ -108,6 +107,94 @@ function renderCapabilityCardsBlock(cards: StudioCapabilityCard[]): StudioAiWork
       ...card.lines.map((line) => `  ${line}`),
     ]),
   };
+}
+
+function studioEnumPhrase(value: string) {
+  return value.replace(/-/g, " ");
+}
+
+function visualGrammarPhrase(value: string) {
+  const labels: Record<string, string> = {
+    "equity-research": "equity-research",
+    "technical-system": "technical-system",
+    "product-strategy": "product-strategy",
+    "operating-model": "operating-model",
+    "scientific-figure": "scientific figure",
+  };
+  return labels[value] ?? studioEnumPhrase(value);
+}
+
+function visualArchetypePhrase(value: string) {
+  const labels: Record<string, string> = {
+    "single-dominant-visual": "single dominant visual",
+    "hero-metric": "hero metric",
+    "chart-with-insight-rail": "chart-led exhibit with an insight rail",
+    "matrix-first": "matrix-led decision field",
+    "comparison-grid": "business comparison grid",
+    "bubble-landscape": "bubble landscape",
+    "timeline-led": "timeline-led roadmap",
+    "process-flow": "process flow",
+    swimlane: "swimlane flow",
+    "benchmark-table": "benchmark table",
+    "decision-tree": "decision tree",
+    "layered-stack": "layered stack",
+    "market-map": "market map",
+    "portfolio-grid": "portfolio grid",
+    "capability-model": "capability model",
+    funnel: "funnel",
+    "risk-heatmap": "risk heatmap",
+    "thesis-evidence-board": "thesis-evidence board",
+    "before-after": "before/after comparison",
+    flywheel: "flywheel",
+    "operating-model": "operating-model figure",
+    "annotation-stage": "annotation-stage figure",
+    "evidence-wall": "evidence hierarchy",
+    "case-timeline": "case timeline",
+    "bridge-explanation": "bridge explanation",
+  };
+  return labels[value] ?? studioEnumPhrase(value);
+}
+
+function compositionPhrase(value: string) {
+  const labels: Record<string, string> = {
+    "dominant-left-rail-right": "dominant left exhibit with right insight rail",
+    "dominant-right-rail-left": "dominant right exhibit with left insight rail",
+    "top-title-full-bleed-visual": "top title over a full-bleed visual field",
+    "center-canvas-annotation-ring": "center canvas with annotation ring",
+    "two-column-contrast": "two-column contrast",
+    "three-band-narrative": "three-band narrative",
+    "grid-with-hierarchy": "hierarchical grid",
+  };
+  return labels[value] ?? studioEnumPhrase(value);
+}
+
+function densityPhrase(value: string) {
+  const labels: Record<string, string> = {
+    sparse: "spacious density",
+    executive: "executive density",
+    dense: "dense but controlled detail",
+  };
+  return labels[value] ?? studioEnumPhrase(value);
+}
+
+function buildPageIrWorkspaceLines(args: {
+  preflight?: StudioPreflightPlan | null;
+  pageNumber?: number | null;
+}) {
+  const page = args.preflight?.exportContract.pages.find(
+    (entry) => entry.pageNumber === args.pageNumber,
+  );
+  if (
+    !page?.layoutArchetype ||
+    !page.visualGrammar ||
+    !page.composition ||
+    !page.density
+  ) {
+    return [];
+  }
+  return [
+    `Visual intent: ${visualGrammarPhrase(page.visualGrammar)} ${visualArchetypePhrase(page.layoutArchetype)}, ${compositionPhrase(page.composition)}, ${densityPhrase(page.density)}.`,
+  ];
 }
 
 function buildWorkspaceMeta(
@@ -337,6 +424,143 @@ function createAiUnderstandingWorkspaceBlock(args: {
       `Evidence tier: ${args.preflight.evidencePolicy.tier}`,
       ...args.preflight.evidencePolicy.lines.slice(0, 2).map((line) => clampText(line, 200)),
       ...args.preflight.assumptionPolicy.slice(0, 2).map((line) => clampText(line, 200)),
+    ],
+  };
+}
+
+function createCreativeBriefWorkspaceBlock(preflight: StudioPreflightPlan): StudioAiWorkspaceBlock {
+  return {
+    id: "creative-brief",
+    title: "Creative brief",
+    lines: [
+      `Subject: ${clampText(preflight.subject, 160)}`,
+      `Deliverable: ${clampText(preflight.deliverable, 160)}`,
+      `Core task: ${clampText(preflight.coreTask, 220)}`,
+      ...(preflight.audienceOrQualityBar
+        ? [`Audience or quality bar: ${clampText(preflight.audienceOrQualityBar, 180)}`]
+        : []),
+      `Task route: ${preflight.route.primaryKind} (${preflight.route.confidence}).`,
+    ],
+  };
+}
+
+function createPageIntentWorkspaceBlock(args: {
+  pageMission?: StudioPageMission | null;
+  pageIntentLines: string[];
+  pageIntentRawText?: string | null;
+  pageArgumentLines?: string[];
+}): StudioAiWorkspaceBlock {
+  const pageMissionLines =
+    args.pageMission !== null && args.pageMission !== undefined
+      ? [
+          `Mission: ${clampText(args.pageMission.mission, 220)}`,
+          `Headline claim: ${clampText(args.pageMission.headlineClaim, 220)}`,
+          ...(args.pageMission.supportPoints.length > 0
+            ? [
+                `Support points: ${args.pageMission.supportPoints
+                  .slice(0, 3)
+                  .map((line) => clampText(line, 120))
+                  .join(" | ")}`,
+              ]
+            : ["Support proof stays subordinate: use at most two short support points when needed."]),
+        ]
+      : args.pageIntentLines;
+
+  return {
+    id: "page-mission",
+    title: "Page intent",
+    lines: [
+      ...pageMissionLines,
+      ...(args.pageArgumentLines ?? []),
+    ],
+    rawText: args.pageIntentRawText,
+  };
+}
+
+function createPrimaryVisualWorkspaceBlock(args: {
+  preflight: StudioPreflightPlan;
+  pageMission?: StudioPageMission | null;
+  visualThinkingLines?: string[];
+  visualOperatorLines?: string[];
+  freeformLayoutPlan?: FreeformLayoutPlan | null;
+  creativeDirectionLines?: string[];
+}): StudioAiWorkspaceBlock {
+  const lines =
+    args.visualThinkingLines && args.visualThinkingLines.length > 0
+      ? args.visualThinkingLines
+      : buildVisualThinkingLines({
+          preflight: args.preflight,
+          visualOperatorLines: args.visualOperatorLines,
+          freeformLayoutPlan: args.freeformLayoutPlan,
+          preferredVisual: args.pageMission?.preferredVisual ?? null,
+          structureCue: args.pageMission?.structureCue ?? null,
+        });
+  return {
+    id: "visual-thinking",
+    title: "Primary visual",
+    lines: [
+      ...(args.pageMission?.preferredVisual
+        ? [`Primary visual object: ${clampText(args.pageMission.preferredVisual, 220)}`]
+        : []),
+      ...(args.pageMission?.structureCue ? [`Structure cue: ${args.pageMission.structureCue}.`] : []),
+      ...lines,
+      ...(args.creativeDirectionLines?.length
+        ? ["Creative direction:", ...args.creativeDirectionLines]
+        : []),
+    ],
+  };
+}
+
+function createEvidenceBoundaryWorkspaceBlock(args: {
+  preflight: StudioPreflightPlan;
+  pageMission?: StudioPageMission | null;
+}): StudioAiWorkspaceBlock {
+  const fullBriefLines =
+    args.preflight.route.workspaceMode === "full-brief"
+      ? [
+          "Raw brief:",
+        ]
+      : [
+          "The full raw brief stays preserved server-side; this renderer prompt receives the routed page-scoped contract.",
+        ];
+
+  return {
+    id: "ai-understanding",
+    title: "Evidence and boundaries",
+    lines: [
+      `Route: ${args.preflight.route.primaryKind} (${args.preflight.route.confidence}, ${args.preflight.route.workspaceMode}).`,
+      `Evidence tier: ${args.preflight.evidencePolicy.tier}`,
+      ...args.preflight.evidencePolicy.lines.slice(0, 2).map((line) => clampText(line, 200)),
+      ...args.preflight.assumptionPolicy.slice(0, 2).map((line) => clampText(line, 200)),
+      ...(args.pageMission?.evidenceNotes.length
+        ? [
+            `Evidence notes: ${args.pageMission.evidenceNotes
+              .slice(0, 3)
+              .map((line) => clampText(line, 120))
+              .join(" | ")}`,
+          ]
+        : []),
+      `Route reasons: ${args.preflight.route.reasonCodes.join(", ") || "none"}.`,
+      ...fullBriefLines,
+    ],
+    rawText: args.preflight.route.workspaceMode === "full-brief" ? args.preflight.rawBrief : null,
+  };
+}
+
+function createSemanticObjectsWorkspaceBlock(args: {
+  preflight: StudioPreflightPlan;
+  pageMission?: StudioPageMission | null;
+  semanticObjectLines?: string[];
+}): StudioAiWorkspaceBlock {
+  return {
+    id: "semantic-objects",
+    title: "Semantic objects",
+    lines: [
+      ...(args.semanticObjectLines ?? []),
+      ...buildPageIrWorkspaceLines({
+        preflight: args.preflight,
+        pageNumber: args.pageMission?.pageNumber,
+      }),
     ],
   };
 }
@@ -730,10 +954,13 @@ export function buildStudioAiWorkspace(args: {
   freeformLayoutPlan?: FreeformLayoutPlan | null;
   pageIntentLines: string[];
   pageIntentRawText?: string | null;
+  pageArgumentLines?: string[];
   starterPackManifests?: PublishedModuleManifest[] | null;
   templateManifests?: PublishedModuleManifest[];
   capabilityCards?: StudioCapabilityCard[];
   visualOperatorLines?: string[];
+  creativeDirectionLines?: string[];
+  semanticObjectLines?: string[];
   specializedArtifact?: string | null;
   pageMission?: StudioPageMission | null;
   visualThinkingLines?: string[];
@@ -742,8 +969,8 @@ export function buildStudioAiWorkspace(args: {
   const templateManifests = (args.templateManifests ?? []).slice(0, 2);
   const capabilityCards = args.capabilityCards ?? [];
   const workloadLane = args.workloadLane ?? "fast";
-  const minimalRendererWorkspace =
-    (args.stage === "page" || args.stage === "repair") && args.preflight;
+  const minimalPageRendererWorkspace = args.stage === "page" && args.preflight;
+  const minimalRepairWorkspace = args.stage === "repair" && args.preflight;
   const starterPackBlock =
     args.starterPackManifests && args.starterPackManifests.length > 0
       ? createStarterPackWorkspaceBlock(args.starterPackManifests, {
@@ -751,7 +978,41 @@ export function buildStudioAiWorkspace(args: {
         })
       : null;
   const blocks: StudioAiWorkspaceBlock[] =
-    minimalRendererWorkspace
+    minimalPageRendererWorkspace
+      ? [
+          createCreativeBriefWorkspaceBlock(args.preflight!),
+          createPageIntentWorkspaceBlock({
+            pageMission: args.pageMission,
+            pageIntentLines: args.pageIntentLines,
+            pageIntentRawText: args.pageIntentRawText,
+            pageArgumentLines: args.pageArgumentLines,
+          }),
+          createPrimaryVisualWorkspaceBlock({
+            preflight: args.preflight!,
+            pageMission: args.pageMission,
+            visualThinkingLines: args.visualThinkingLines,
+            visualOperatorLines: args.visualOperatorLines,
+            freeformLayoutPlan: args.freeformLayoutPlan,
+            creativeDirectionLines: args.creativeDirectionLines,
+          }),
+          createEvidenceBoundaryWorkspaceBlock({
+            preflight: args.preflight!,
+            pageMission: args.pageMission,
+          }),
+          createSemanticObjectsWorkspaceBlock({
+            preflight: args.preflight!,
+            pageMission: args.pageMission,
+            semanticObjectLines: args.semanticObjectLines,
+          }),
+          ...(starterPackBlock ? [starterPackBlock] : []),
+          renderCapabilityCardsBlock(capabilityCards),
+          {
+            id: "output-rules",
+            title: "Output rules",
+            lines: [...WORKSPACE_VISIBLE_TEXT_GUARDRAILS, ...args.outputRules],
+          },
+        ]
+      : minimalRepairWorkspace
       ? [
           createRawBriefWorkspaceBlock(args.preflight!),
           createAiUnderstandingWorkspaceBlock({
@@ -767,7 +1028,7 @@ export function buildStudioAiWorkspace(args: {
                     ...(args.pageMission.supportPoints.length > 0
                       ? [
                           `Support points: ${args.pageMission.supportPoints
-                            .slice(0, 2)
+                            .slice(0, 3)
                             .map((line) => clampText(line, 120))
                             .join(" | ")}`,
                         ]
@@ -775,11 +1036,15 @@ export function buildStudioAiWorkspace(args: {
                     ...(args.pageMission.evidenceNotes.length > 0
                       ? [
                           `Evidence notes: ${args.pageMission.evidenceNotes
-                            .slice(0, 2)
+                            .slice(0, 3)
                             .map((line) => clampText(line, 120))
                             .join(" | ")}`,
                         ]
                       : []),
+                    ...buildPageIrWorkspaceLines({
+                      preflight: args.preflight,
+                      pageNumber: args.pageMission.pageNumber,
+                    }),
                   ]
                 : args.pageIntentLines,
             rawText: args.pageIntentRawText,

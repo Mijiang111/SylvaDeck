@@ -344,10 +344,12 @@ Export should always come from real `16:9` slide pages, not from editor chrome o
 ### PPTX export
 ### PPTX 导出
 
+- Follow the contract-first export blueprint for semantic object ownership: [`docs/studio-contract-first-export-blueprint.md`](./studio-contract-first-export-blueprint.md).
 - collect only real export page frames
 - preserve wide layout
 - do not capture the black workspace background
 
+- 按 contract-first export 蓝图处理语义对象归属：[`docs/studio-contract-first-export-blueprint.md`](./studio-contract-first-export-blueprint.md)。
 - 只采集真实导出页 frame
 - 保持 widescreen layout
 - 不要把黑色工作区背景带进导出
