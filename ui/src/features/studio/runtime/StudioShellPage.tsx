@@ -173,6 +173,12 @@ const INSPECTOR_TABS = [
 ] as const;
 
 const SIDEBAR_TABS = INSPECTOR_TABS.filter((tab) => tab.id !== "text");
+const HTML_OBJECT_FACET_TABS = [
+  { id: "text", label: "Text" },
+  { id: "shape", label: "Shape" },
+  { id: "data", label: "Data" },
+  { id: "export", label: "Export" },
+] as const;
 
 const MODULE_USAGE_OPTIONS: Array<{
   value: WorkbenchModuleUsageMode;
@@ -427,6 +433,7 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
     selectPage,
     selectHtmlBlock,
     selectVisualNode,
+    setSelectionFacet,
     clearSelection,
     recordHtmlOverflow,
     undo,
@@ -621,10 +628,18 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
       activeHtmlPageTitle,
       activePageNumber,
       generatedHtmlReport,
+      selection.activeFacet,
       selection.selectedHtmlBlockId,
+      selection.selectedObjectId,
       selection.selectedVisualNodeId,
     ],
   );
+  const activeHtmlCanvasObject =
+    activeHtmlEditorSelection.kind === "text" ||
+    activeHtmlEditorSelection.kind === "visual" ||
+    activeHtmlEditorSelection.kind === "object"
+      ? activeHtmlEditorSelection.object
+      : null;
   const activeHtmlBlock =
     activeHtmlEditorSelection.kind === "text" ? activeHtmlEditorSelection.block : null;
   const activeHtmlBlockCanvasTransform =
@@ -635,6 +650,10 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
     activeHtmlEditorSelection.kind === "visual" ? activeHtmlEditorSelection.transform : null;
   const activeHtmlVisualContentNodes: HtmlVisualContentNode[] =
     activeHtmlEditorSelection.kind === "visual" ? activeHtmlEditorSelection.contentNodes : [];
+  const selectedPreviewBlockId =
+    activeHtmlEditorSelection.kind === "text" ? activeHtmlEditorSelection.blockId : null;
+  const selectedPreviewVisualNodeId =
+    activeHtmlEditorSelection.kind === "visual" ? activeHtmlEditorSelection.nodeId : null;
   const {
     updateHtmlBlockTransformOnPage,
     returnHtmlBlockToFlow,
@@ -685,6 +704,8 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
     bundleInput,
     setBundleInput,
     lastPptxExportResult,
+    lastPptxExportError,
+    isPptxExporting,
     copyProjectBundleJson,
     copyWorkspaceBundleJson,
     handleImportBundle,
@@ -2346,7 +2367,85 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
     replaceSelectedVisualWithModule,
   ]);
 
+  const exportObjectInspectorSchema = useMemo<InspectorSchema | null>(() => {
+    if (!activeHtmlCanvasObject) {
+      return pageInspectorSchema;
+    }
+
+    return {
+      id: `html-object-export-${activeHtmlCanvasObject.selectedObjectId}`,
+      title: "Export object",
+      description: activeHtmlCanvasObject.exportObjectId
+        ? `Compiled contract ${activeHtmlCanvasObject.exportObjectId}`
+        : "Detected object without compiled export ownership",
+      sections: [
+        {
+          id: "object-identity",
+          title: "Identity",
+          fields: [
+            {
+              id: "object-id",
+              kind: "readonly",
+              label: "Object ID",
+              value: activeHtmlCanvasObject.selectedObjectId,
+            },
+            {
+              id: "export-object-id",
+              kind: "readonly",
+              label: "Export object",
+              value: activeHtmlCanvasObject.exportObjectId ?? "None",
+            },
+            {
+              id: "root-node-id",
+              kind: "readonly",
+              label: "Root visual node",
+              value: activeHtmlCanvasObject.rootNodeId ?? "None",
+            },
+          ],
+        },
+        {
+          id: "object-facets",
+          title: "Facets",
+          fields: [
+            {
+              id: "editable-facets",
+              kind: "readonly",
+              label: "Editable facets",
+              value: activeHtmlCanvasObject.availableFacets.join(", ") || "None",
+            },
+            {
+              id: "text-blocks",
+              kind: "readonly",
+              label: "Text blocks",
+              value: activeHtmlCanvasObject.textBlockIds.join(", ") || "None",
+            },
+            {
+              id: "visual-nodes",
+              kind: "readonly",
+              label: "Visual nodes",
+              value: activeHtmlCanvasObject.visualNodeIds.join(", ") || "None",
+            },
+          ],
+        },
+      ],
+    };
+  }, [activeHtmlCanvasObject, pageInspectorSchema]);
+
   const inspectorSchema = useMemo(() => {
+    if (activeHtmlCanvasObject) {
+      if (activeHtmlCanvasObject.activeFacet === "text") {
+        return textInspectorSchema;
+      }
+      if (
+        activeHtmlCanvasObject.activeFacet === "shape" ||
+        activeHtmlCanvasObject.activeFacet === "data"
+      ) {
+        return visualInspectorSchema;
+      }
+      if (activeHtmlCanvasObject.activeFacet === "export") {
+        return exportObjectInspectorSchema;
+      }
+    }
     if (shell.inspectorTab === "text") {
       return textInspectorSchema;
     }
@@ -2355,6 +2454,8 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
     }
     return pageInspectorSchema;
   }, [
+    activeHtmlCanvasObject,
+    exportObjectInspectorSchema,
     pageInspectorSchema,
     shell.inspectorTab,
     textInspectorSchema,
@@ -2367,15 +2468,40 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
     [shell.canvasDrawer, shell.inspectorTab],
   );
   const preferredHtmlSelectionType = useMemo(() => {
+    if (activeSidebarTab === "page") {
+      return "page" as const;
+    }
     if (activeSidebarTab === "text") {
       return "text" as const;
     }
     if (activeSidebarTab === "visual") {
       return "visual" as const;
     }
+
+    if (activeHtmlCanvasObject?.activeFacet === "text") {
+      return "text" as const;
+    }
+    if (
+      activeHtmlCanvasObject?.activeFacet === "shape" ||
+      activeHtmlCanvasObject?.activeFacet === "data" ||
+      activeHtmlCanvasObject?.activeFacet === "export"
+    ) {
+      return "visual" as const;
+    }
     return "page" as const;
-  }, [activeSidebarTab]);
+  }, [activeHtmlCanvasObject?.activeFacet, activeSidebarTab]);
   const activeSidebarTitle = useMemo(() => {
+    if (activeHtmlCanvasObject) {
+      if (activeHtmlCanvasObject.activeFacet === "shape") {
+        return "Shape";
+      }
+      const activeFacet = HTML_OBJECT_FACET_TABS.find(
+        (facet) => facet.id === activeHtmlCanvasObject.activeFacet,
+      );
+      if (activeFacet) {
+        return activeFacet.label;
+      }
+    }
     if (activeSidebarTab === "history") {
       return "History";
     }
@@ -2389,7 +2515,7 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
       return "Visual";
     }
     return "Page";
-  }, [activeSidebarTab]);
+  }, [activeHtmlCanvasObject, activeSidebarTab]);
 
   const routeProjectExists = useMemo(() => {
     if (!projectId) {
@@ -2990,10 +3116,10 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                                 );
                               }}
                               data-testid="action-export-pptx"
-                              disabled={!generatedHtmlReport}
+                              disabled={!generatedHtmlReport || isPptxExporting}
                               className="flex h-9 w-full items-center px-3 text-left text-[12px] text-[var(--studio-ink)] transition hover:bg-[rgba(255,255,255,0.04)] disabled:cursor-not-allowed disabled:opacity-40"
                             >
-                              Export PPTX
+                              {isPptxExporting ? "Exporting PPTX..." : "Export PPTX"}
                             </button>
                             <button
                               type="button"
@@ -3074,17 +3200,17 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                       htmlReport={generatedHtmlReport}
                       mode="immersive"
                       selectedHtmlPageNumber={selectedCanvasPageNumber}
-                      selectedHtmlBlockId={selection.selectedHtmlBlockId}
+                      selectedHtmlBlockId={selectedPreviewBlockId}
                       selectedHtmlBlockTransform={activeHtmlBlockCanvasTransform}
-                      selectedHtmlVisualNodeId={selection.selectedVisualNodeId}
+                      selectedHtmlVisualNodeId={selectedPreviewVisualNodeId}
                       selectedHtmlVisualTransform={activeHtmlVisualCanvasTransform}
                       preferredHtmlSelectionType={preferredHtmlSelectionType}
                       onSelectHtmlBlock={isDeckReviewLocked ? undefined : selectHtmlBlock}
                       onSelectHtmlVisualNode={
                         isDeckReviewLocked
                           ? undefined
-                          : (pageNumber, nodeId, _kind) =>
-                              selectVisualNode(pageNumber, nodeId)
+                          : (pageNumber, nodeId, _kind, objectId) =>
+                              selectVisualNode(pageNumber, nodeId, objectId)
                       }
                       onCommitHtmlBlockTransform={
                         isDeckReviewLocked
@@ -3376,10 +3502,10 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                                   )
                                 }
                                 data-testid="sidebar-export-pptx"
-                                disabled={!generatedHtmlReport}
+                                disabled={!generatedHtmlReport || isPptxExporting}
                                 className={sidebarActionClass}
                               >
-                                Download PPTX
+                                {isPptxExporting ? "Exporting PPTX..." : "Download PPTX"}
                               </button>
                               <button
                                 type="button"
@@ -3395,6 +3521,20 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                               </button>
                             </div>
                           </section>
+
+                          {lastPptxExportError ? (
+                            <section className="border-b border-[var(--studio-line-soft)] pb-5">
+                              <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[var(--studio-muted)]">
+                                PPTX export failed
+                              </div>
+                              <div
+                                data-testid="pptx-export-error"
+                                className="mt-3 border border-rose-400/30 bg-rose-400/10 px-3 py-3 text-[12px] leading-6 text-rose-100"
+                              >
+                                {lastPptxExportError}
+                              </div>
+                            </section>
+                          ) : null}
 
                           {lastPptxExportResult ? (
                             <section className="border-b border-[var(--studio-line-soft)] pb-5">
@@ -3697,6 +3837,45 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
                         </div>
                       ) : (
                         <div className="flex h-full min-h-0 flex-col px-4 py-4">
+                          {activeHtmlCanvasObject ? (
+                            <div className="mb-3 grid grid-cols-4 border border-[var(--studio-line-soft)] bg-[rgba(255,255,255,0.02)] p-1">
+                              {HTML_OBJECT_FACET_TABS.map((facet) => {
+                                const enabled = activeHtmlCanvasObject.availableFacets.includes(facet.id);
+                                const active = activeHtmlCanvasObject.activeFacet === facet.id;
+                                return (
+                                  <button
+                                    key={facet.id}
+                                    type="button"
+                                    disabled={!enabled}
+                                    onClick={() => {
+                                      if (!enabled) {
+                                        return;
+                                      }
+                                      setSelectionFacet(facet.id);
+                                      const drawer =
+                                        facet.id === "text"
+                                          ? "text"
+                                          : facet.id === "export"
+                                            ? "export"
+                                            : "visual";
+                                      setCanvasDrawer(drawer);
+                                      setInspectorTab(drawer === "visual" ? "visual" : drawer);
+                                    }}
+                                    className={[
+                                      "h-8 text-[11px] font-semibold transition",
+                                      active
+                                        ? "bg-[rgba(0,242,255,0.12)] text-[var(--studio-ink)]"
+                                        : enabled
+                                          ? "text-[var(--studio-muted-strong)] hover:bg-[rgba(255,255,255,0.05)] hover:text-[var(--studio-ink)]"
+                                          : "cursor-not-allowed text-[rgba(255,255,255,0.22)]",
+                                    ].join(" ")}
+                                  >
+                                    {facet.label}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          ) : null}
                           <WorkbenchStudioInspector schema={inspectorSchema} />
                         </div>
                       )}

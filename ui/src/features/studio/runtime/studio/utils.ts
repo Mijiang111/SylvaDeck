@@ -436,6 +436,7 @@ export function createProjectSnapshot(project: WorkbenchProject): WorkbenchProje
     generationMode: project.generationMode,
     moduleUsageMode: project.moduleUsageMode,
     requestedPageCount: project.requestedPageCount,
+    exportContract: project.exportContract ? deepClone(project.exportContract) : undefined,
     longFormClarification: deepClone(project.longFormClarification),
     deckOptimization: deepClone(project.deckOptimization),
     pages: deepClone(project.pages),
@@ -451,6 +452,7 @@ export function appendGenerationHistory(
 ): WorkbenchProject {
   const nextProject = deepClone(project);
   const capturedAt = new Date().toISOString();
+  const nextExportContract = commit.exportContract ?? nextProject.exportContract;
   const snapshot = {
     version: PROJECT_SNAPSHOT_VERSION,
     templateId: commit.generatedDraft.templateId,
@@ -464,6 +466,7 @@ export function appendGenerationHistory(
     generationMode: commit.generationMode,
     moduleUsageMode: commit.moduleUsageMode,
     requestedPageCount: commit.requestedPageCount,
+    exportContract: nextExportContract ? deepClone(nextExportContract) : undefined,
     longFormClarification: deepClone(nextProject.longFormClarification),
     deckOptimization: { autoOptimizedReportKey: null, autoOptimizedVersion: null },
     pages: deepClone(commit.pages),
@@ -498,6 +501,7 @@ export function appendGenerationHistory(
   nextProject.moduleUsageMode = commit.moduleUsageMode;
   nextProject.htmlOutputMode = commit.htmlOutputMode;
   nextProject.requestedPageCount = commit.requestedPageCount;
+  nextProject.exportContract = nextExportContract ? deepClone(nextExportContract) : undefined;
   nextProject.deckOptimization = {
     autoOptimizedReportKey: null,
     autoOptimizedVersion: null,

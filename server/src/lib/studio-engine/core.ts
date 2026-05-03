@@ -23,6 +23,8 @@ import type {
   DeckPlan,
   EvidenceGraph,
   EvidenceNode,
+  DeckExportContract,
+  ExportObjectContract,
   FactTable,
   FreeformLayoutPlan,
   GeneratedReportStyleProfile,
@@ -55,6 +57,7 @@ import type {
   Studio3dHeroReferenceName,
   StudioBriefSynthesis,
   StudioEvalOverrides,
+  StudioGenerateStage,
   StudioGenerateStreamEvent,
   StudioPageMission,
   StudioPreflightPlan,
@@ -143,6 +146,10 @@ import {
   summarizeMeasurementIssues,
 } from "./repair.js";
 import {
+  applyContractRepairMicroPatches,
+  buildContractRepairIssues,
+} from "./contract-repair.js";
+import {
   buildStudioAiWorkspace,
   createStudioCapabilityCard,
   createThinkingModeCapabilityCard,
@@ -184,15 +191,14 @@ import {
   shouldUseScientificDiagramLane,
 } from "./scientific-diagram.js";
 import {
-  buildFallbackStudioPreflightPlan,
+  buildDeterministicStudioPreflightPlan,
   buildPreflightCapabilityCards,
   buildPreflightEvidenceInput,
-  buildStudioPreflightPrompt,
   buildVisualThinkingLines,
   createRawBriefThinkingInputs,
   findStudioPageMission,
   mergeStudioPreflightIntoBriefSynthesis,
-  parseStudioPreflightPlan,
+  resolveStudioTaskRoute,
 } from "./preflight.js";
 
 const evidenceGraphCache = new Map<string, EvidenceGraph>();
@@ -201,6 +207,7 @@ const publishedModuleManifestCache = new Map<string, PublishedModuleManifest[]>(
 async function runStudioPreflightStage(args: {
   brief: string;
   requestedPageCount?: number | null;
+  exportContract?: DeckExportContract | null;
   agentConfig: StudioAgentConfig;
   runId: string;
   signal?: AbortSignal;
@@ -212,46 +219,25 @@ async function runStudioPreflightStage(args: {
     type: "stage_started",
     runId: args.runId,
     stage: "preflight",
-    label: "Understanding the raw brief",
+    label: "Routing the task contract",
   });
-  const prompt = buildStudioPreflightPrompt({
+  const requestedPageCount =
+    args.requestedPageCount ?? args.exportContract?.pages.length ?? null;
+  const route = resolveStudioTaskRoute({
     brief: args.brief,
-    requestedPageCount: args.requestedPageCount,
+    requestedPageCount,
   });
-  const preflightResult = await executeStudioStage({
-    runId: args.runId,
-    stage: "preflight",
-    prompt,
-    payload: {
-      brief: args.brief,
-      pageCount: args.requestedPageCount ?? null,
-    },
-    agentConfig: args.agentConfig,
-    assistantTextParser: extractTextBeforeJson,
-    onAssistantChunk: async (content) => {
-      if (!content.trim()) {
-        return;
-      }
-      await emit({
-        type: "assistant_chunk",
-        runId: args.runId,
-        stage: "preflight",
-        content,
-      });
-    },
-    onStageTrace: args.onStageTrace,
-    signal: args.signal,
-  });
-  const preflight = parseStudioPreflightPlan({
-    text: preflightResult.summary,
+  const preflight = buildDeterministicStudioPreflightPlan({
     brief: args.brief,
-    requestedPageCount: args.requestedPageCount,
+    requestedPageCount,
+    route,
+    exportContract: args.exportContract,
   });
   await emit({
     type: "assistant_chunk",
     runId: args.runId,
     stage: "preflight",
-    content: `Preflight understood the request as ${preflight.deliverable} about ${preflight.subject}${preflight.audienceOrQualityBar ? ` for ${preflight.audienceOrQualityBar}` : ""}, with ${preflight.evidencePolicy.tier} evidence handling.`,
+    content: `Preflight routed ${preflight.deliverable} about ${preflight.subject} through ${route.primaryKind} (${route.confidence}, ${route.workspaceMode}).`,
   });
   return preflight;
 }
@@ -543,20 +529,18 @@ function buildPageArgumentContract(args: {
 }) {
   const supportBullets = args.supportBullets?.map((item) => clampText(item, 96)).slice(0, 2) ?? [];
   const evidenceCallouts = args.evidenceCallouts?.map((item) => clampText(item, 96)).slice(0, 2) ?? [];
-  const takeaway = args.takeaway ? clampText(args.takeaway, 96) : null;
 
   return [
-    "## Page argument contract",
-    "- This page must answer exactly one page question and land one headline claim.",
-    `- ${args.questionLabel ?? "Page question"}: ${clampText(args.pageQuestion, 140)}`,
-    `- Headline claim: ${clampText(args.headlineClaim, 140)}`,
-    `- Support bullets: ${supportBullets.length > 0 ? supportBullets.join(" | ") : "At most 2 short bullets if support is needed."}`,
-    `- Evidence callouts: ${evidenceCallouts.length > 0 ? evidenceCallouts.join(" | ") : "At most 2 short callouts if evidence needs labels."}`,
-    `- Takeaway: ${takeaway ?? "At most 1 short takeaway sentence."}`,
-    "- Do not write a second thesis paragraph or create two equal-weight argument zones.",
+    "One-page argument: one headline claim, one dominant visual, and subordinate proof.",
+    `${args.questionLabel ?? "Page question"}: ${clampText(args.pageQuestion, 140)}`,
+    `Headline claim: ${clampText(args.headlineClaim, 140)}`,
+    `Support/evidence: ${[
+      supportBullets.length > 0 ? supportBullets.join(" | ") : "at most 2 short support bullets",
+      evidenceCallouts.length > 0 ? evidenceCallouts.join(" | ") : "at most 2 short evidence callouts",
+    ].join("; ")}.`,
     ...(args.allowEvidenceException
-      ? ["- Because this is a comparison or chart page, multiple proof items are allowed only if they resolve to one verdict."]
-      : ["- Do not turn the page into a same-weight card wall, memo stack, or dashboard grid."]),
+      ? ["Comparison/chart proof can use multiple items when they resolve to one verdict."]
+      : []),
   ];
 }
 
@@ -606,7 +590,7 @@ export function buildPagePrompt(args: {
     });
   const preflight =
     args.preflight ??
-    buildFallbackStudioPreflightPlan({
+    buildDeterministicStudioPreflightPlan({
       brief: args.brief,
       requestedPageCount: args.allPages.length,
     });
@@ -685,12 +669,22 @@ export function buildPagePrompt(args: {
     fallbackTitle: args.page.pageTitle,
     fallbackMission: args.pageArgument?.pageQuestion ?? args.page.goal,
   });
+  const pageExportObjectContracts = findPageExportObjectContracts(
+    preflight,
+    args.page.pageNumber,
+  );
+  const pageExportContract = findPageExportContract(preflight, args.page.pageNumber);
   const visualOperatorLines = buildPageVisualOperatorLines({
     templateOptions,
     chartPageIntent: args.chartPageIntent,
     heroModelIntent: args.heroModelIntent,
     structureCue: pageMission.structureCue,
     freeformLayoutPlan,
+  });
+  const contentLayoutRules = buildInstitutionalContentLayoutRules({
+    sourceBacked: preflight.evidencePolicy.tier === "source-backed",
+    chartFirst: Boolean(args.chartPageIntent?.enabled || pageMission.structureCue === "chart"),
+    structureCue: pageMission.structureCue,
   });
   const capabilityCards = buildPreflightCapabilityCards({
     preflight,
@@ -769,6 +763,7 @@ export function buildPagePrompt(args: {
       `Mission: ${pageMission.mission}`,
       `Headline claim: ${pageMission.headlineClaim}`,
     ],
+    pageArgumentLines: pageArgumentBlock,
     templateManifests: templateOptions,
     capabilityCards,
     visualOperatorLines,
@@ -781,40 +776,33 @@ export function buildPagePrompt(args: {
       heroModelIntent: args.heroModelIntent,
       wowPage: isWowPage,
     }),
-    specializedArtifact: args.briefSynthesis?.specializedArtifact ?? complexityProfile.specializedArtifact,
-    outputRules: [
-      'Output raw HTML only, starting with "<!DOCTYPE html>".',
-      "Output a full HTML document with exactly one <section class=\"page\"> block.",
-      "Use inline style attributes only. Do not use <style>, <script>, <link>, external assets, or markdown fences.",
-      "The single page must be exactly 1600px by 900px.",
-      `The section must include data-page-number="${args.page.pageNumber}" and data-page-title="${escapeHtml(args.page.pageTitle)}".`,
-      "The data-page-title must be audience-facing, specific, and grounded in the user brief or page claim; never use internal placeholders like Core thesis, Opening thesis, or Page 1.",
-      "No internal scrolling, no cut-off content, and no placeholder language.",
-      "Use Visual thinking privately before writing HTML. Do not output the reasoning or scaffold.",
+    creativeDirectionLines: [
+      ...contentLayoutRules,
       ...(isWowPage
         ? buildWowOutputRuleLines({
             heroModelIntent: args.heroModelIntent,
           })
-        : []),
-      ...buildAnimatedPreviewOutputRuleLines(args.htmlOutputMode ?? "static"),
-      "If no template is active, do not default to a generic left/right split.",
-      "If content is sparse, preserve negative space and scale the main claim rather than inventing filler cards.",
-      ...(isWowPage ? [] : ["Keep the page light, restrained, and professional."]),
-      "Design a fresh, coherent light-theme visual system for this deck and keep it consistent with the supplied tone direction.",
-      "Let the raw brief and current page mission choose the composition instead of defaulting to a safe template.",
-      ...(preflight.evidencePolicy.tier === "source-backed"
-        ? ["Only present hard evidence that is directly supported by the raw brief."]
-        : [
-            "If the page needs evidence framing, use qualitative structure, common knowledge, or clearly labeled assumptions.",
-            "Do not fabricate citations, precise market sizes, valuation multiples, revenue numbers, or recent factual claims.",
-            "If quantitative evidence is missing, prefer conceptual or annotated visuals over fake charts.",
-          ]),
+        : ["Keep the composition restrained, confident, and professional."]),
+      "Shape language: square-corner rectangles, straight editorial rules, and direct text labels; circles belong to true plotted points or small markers.",
+      "Use a coherent light-theme visual system; let the page mission choose composition and preserve negative space when content is sparse.",
     ],
+    semanticObjectLines: buildPageExportObjectMetadataRuleLines({
+      contracts: pageExportObjectContracts,
+      pageContract: pageExportContract,
+    }),
+    specializedArtifact: args.briefSynthesis?.specializedArtifact ?? complexityProfile.specializedArtifact,
+    outputRules: buildSharedPageOutputRuleLines({
+      pageNumber: args.page.pageNumber,
+      pageTitle: args.page.pageTitle,
+      contracts: pageExportObjectContracts,
+      evidenceTier: preflight.evidencePolicy.tier,
+      htmlOutputMode: args.htmlOutputMode,
+    }),
   });
   const renderedWorkspace = renderStudioAiWorkspace(workspace);
   const prompt = [
     "You are Codex generating one professional HTML report page.",
-    "Use the AI workspace below in priority order; do not let capability cards override the raw brief or the current page mission.",
+    "Use the AI workspace below in priority order; the raw brief and page intent outrank capability cards.",
     "",
     renderedWorkspace.text,
   ].join("\n");
@@ -1120,6 +1108,18 @@ export function isLongFormGenerationRequest(
   return payload.generationMode === "long-form" || (payload.pageCount ?? 0) >= 10;
 }
 
+function normalizeGenerateRequestPayloadPageCount(
+  payload: GenerateStudioReportRequest,
+): GenerateStudioReportRequest {
+  if (payload.pageCount !== undefined || !payload.exportContract?.pages.length) {
+    return payload;
+  }
+  return {
+    ...payload,
+    pageCount: payload.exportContract.pages.length,
+  };
+}
+
 function resolveLongFormPageClass(pageNumber: number, pageCount: number): LongFormPageClass {
   if (pageNumber <= Math.min(3, pageCount)) {
     return "opening-core";
@@ -1219,9 +1219,9 @@ function describeCompositionFreedom(pageClass: LongFormPageClass) {
 }
 
 function isChartDrivenPageIntent(text: string) {
-  return /\b(trend|trajectory|shift|compare|comparison|gap|mix|distribution|breakdown|pattern|delta|movement|evidence|performance|change|allocation|adoption|decline|increase|decrease|matrix|quadrant|portfolio|2x2|bcg)\b/i.test(
+  return /\b(trend|trajectory|mix|distribution|breakdown|delta|performance|allocation|decline|increase|decrease)\b/i.test(
     text,
-  ) || /(?:矩阵|矩陣|四象限|波士顿矩阵|波士頓矩陣|二维矩阵|二維矩陣)/i.test(text);
+  );
 }
 
 function hasMatrixLikeSignal(text: string) {
@@ -1293,9 +1293,7 @@ function extractExplicitChartRequestPages(brief: string) {
     }
 
     const mentionsChart =
-      /\b(chart|graph|figure|visual)\b/i.test(entry) ||
-      hasMatrixLikeSignal(entry) ||
-      /\b(hero|dominant object|main evidence page|primary proof)\b/i.test(entry);
+      /\b(chart|graph|bar chart|line chart|waterfall chart|combo chart|bubble chart|stacked chart)\b/i.test(entry);
 
     if (!mentionsChart) {
       return;
@@ -1390,12 +1388,7 @@ function isChartPageEligible(
     page.chartPriority !== "none" ||
     Boolean(page.chartSpec) ||
     page.layout === "chart-insight" ||
-    /\b(chart|graph|figure|visual|primary proof)\b/i.test(
-      [page.pageIntent, page.objective, page.insight, page.pageTitle, page.compositionHint]
-        .filter(Boolean)
-        .join(" "),
-    ) ||
-    hasMatrixLikeSignal(
+    /\b(chart|graph|bar chart|line chart|waterfall chart|combo chart|bubble chart|stacked chart)\b/i.test(
       [page.pageIntent, page.objective, page.insight, page.pageTitle, page.compositionHint]
         .filter(Boolean)
         .join(" "),
@@ -3661,15 +3654,245 @@ function buildChartPageContractLines(intent: ChartPageIntent) {
 
   return [
     "This page is a chart-first page.",
-    "Build the page around one dominant chart or composite figure, not multiple equal-weight regions.",
+    "Build the page around one dominant chart or composite figure with supporting regions kept visibly lighter.",
     "Let the chart occupy the main visual field; center-stage, full-width, or asymmetrical placements are all acceptable.",
-    "Treat the chart height as unpredictable; do not depend on free space underneath it for long copy.",
+    "Treat the chart height as unpredictable; keep long copy out of the space underneath it.",
     "Keep interpretation in a compact annotation cluster, inset, or slim explanation zone.",
     ...intent.explanationBudget,
-    "Do not place long narrative paragraphs below the chart.",
-    "Do not add a heavy footer, a second comparison block, or multiple narrative cards.",
+    "Place any narrative below the chart as a short label or source note only.",
+    "Use a light footer and at most one compact comparison or interpretation support zone.",
     "If the page needs sophistication, express it inside the primary chart rather than adding more regions.",
     ...(intent.question ? [`Primary chart question: ${intent.question}.`] : []),
+  ];
+}
+
+function buildInstitutionalContentLayoutRules(args: {
+  sourceBacked: boolean;
+  chartFirst: boolean;
+  structureCue?: StudioPageMission["structureCue"];
+}) {
+  const exhibitLabel =
+    args.structureCue === "matrix" || args.structureCue === "quadrant"
+      ? "matrix or quadrant"
+      : args.chartFirst
+        ? "chart or composite figure"
+        : "evidence exhibit";
+  return [
+    `Use an institutional evidence-page composition: action title, one large primary ${exhibitLabel} field, one compact interpretation rail or inset, and a small source footer only when useful.`,
+    "Make the primary exhibit carry the proof while secondary panels stay visually subordinate and explain how to read it.",
+    "Use anchored margins, thin dividers, restrained panels, and a strong title hierarchy.",
+    "Use supplied numbers and labels; when numbers are missing, use qualitative figures instead of fake chart data.",
+    "Write audience-facing labels rather than meta-copy such as page thesis, page mission, supplied brief, or source basis.",
+    ...(args.sourceBacked
+      ? [
+          "Source-backed pages may use a small Source footer naming the supplied source; keep generation or mission wording out of the footer.",
+        ]
+      : []),
+  ];
+}
+
+type ExportObjectRole = NonNullable<ExportObjectContract["objectRole"]>;
+
+function exportObjectRoleRank(role: ExportObjectRole | undefined) {
+  return role === "primary" ? 0 : role === "secondary" ? 1 : role === "annotation" ? 2 : 3;
+}
+
+function objectRoleForContract(
+  page: StudioPreflightPlan["exportContract"]["pages"][number],
+  object: ExportObjectContract,
+): ExportObjectRole {
+  if (object.objectRole === "primary" || page.primaryObjectId === object.objectId) {
+    return "primary";
+  }
+  return object.objectRole ?? "secondary";
+}
+
+function findPageExportObjectContracts(
+  preflight: StudioPreflightPlan,
+  pageNumber: number,
+): ExportObjectContract[] {
+  const page = preflight.exportContract.pages.find((entry) => entry.pageNumber === pageNumber);
+  if (!page) {
+    return [];
+  }
+  return page.objects
+    .filter((object) => object.pageNumber === pageNumber)
+    .map((object) => ({
+      ...object,
+      objectRole: objectRoleForContract(page, object),
+    }))
+    .sort((left, right) => {
+      const roleDelta = exportObjectRoleRank(left.objectRole) - exportObjectRoleRank(right.objectRole);
+      return roleDelta || left.objectId.localeCompare(right.objectId);
+    });
+}
+
+function findPageExportContract(preflight: StudioPreflightPlan, pageNumber: number) {
+  return preflight.exportContract.pages.find((entry) => entry.pageNumber === pageNumber) ?? null;
+}
+
+function findPagePrimaryExportObjectContract(preflight: StudioPreflightPlan, pageNumber: number) {
+  return findPageExportObjectContracts(preflight, pageNumber).find(
+    (object) => object.objectRole === "primary",
+  ) ?? null;
+}
+
+function ownershipScopeAttribute(contract: ExportObjectContract) {
+  return [
+    contract.ownershipScope.ownsText ? "text" : "",
+    contract.ownershipScope.ownsShapes ? "shape" : "",
+    contract.ownershipScope.ownsSvg ? "svg" : "",
+  ].filter(Boolean).join(",");
+}
+
+function hasExecutableChartDataContract(contract: ExportObjectContract) {
+  return Boolean(contract.dataContract && contract.dataContract.type.startsWith("chart-"));
+}
+
+function matrixDataContractBrief(contract: ExportObjectContract) {
+  if (contract.dataContract?.type !== "matrix") {
+    return [
+      "  Matrix brief: build one editable 2x2 field with clear axes, quadrant labels, placed items, and a compact conclusion rail.",
+    ];
+  }
+
+  const data = contract.dataContract;
+  const variant = data.variant ?? "point-map";
+  const quadrantLabels = (data.quadrants ?? [])
+    .map((quadrant) => quadrant.label)
+    .filter(Boolean)
+    .slice(0, 4);
+  const itemLabels = data.items
+    .map((item) => item.label)
+    .filter(Boolean)
+    .slice(0, 6);
+  const variantVocabulary = variant === "asset-card-map"
+    ? "  Variant vocabulary: asset-card-map means evidence cards or asset blocks sit inside the quadrants as the visual contents."
+    : "  Variant vocabulary: point-map means an open coordinate field with dots or bubbles and direct text labels beside the points; richer detail belongs in the rail or source note.";
+  return [
+    `  Matrix brief: build one editable ${variant} 2x2 field with x-axis "${data.axes.x.label}" and y-axis "${data.axes.y.label}".`,
+    variantVocabulary,
+    quadrantLabels.length > 0
+      ? `  Quadrants: ${quadrantLabels.join("; ")}.`
+      : "  Quadrants: label each quadrant from the supplied axis logic.",
+    itemLabels.length > 0
+      ? `  Items: place ${itemLabels.join("; ")} with qualitative positions in the chosen variant; keep the right-side conclusion rail subordinate.`
+      : `  Items: place supplied evidence in the chosen ${variant} form; keep the right-side conclusion rail subordinate.`,
+  ];
+}
+
+function dataContractRequirementLines(contract: ExportObjectContract) {
+  if (contract.objectKind === "chart-visual" && hasExecutableChartDataContract(contract)) {
+    return [
+      "  Chart module: render the chart inside this root with data-html-module-kind=\"chart\" and data-html-chart-spec derived from the supplied chart data.",
+    ];
+  }
+  if (contract.objectKind === "chart-visual") {
+    return [
+      "  Chart fallback: if structured chart data is not available, render an editable diagram/figure instead of a raw SVG chart snapshot.",
+    ];
+  }
+  if (contract.objectKind === "native-chart") {
+    return [
+      "  Data: use one executable chart type only: bar, stacked, line, combo, waterfall, or bubble.",
+    ];
+  }
+  if (contract.objectKind === "native-table") {
+    return [
+      "  Data: render table rows and columns faithfully from the supplied table contract.",
+    ];
+  }
+  if (contract.objectKind === "matrix") {
+    return matrixDataContractBrief(contract);
+  }
+  return [];
+}
+
+function editableFacetSummary(contract: ExportObjectContract) {
+  return [
+    contract.ownershipScope.ownsText ? "text" : "",
+    contract.ownershipScope.ownsShapes || contract.ownershipScope.ownsSvg ? "shape" : "",
+    contract.dataContract ? "data" : "",
+    "export",
+  ].filter(Boolean).join(",");
+}
+
+function allowedChildrenSummary(contract: ExportObjectContract) {
+  if (contract.objectKind === "native-table") {
+    return "table rows/cells and compact text labels";
+  }
+  if (contract.objectKind === "native-chart" || contract.objectKind === "chart-visual") {
+    return "chart marks, axes, labels, legend, and annotations";
+  }
+  if (contract.objectKind === "matrix") {
+    return "matrix frame, quadrants, plotted items, axes, and labels";
+  }
+  return "owned text and simple supporting shapes";
+}
+
+function buildPageExportObjectMetadataRuleLines(args: {
+  contracts: ExportObjectContract[];
+  pageContract?: StudioPreflightPlan["exportContract"]["pages"][number] | null;
+}) {
+  const { contracts } = args;
+  if (contracts.length === 0) {
+    return [];
+  }
+  const objectLines = contracts.flatMap((contract) => {
+    const role = contract.objectRole ?? "secondary";
+    const slot = role === "primary" ? "primary-visual" : role === "source" ? "source-note" : role === "annotation" ? "annotation" : "evidence-note/callout";
+    return [
+      `${role}: place data-studio-object-id="${contract.objectId}" on the ${slot} ${contract.objectKind} root; keep ${allowedChildrenSummary(contract)} editable where possible.`,
+      ...dataContractRequirementLines(contract),
+    ];
+  });
+  const singleObjectAnchorLine = contracts.length === 1
+    ? "Single object: one invisible root around the primary visual is enough."
+    : "Multiple objects: use separate roots only for genuinely separate exhibits such as primary figure, annotation, source note, or evidence note.";
+  return [
+    "Semantic object boundaries:",
+    "data-studio-object-id marks an invisible selection/export boundary, not a visible frame, card, panel, or module shell.",
+    ...objectLines,
+    singleObjectAnchorLine,
+    "Keep required labels as real editable text; favor thin rules, direct labels, simple square-corner shapes, open fields, and restrained annotation.",
+  ];
+}
+
+function buildPagePrimaryBoundaryRule(contracts: ExportObjectContract[]) {
+  const primary = contracts.find((contract) => contract.objectRole === "primary") ?? contracts[0] ?? null;
+  if (!primary) {
+    return "Wrap the primary visual in one invisible root anchor with data-studio-object-id for Studio selection/export.";
+  }
+  const secondaryIds = contracts
+    .filter((contract) => contract.objectId !== primary.objectId)
+    .map((contract) => contract.objectId);
+  return secondaryIds.length > 0
+    ? `Place data-studio-object-id="${primary.objectId}" on the primary visual's single invisible root anchor; use extra anchors only for these separate objects: ${secondaryIds.join(", ")}.`
+    : `Place data-studio-object-id="${primary.objectId}" on the primary visual's single invisible root anchor for Studio selection/export.`;
+}
+
+function buildSharedPageOutputRuleLines(args: {
+  pageNumber: number;
+  pageTitle: string;
+  contracts: ExportObjectContract[];
+  evidenceTier: StudioPreflightPlan["evidencePolicy"]["tier"];
+  htmlOutputMode?: HtmlOutputMode;
+}) {
+  const staticRules = [
+    'Output raw, complete HTML starting with "<!DOCTYPE html>".',
+    'Use exactly one <section class="page"> block.',
+    `Set the page to exactly 1600px by 900px with data-page-number="${args.pageNumber}" and data-page-title="${escapeHtml(args.pageTitle)}".`,
+    "Use inline style attributes only; no <style>, <script>, <link>, external assets/scripts, or markdown fences.",
+    "Keep content inside the canvas: no scrolling, cut-off text, hidden overflow, or placeholders.",
+    args.evidenceTier === "source-backed"
+      ? "Hard metrics, dates, citations, and chart data must be traceable to the raw brief or page evidence."
+      : "Hard metrics, dates, citations, and chart data need supplied evidence; otherwise use qualitative labels or clearly marked assumptions.",
+    buildPagePrimaryBoundaryRule(args.contracts),
+  ];
+
+  return [
+    ...staticRules,
+    ...buildAnimatedPreviewOutputRuleLines(args.htmlOutputMode ?? "static"),
   ];
 }
 
@@ -3683,14 +3906,16 @@ function buildPageVisualOperatorLines(args: {
   if (args.heroModelIntent?.enabled) {
     return [
       `Visual operator: explicit 3D hero page using ${summarizeHeroCompositionFamily(args.heroModelIntent.recommendedCompositionFamily)} around one ${summarizeHeroFamilyLabel(args.heroModelIntent.objectFamily)}.`,
-      "Treat the page as one fabricated object with compact annotations, never a flat explainer, UI panel collage, or card wall.",
+      "Treat the page as one fabricated object with compact annotations and a clear spatial center of gravity.",
     ];
   }
 
   if (args.structureCue === "matrix" || args.structureCue === "quadrant") {
     return [
       "Visual operator: matrix-first page with one dominant 2x2 frame and only a compact supporting takeaway.",
-      "Keep the matrix visible as the primary proof surface instead of collapsing back into an opener or generic summary card.",
+      "Render the matrix as an open editorial field: thin axes/dividers, direct quadrant labels, and plotted items with text labels placed in the field.",
+      "Point-map vocabulary is dots or bubbles plus direct labels; asset-card-map vocabulary is evidence blocks placed inside quadrants.",
+      "Keep the matrix visible as the primary proof surface instead of collapsing back into an opener, dashboard, or generic summary card.",
     ];
   }
 
@@ -3705,14 +3930,14 @@ function buildPageVisualOperatorLines(args: {
     const primary = args.templateOptions[0]!;
     return [
       `Visual operator: shape-first template ${primary.label || primary.moduleId}.`,
-      "Preserve the primary geometry, hide optional slots when content is weak, and never invent filler to satisfy the template.",
+      "Preserve the primary geometry, hide optional slots when content is weak, and use only evidence-backed content.",
     ];
   }
 
   if (args.freeformLayoutPlan) {
     return [
       `Visual operator: freeform family ${args.freeformLayoutPlan.layoutFamily}.`,
-      `Use ${args.freeformLayoutPlan.visualAnchor} as the visual anchor and avoid a default left/right rail.`,
+      `Use ${args.freeformLayoutPlan.visualAnchor} as the visual anchor with a composition that earns its page shape.`,
     ];
   }
 
@@ -3852,8 +4077,8 @@ function buildCompactHeroCapabilityLines(intent: HeroModelIntent, artDirection?:
     "Let the object dominate the page; keep headline and annotations compact and peripheral.",
     "Preserve at least three clear depth cues so the object feels built, layered, and intentional.",
     artDirection
-      ? `Never resolve it as flat cards, glass panels, dashboard tiles, or a generic explainer. Material direction: ${artDirection.materialDirection}`
-      : "Never resolve it as flat cards, glass panels, dashboard tiles, or a generic explainer.",
+      ? `Resolve it as a dimensional artifact with material direction: ${artDirection.materialDirection}`
+      : "Resolve it as a dimensional artifact rather than flat cards, glass panels, dashboard tiles, or a generic explainer.",
   ];
 }
 
@@ -4015,7 +4240,7 @@ export function buildSkillBackedPagePrompt(args: {
     });
   const preflight =
     args.preflight ??
-    buildFallbackStudioPreflightPlan({
+    buildDeterministicStudioPreflightPlan({
       brief: args.brief,
       requestedPageCount: args.allPages.length,
     });
@@ -4103,6 +4328,11 @@ export function buildSkillBackedPagePrompt(args: {
     fallbackTitle: args.page.pageTitle,
     fallbackMission: args.page.objective,
   });
+  const pageExportObjectContracts = findPageExportObjectContracts(
+    preflight,
+    args.page.pageNumber,
+  );
+  const pageExportContract = findPageExportContract(preflight, args.page.pageNumber);
   const capabilityCards = buildPreflightCapabilityCards({
     preflight,
     forceKinds: args.heroModelIntent.enabled ? ["3d"] : undefined,
@@ -4179,6 +4409,11 @@ export function buildSkillBackedPagePrompt(args: {
     structureCue: pageMission.structureCue,
     freeformLayoutPlan,
   });
+  const contentLayoutRules = buildInstitutionalContentLayoutRules({
+    sourceBacked: preflight.evidencePolicy.tier === "source-backed",
+    chartFirst: Boolean(args.chartPageIntent?.enabled || args.page.chartSpec || pageMission.structureCue === "chart"),
+    structureCue: pageMission.structureCue,
+  });
   const workspace = buildStudioAiWorkspace({
     stage: "page",
     thinkingContext: args.thinkingContext,
@@ -4194,6 +4429,7 @@ export function buildSkillBackedPagePrompt(args: {
       `Mission: ${pageMission.mission}`,
       `Headline claim: ${pageMission.headlineClaim}`,
     ],
+    pageArgumentLines: pageArgumentBlock,
     templateManifests: templateOptions,
     capabilityCards,
     visualOperatorLines,
@@ -4206,40 +4442,35 @@ export function buildSkillBackedPagePrompt(args: {
       heroModelIntent: args.heroModelIntent,
       wowPage: isWowPage,
     }),
-    specializedArtifact: args.briefSynthesis?.specializedArtifact ?? complexityProfile.specializedArtifact,
-    outputRules: [
-      'Output raw HTML only, starting with "<!DOCTYPE html>".',
-      "Output a full HTML document with exactly one <section class=\"page\"> block.",
-      "Use inline style attributes only. Do not use <style>, <script>, <link>, external assets, or markdown fences.",
-      "The single page must be exactly 1600px by 900px.",
-      `The section must include data-page-number="${args.page.pageNumber}" and data-page-title="${escapeHtml(args.page.pageTitle)}".`,
-      "The data-page-title must be audience-facing, specific, and grounded in the user brief or page claim; never use internal placeholders like Core thesis, Opening thesis, or Page 1.",
-      "No internal scrolling, no cut-off content, and no placeholder language.",
-      "Use Visual thinking privately before writing HTML. Do not output the reasoning or scaffold.",
+    creativeDirectionLines: [
+      ...contentLayoutRules,
+      ...densityBudgetBlock,
+      ...compositionHintBlock,
       ...(isWowPage
         ? buildWowOutputRuleLines({
             heroModelIntent: args.heroModelIntent,
           })
-        : []),
-      ...buildAnimatedPreviewOutputRuleLines(args.htmlOutputMode ?? "static"),
-      "If no template is active, do not default to a generic left/right split.",
-      "If content is sparse, preserve negative space and scale the main claim rather than inventing filler cards.",
-      ...(isWowPage ? [] : ["Keep the page light, restrained, and professional."]),
-      "Design a fresh, coherent light-theme visual system for this deck and keep it consistent across pages.",
-      `Page class: ${args.page.pageClass}.`,
-      ...(preflight.evidencePolicy.tier === "source-backed"
-        ? ["Every hard metric, label, or chart claim must be traceable to the raw brief."]
-        : [
-            "If quantitative evidence is missing, use conceptual, qualitative, or assumption-labeled visuals instead of fake data charts.",
-            "Do not fabricate citations, dated facts, precise market sizes, or valuation multiples.",
-          ]),
-      "Let the raw brief and current page mission choose the composition. Do not fall back to the same safe layout every time.",
+        : ["Keep the composition restrained, confident, and professional."]),
+      "Shape language: square-corner rectangles, straight editorial rules, and direct text labels; circles belong to true plotted points or small markers.",
+      "Use a coherent light-theme visual system; let the page mission choose composition and preserve negative space when content is sparse.",
     ],
+    semanticObjectLines: buildPageExportObjectMetadataRuleLines({
+      contracts: pageExportObjectContracts,
+      pageContract: pageExportContract,
+    }),
+    specializedArtifact: args.briefSynthesis?.specializedArtifact ?? complexityProfile.specializedArtifact,
+    outputRules: buildSharedPageOutputRuleLines({
+      pageNumber: args.page.pageNumber,
+      pageTitle: args.page.pageTitle,
+      contracts: pageExportObjectContracts,
+      evidenceTier: preflight.evidencePolicy.tier,
+      htmlOutputMode: args.htmlOutputMode,
+    }),
   });
   const renderedWorkspace = renderStudioAiWorkspace(workspace);
   const prompt = [
     "You are Codex generating one HTML report page.",
-    "Use the AI workspace below in priority order; do not let capability cards override the raw brief or the current page mission.",
+    "Use the AI workspace below in priority order; the raw brief and page intent outrank capability cards.",
     "",
     renderedWorkspace.text,
   ].join("\n");
@@ -5020,7 +5251,7 @@ function buildLayoutRepairPrompt(args: {
 
   const preflight =
     args.preflight ??
-    buildFallbackStudioPreflightPlan({
+    buildDeterministicStudioPreflightPlan({
       brief: args.brief,
       requestedPageCount: args.deckPageMap.length,
     });
@@ -5206,6 +5437,113 @@ function buildLayoutRepairPrompt(args: {
   return prompt;
 }
 
+type StudioContractValidatedPage = ReturnType<typeof validateGeneratedPageHtml>;
+
+async function applyContractAwareRepairIfNeeded(args: {
+  runId: string;
+  payload: GenerateStudioReportRequest | ReviseStudioReportRequest;
+  agentConfig: StudioAgentConfig;
+  onStageTrace?: (entry: StudioStageTraceEntry) => Promise<void> | void;
+  signal?: AbortSignal;
+  emit: (event: StudioGenerateStreamEvent) => Promise<void>;
+  stagePrefix: "page" | "page-render" | "repair-page";
+  deckTitle: string;
+  pageNumber: number;
+  pageTitle: string;
+  validatedPage: StudioContractValidatedPage;
+  model: string | null;
+  expectedContracts: readonly ExportObjectContract[];
+  expectedPageExportContract?: StudioPreflightPlan["exportContract"]["pages"][number] | null;
+  htmlOutputMode?: HtmlOutputMode;
+  previousAnimationPage?: HtmlAnimationPage | null;
+  styleProfile?: GeneratedReportStyleProfile;
+  traceMeta?: Record<string, unknown>;
+}): Promise<{ validatedPage: StudioContractValidatedPage; model: string | null }> {
+  if (args.expectedContracts.length === 0) {
+    return {
+      validatedPage: args.validatedPage,
+      model: args.model,
+    };
+  }
+
+  const validateSection = (sectionHtml: string) =>
+    validateGeneratedPageHtml({
+      html: composeSinglePageHtml({
+        title: args.deckTitle,
+        sectionHtml,
+        styleProfile: args.styleProfile,
+        htmlOutputMode: args.htmlOutputMode,
+      }),
+      expectedPageNumber: args.pageNumber,
+      expectedPageTitle: args.pageTitle,
+      htmlOutputMode: args.htmlOutputMode,
+      previousAnimationPage: args.previousAnimationPage,
+      expectedExportObjectContract:
+        args.expectedContracts.find((object) => object.objectRole === "primary") ?? null,
+      expectedExportObjectContracts: args.expectedContracts,
+      expectedPageExportContract: args.expectedPageExportContract,
+    });
+
+  const collectIssues = (page: StudioContractValidatedPage) =>
+    buildContractRepairIssues({
+      pageNumber: args.pageNumber,
+      sectionHtml: page.sectionHtml,
+      diagnostics: page.exportContractDiagnostics,
+      expectedContracts: args.expectedContracts,
+    });
+
+  const applyMicroPatchPass = async (
+    page: StudioContractValidatedPage,
+    pageIssues: ReturnType<typeof collectIssues>,
+  ) => {
+    const microPatch = applyContractRepairMicroPatches({
+      sectionHtml: page.sectionHtml,
+      issues: pageIssues,
+      expectedContracts: args.expectedContracts,
+      expectedPageExportContract: args.expectedPageExportContract,
+    });
+    if (!microPatch.changed) {
+      return {
+        validatedPage: page,
+        issues: pageIssues,
+        patchedObjectIds: [] as string[],
+      };
+    }
+    const nextPage = validateSection(microPatch.sectionHtml);
+    return {
+      validatedPage: nextPage,
+      issues: collectIssues(nextPage),
+      patchedObjectIds: microPatch.patchedObjectIds,
+    };
+  };
+
+  let validatedPage = args.validatedPage;
+  const issues = collectIssues(validatedPage);
+  if (issues.length === 0) {
+    return {
+      validatedPage,
+      model: args.model,
+    };
+  }
+
+  const pageStage = `${args.stagePrefix}-${args.pageNumber}` as StudioGenerateStage;
+  const initialMicroPatch = await applyMicroPatchPass(validatedPage, issues);
+  if (initialMicroPatch.patchedObjectIds.length > 0) {
+    await args.emit({
+      type: "assistant_chunk",
+      runId: args.runId,
+      stage: pageStage,
+      content: `Contract micro-patch repaired export metadata for ${initialMicroPatch.patchedObjectIds.join(", ")}.`,
+    });
+    validatedPage = initialMicroPatch.validatedPage;
+  }
+
+  return {
+    validatedPage,
+    model: args.model,
+  };
+}
+
 export async function runStudioGenerationV2(args: {
   payload: GenerateStudioReportRequest;
   agentConfig: StudioAgentConfig;
@@ -5215,6 +5553,14 @@ export async function runStudioGenerationV2(args: {
   evalOverrides?: StudioEvalOverrides | null;
   onStageTrace?: (entry: StudioStageTraceEntry) => Promise<void> | void;
 }) {
+  const normalizedPayload = normalizeGenerateRequestPayloadPageCount(args.payload);
+  if (normalizedPayload !== args.payload) {
+    return runStudioGenerationV2({
+      ...args,
+      payload: normalizedPayload,
+    });
+  }
+
   const emit = args.emit ?? (async () => {});
   const analysisSkill = loadStudioAnalysisSkill();
   const heroSkill = loadStudio3dHeroSkill();
@@ -5231,6 +5577,7 @@ export async function runStudioGenerationV2(args: {
   const preflight = await runStudioPreflightStage({
     brief: args.payload.brief,
     requestedPageCount: args.payload.pageCount ?? null,
+    exportContract: args.payload.exportContract ?? null,
     agentConfig: args.agentConfig,
     runId: args.runId,
     signal: args.signal,
@@ -5283,7 +5630,7 @@ export async function runStudioGenerationV2(args: {
     type: "assistant_chunk",
     runId: args.runId,
     stage: "evidence",
-    content: `Preflight resolved ${preflight.subject} and the render path is keeping the raw brief primary. Evidence graph extracted ${evidenceGraph.factTable.items.length} fact nodes, ${evidenceGraph.comparisonSets.length} comparison sets, and ${evidenceGraph.timelineSets.length} timeline sets from ${briefSynthesis.evidenceSourceUsed}.`,
+    content: `Preflight resolved ${preflight.subject} through ${preflight.route.primaryKind}; render prompts use ${preflight.route.workspaceMode}. Evidence graph extracted ${evidenceGraph.factTable.items.length} fact nodes, ${evidenceGraph.comparisonSets.length} comparison sets, and ${evidenceGraph.timelineSets.length} timeline sets from ${briefSynthesis.evidenceSourceUsed}.`,
   });
   const thinkingSkill = loadStudioThinkingModeSkill(thinkingContext.mode);
 
@@ -5427,6 +5774,13 @@ export async function runStudioGenerationV2(args: {
       allPages,
       brief: args.payload.brief,
     });
+    const pageExportObjectContracts = findPageExportObjectContracts(
+      preflight,
+      recipe.pageNumber,
+    );
+    const pageExportContract = findPageExportContract(preflight, recipe.pageNumber);
+    const primaryExportObjectContract =
+      pageExportObjectContracts.find((object) => object.objectRole === "primary") ?? null;
     const heroReferenceContext = buildHeroReferenceContext({
       skill: heroSkill,
       intent: heroModelIntent,
@@ -5477,6 +5831,9 @@ export async function runStudioGenerationV2(args: {
         styleProfile,
         reportStyleProfile,
         htmlOutputMode: args.payload.htmlOutputMode,
+        exportObjectContract: primaryExportObjectContract,
+        exportObjectContracts: pageExportObjectContracts,
+        pageExportContract,
       });
       await emit({
         type: "assistant_chunk",
@@ -5512,6 +5869,9 @@ export async function runStudioGenerationV2(args: {
         styleProfile,
         reportStyleProfile,
         htmlOutputMode: args.payload.htmlOutputMode,
+        exportObjectContract: primaryExportObjectContract,
+        exportObjectContracts: pageExportObjectContracts,
+        pageExportContract,
       });
       await emit({
         type: "assistant_chunk",
@@ -5651,6 +6011,9 @@ export async function runStudioGenerationV2(args: {
         expectedPageNumber: recipe.pageNumber,
         expectedPageTitle: recipe.pageTitle,
         htmlOutputMode: args.payload.htmlOutputMode,
+        expectedExportObjectContract: primaryExportObjectContract,
+        expectedExportObjectContracts: pageExportObjectContracts,
+        expectedPageExportContract: pageExportContract,
       });
     } catch (error) {
       const fallbackPrompt = buildPagePrompt({
@@ -5755,6 +6118,9 @@ export async function runStudioGenerationV2(args: {
           expectedPageNumber: recipe.pageNumber,
           expectedPageTitle: recipe.pageTitle,
           htmlOutputMode: args.payload.htmlOutputMode,
+          expectedExportObjectContract: primaryExportObjectContract,
+          expectedExportObjectContracts: pageExportObjectContracts,
+          expectedPageExportContract: pageExportContract,
         });
       } catch (fallbackError) {
         await emit({
@@ -5771,6 +6137,9 @@ export async function runStudioGenerationV2(args: {
           styleProfile,
           reportStyleProfile,
           htmlOutputMode: args.payload.htmlOutputMode,
+          exportObjectContract: primaryExportObjectContract,
+          exportObjectContracts: pageExportObjectContracts,
+          pageExportContract,
           model: args.agentConfig.model,
           primaryError: error,
           fallbackError,
@@ -5787,6 +6156,34 @@ export async function runStudioGenerationV2(args: {
         `Page ${recipe.pageNumber} could not be rendered through V2 or fallback HTML generation.`,
       );
     }
+
+    const contractRepair = await applyContractAwareRepairIfNeeded({
+      runId: args.runId,
+      payload: args.payload,
+      agentConfig: args.agentConfig,
+      onStageTrace: args.onStageTrace,
+      signal: args.signal,
+      emit,
+      stagePrefix: "page-render",
+      deckTitle: alignedRecipePlan.title,
+      pageNumber: recipe.pageNumber,
+      pageTitle: recipe.pageTitle,
+      validatedPage,
+      model: pageModel,
+      expectedContracts: pageExportObjectContracts,
+      expectedPageExportContract: pageExportContract,
+      htmlOutputMode: args.payload.htmlOutputMode,
+      styleProfile: reportStyleProfile,
+      traceMeta: {
+        ...buildComplexityTraceMeta(complexityProfile),
+        ...buildStudioEvalTraceMeta(args.evalOverrides),
+        moduleUsageMode: args.payload.moduleUsageMode,
+        chartPageIntent: chartPageIntent.enabled,
+        heroModelIntent: heroModelIntent.enabled,
+      },
+    });
+    validatedPage = contractRepair.validatedPage;
+    pageModel = contractRepair.model;
 
     const pageNarrative = extractTextBeforeHtml(pageSummary);
     if (pageNarrative) {
@@ -5861,15 +6258,22 @@ export async function runStudioGenerationV2(args: {
     const firstPagePromise = pageRecipes[0]
       ? renderPageRecipe(pageRecipes[0], false)
       : Promise.resolve(null);
+    let remainingResultsError: unknown = null;
     const remainingResultsPromise =
       pageRecipes.length > 1
         ? mapWithConcurrency(pageRecipes.slice(1), 2, async (recipe) =>
             renderPageRecipe(recipe, true),
-          )
+          ).catch((error: unknown) => {
+            remainingResultsError = error;
+            return [] as StudioPageRenderResult[];
+          })
         : Promise.resolve([]);
 
     const firstPageResult = await firstPagePromise;
     const remainingResults = await remainingResultsPromise;
+    if (remainingResultsError) {
+      throw remainingResultsError;
+    }
     pageResults = [
       ...(firstPageResult ? [firstPageResult] : []),
       ...remainingResults,
@@ -5894,6 +6298,7 @@ export async function runStudioGenerationV2(args: {
     styleProfile: reportStyleProfile,
     htmlOutputMode: args.payload.htmlOutputMode,
     animationPages: pageAnimationPages,
+    exportContract: preflight.exportContract,
   });
 
   await emit({
@@ -5919,12 +6324,21 @@ export async function runStudioGenerationV1(args: {
   evalOverrides?: StudioEvalOverrides | null;
   onStageTrace?: (entry: StudioStageTraceEntry) => Promise<void> | void;
 }) {
+  const normalizedPayload = normalizeGenerateRequestPayloadPageCount(args.payload);
+  if (normalizedPayload !== args.payload) {
+    return runStudioGenerationV1({
+      ...args,
+      payload: normalizedPayload,
+    });
+  }
+
   const emit = args.emit ?? (async () => {});
   const analysisSkill = loadStudioAnalysisSkill();
   const heroSkill = loadStudio3dHeroSkill();
   const preflight = await runStudioPreflightStage({
     brief: args.payload.brief,
     requestedPageCount: args.payload.pageCount ?? null,
+    exportContract: args.payload.exportContract ?? null,
     agentConfig: args.agentConfig,
     runId: args.runId,
     signal: args.signal,
@@ -6195,12 +6609,46 @@ export async function runStudioGenerationV1(args: {
       });
     }
 
-    const validatedPage = validateGeneratedPageHtml({
+    const pageExportObjectContracts = findPageExportObjectContracts(
+      preflight,
+      page.pageNumber,
+    );
+    const pageExportContract = findPageExportContract(preflight, page.pageNumber);
+    let validatedPage = validateGeneratedPageHtml({
       html: pageResult.summary,
       expectedPageNumber: page.pageNumber,
       expectedPageTitle: page.pageTitle,
       htmlOutputMode: args.payload.htmlOutputMode,
+      expectedExportObjectContract:
+        pageExportObjectContracts.find((object) => object.objectRole === "primary") ?? null,
+      expectedExportObjectContracts: pageExportObjectContracts,
+      expectedPageExportContract: pageExportContract,
     });
+    const contractRepair = await applyContractAwareRepairIfNeeded({
+      runId: args.runId,
+      payload: args.payload,
+      agentConfig: args.agentConfig,
+      onStageTrace: args.onStageTrace,
+      signal: args.signal,
+      emit,
+      stagePrefix: "page",
+      deckTitle: alignedDeckPlan.title,
+      pageNumber: page.pageNumber,
+      pageTitle: page.pageTitle,
+      validatedPage,
+      model: resolvedModel,
+      expectedContracts: pageExportObjectContracts,
+      expectedPageExportContract: pageExportContract,
+      htmlOutputMode: args.payload.htmlOutputMode,
+      styleProfile: reportStyleProfile,
+      traceMeta: {
+        ...buildComplexityTraceMeta(complexityProfile),
+        ...buildStudioEvalTraceMeta(args.evalOverrides),
+        moduleUsageMode: args.payload.moduleUsageMode,
+      },
+    });
+    validatedPage = contractRepair.validatedPage;
+    resolvedModel = contractRepair.model ?? resolvedModel;
     pageSections.push(validatedPage.sectionHtml);
     if (validatedPage.animationPage) {
       pageAnimationPages.push(validatedPage.animationPage);
@@ -6230,6 +6678,7 @@ export async function runStudioGenerationV1(args: {
     styleProfile: reportStyleProfile,
     htmlOutputMode: args.payload.htmlOutputMode,
     animationPages: pageAnimationPages,
+    exportContract: preflight.exportContract,
   });
 
   await emit({
@@ -6255,8 +6704,16 @@ export async function runStudioGeneration(args: {
   evalOverrides?: StudioEvalOverrides | null;
   onStageTrace?: (entry: StudioStageTraceEntry) => Promise<void> | void;
 }) {
+  const normalizedPayload = normalizeGenerateRequestPayloadPageCount(args.payload);
+  const normalizedArgs =
+    normalizedPayload === args.payload
+      ? args
+      : {
+          ...args,
+          payload: normalizedPayload,
+        };
   try {
-    return await runStudioGenerationV2(args);
+    return await runStudioGenerationV2(normalizedArgs);
   } catch (error) {
     if (isStudioAbortError(error)) {
       throw error;
@@ -6298,7 +6755,7 @@ export async function runStudioGeneration(args: {
       });
     }
 
-    const fallbackResult = await runStudioGenerationV1(args);
+    const fallbackResult = await runStudioGenerationV1(normalizedArgs);
     return {
       ...fallbackResult,
       enginePath: "v1-fallback" as const,
@@ -6327,6 +6784,10 @@ export async function runStudioRevision(args: {
     emit,
     onStageTrace: args.onStageTrace,
   });
+  const inheritedExportContract = args.payload.report.exportContract as DeckExportContract | undefined;
+  const revisionPreflight = inheritedExportContract
+    ? { ...preflight, exportContract: inheritedExportContract }
+    : preflight;
   const runtimeInputs = createRawBriefThinkingInputs(args.payload.brief);
   const preparation = resolveStudioGenerationPreparation({
     brief: args.payload.brief,
@@ -6338,13 +6799,13 @@ export async function runStudioRevision(args: {
   const thinkingContext = preparation.thinkingContext;
   const briefSynthesis = mergeStudioPreflightIntoBriefSynthesis({
     synthesis: preparation.briefSynthesis,
-    preflight,
+    preflight: revisionPreflight,
     rawBrief: args.payload.brief,
   });
   const evidenceGraph = buildEvidenceGraph(
     buildPreflightEvidenceInput({
       brief: args.payload.brief,
-      preflight,
+      preflight: revisionPreflight,
     }),
     args.payload.report.pageCount,
   );
@@ -6473,6 +6934,7 @@ export async function runStudioRevision(args: {
       styleProfile: reportStyleProfile,
       htmlOutputMode: args.payload.report.htmlOutputMode ?? "static",
       animationStructure: args.payload.report.animationStructure,
+      exportContract: args.payload.report.exportContract as DeckExportContract | undefined,
     });
     await emit({
       type: "final_report",
@@ -6574,7 +7036,18 @@ export async function runStudioRevision(args: {
     }
 
     if (deterministicOnlyRepair) {
-      const deterministicPage = validateGeneratedPageHtml({
+      const pageExportObjectContracts = findPageExportObjectContracts(
+        revisionPreflight,
+        measurement.pageNumber,
+      );
+      const pageExportContract = findPageExportContract(revisionPreflight, measurement.pageNumber);
+      const deterministicExpectedTitle = sanitizeRepairTitle({
+        title: currentSection.pageTitle,
+        pageNumber: measurement.pageNumber,
+        pageClass: repairProfile.pageClass,
+        fallbackSeed: currentSection.sectionHtml,
+      });
+      let deterministicPage = validateGeneratedPageHtml({
         html: composeSinglePageHtml({
           title: deckTitle,
           sectionHtml: shrunkSectionHtml,
@@ -6582,15 +7055,41 @@ export async function runStudioRevision(args: {
           htmlOutputMode: args.payload.report.htmlOutputMode ?? "static",
         }),
         expectedPageNumber: measurement.pageNumber,
-        expectedPageTitle: sanitizeRepairTitle({
-          title: currentSection.pageTitle,
-          pageNumber: measurement.pageNumber,
-          pageClass: repairProfile.pageClass,
-          fallbackSeed: currentSection.sectionHtml,
-        }),
+        expectedPageTitle: deterministicExpectedTitle,
         htmlOutputMode: args.payload.report.htmlOutputMode ?? "static",
         previousAnimationPage: existingAnimationPages.get(measurement.pageNumber) ?? null,
+        expectedExportObjectContract:
+          pageExportObjectContracts.find((object) => object.objectRole === "primary") ?? null,
+        expectedExportObjectContracts: pageExportObjectContracts,
+        expectedPageExportContract: pageExportContract,
       });
+      const contractRepair = await applyContractAwareRepairIfNeeded({
+        runId: args.runId,
+        payload: args.payload,
+        agentConfig: args.agentConfig,
+        onStageTrace: args.onStageTrace,
+        signal: args.signal,
+        emit,
+        stagePrefix: "repair-page",
+        deckTitle,
+        pageNumber: measurement.pageNumber,
+        pageTitle: deterministicExpectedTitle,
+        validatedPage: deterministicPage,
+        model: args.agentConfig.model,
+        expectedContracts: pageExportObjectContracts,
+        expectedPageExportContract: pageExportContract,
+        htmlOutputMode: args.payload.report.htmlOutputMode ?? "static",
+        previousAnimationPage: existingAnimationPages.get(measurement.pageNumber) ?? null,
+        styleProfile: reportStyleProfile,
+        traceMeta: {
+          ...buildComplexityTraceMeta(complexityProfile),
+          ...buildStudioEvalTraceMeta(args.evalOverrides),
+          repairPageNumber: measurement.pageNumber,
+          repairMode: args.payload.repairMode,
+          pageClass: repairProfile.pageClass,
+        },
+      });
+      deterministicPage = contractRepair.validatedPage;
 
       await emit({
         type: "page_ready",
@@ -6603,7 +7102,7 @@ export async function runStudioRevision(args: {
       return {
         pageNumber: measurement.pageNumber,
         sectionHtml: deterministicPage.sectionHtml,
-        model: args.agentConfig.model,
+        model: contractRepair.model ?? args.agentConfig.model,
         animationPage: deterministicPage.animationPage ?? null,
       };
     }
@@ -6633,7 +7132,7 @@ export async function runStudioRevision(args: {
       heroModelIntent,
       heroReferenceLines: heroReferenceContext.lines,
       evalOverrides: args.evalOverrides,
-      preflight,
+      preflight: revisionPreflight,
       htmlOutputMode: args.payload.report.htmlOutputMode ?? "static",
     });
     const repairWorkspaceMeta = getStudioAiWorkspacePromptMeta(prompt);
@@ -6690,13 +7189,51 @@ export async function runStudioRevision(args: {
       signal: args.signal,
     });
 
-    const validatedPage = validateGeneratedPageHtml({
+    const pageExportObjectContracts = findPageExportObjectContracts(
+      revisionPreflight,
+      measurement.pageNumber,
+    );
+    const pageExportContract = findPageExportContract(revisionPreflight, measurement.pageNumber);
+    let validatedPage = validateGeneratedPageHtml({
       html: repairResult.summary,
       expectedPageNumber: measurement.pageNumber,
       expectedPageTitle: currentSection.pageTitle,
       htmlOutputMode: args.payload.report.htmlOutputMode ?? "static",
       previousAnimationPage: existingAnimationPages.get(measurement.pageNumber) ?? null,
+      expectedExportObjectContract:
+        pageExportObjectContracts.find((object) => object.objectRole === "primary") ?? null,
+      expectedExportObjectContracts: pageExportObjectContracts,
+      expectedPageExportContract: pageExportContract,
     });
+    const contractRepair = await applyContractAwareRepairIfNeeded({
+      runId: args.runId,
+      payload: args.payload,
+      agentConfig: args.agentConfig,
+      onStageTrace: args.onStageTrace,
+      signal: args.signal,
+      emit,
+      stagePrefix: "repair-page",
+      deckTitle,
+      pageNumber: measurement.pageNumber,
+      pageTitle: currentSection.pageTitle,
+      validatedPage,
+      model: repairResult.model,
+      expectedContracts: pageExportObjectContracts,
+      expectedPageExportContract: pageExportContract,
+      htmlOutputMode: args.payload.report.htmlOutputMode ?? "static",
+      previousAnimationPage: existingAnimationPages.get(measurement.pageNumber) ?? null,
+      styleProfile: reportStyleProfile,
+      traceMeta: {
+        ...buildComplexityTraceMeta(complexityProfile),
+        ...buildStudioEvalTraceMeta(args.evalOverrides),
+        repairPageNumber: measurement.pageNumber,
+        repairMode: args.payload.repairMode,
+        pageClass: repairProfile.pageClass,
+        chartPageIntent: chartPageIntent.enabled,
+        heroModelIntent: heroModelIntent.enabled,
+      },
+    });
+    validatedPage = contractRepair.validatedPage;
 
     await emit({
       type: "page_ready",
@@ -6709,7 +7246,7 @@ export async function runStudioRevision(args: {
     return {
       pageNumber: measurement.pageNumber,
       sectionHtml: validatedPage.sectionHtml,
-      model: repairResult.model,
+      model: contractRepair.model ?? repairResult.model,
       animationPage: validatedPage.animationPage ?? null,
     };
   };
@@ -6764,6 +7301,7 @@ export async function runStudioRevision(args: {
     styleProfile: reportStyleProfile,
     htmlOutputMode: args.payload.report.htmlOutputMode ?? "static",
     animationPages: pageAnimationPages,
+    exportContract: revisionPreflight.exportContract,
   });
 
   await emit({

@@ -1,7 +1,31 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createStarterPackWorkspaceBlock } from "./workspace.js";
-import type { PublishedModuleManifest } from "./schemas.js";
+import { pageLayoutArchetypeSchema, type PublishedModuleManifest } from "./schemas.js";
+import {
+  PAGE_LAYOUT_ARCHETYPE_VALUES,
+  VISUAL_GRAMMAR_REGISTRY,
+} from "./visual-grammar-registry.js";
+
+test("visual grammar registry covers every page layout archetype", () => {
+  assert.deepEqual(
+    Object.keys(VISUAL_GRAMMAR_REGISTRY).sort(),
+    [...pageLayoutArchetypeSchema.options].sort(),
+  );
+  assert.equal(PAGE_LAYOUT_ARCHETYPE_VALUES.length, 24);
+});
+
+test("visual grammar registry entries declare required slot and export boundaries", () => {
+  for (const entry of Object.values(VISUAL_GRAMMAR_REGISTRY)) {
+    assert.ok(entry.requiredSlots.length > 0, entry.archetype);
+    assert.ok(entry.dominantSlot, entry.archetype);
+    assert.ok(entry.requiredSlots.includes(entry.dominantSlot), entry.archetype);
+    assert.ok(entry.ownershipBoundary, entry.archetype);
+    assert.ok(entry.snapshotBoundary, entry.archetype);
+    assert.ok(entry.avoidPatterns.length > 0, entry.archetype);
+    assert.ok(entry.slots.some((slot) => slot.id === entry.dominantSlot), entry.archetype);
+  }
+});
 
 function createStarterManifest(args: {
   moduleId: string;

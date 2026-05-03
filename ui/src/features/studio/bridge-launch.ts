@@ -1,5 +1,6 @@
 import { api } from "@/api/client";
 import type {
+  DeckExportContract,
   HtmlOutputMode,
   WorkbenchGenerationMode,
   WorkbenchModuleUsageMode,
@@ -14,6 +15,7 @@ export type CreateStudioBridgeLaunchRequest = {
   moduleUsageMode?: WorkbenchModuleUsageMode;
   htmlOutputMode?: HtmlOutputMode;
   requestedPageCount?: number | null;
+  exportContract?: DeckExportContract;
   mode?: StudioBridgeLaunchMode;
 };
 
@@ -31,6 +33,7 @@ export type ConsumeStudioBridgeLaunchResponse = {
   moduleUsageMode?: WorkbenchModuleUsageMode;
   htmlOutputMode?: HtmlOutputMode;
   requestedPageCount?: number | null;
+  exportContract?: DeckExportContract;
   mode?: StudioBridgeLaunchMode;
   expiresAt: string;
 };

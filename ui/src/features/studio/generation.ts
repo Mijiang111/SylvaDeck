@@ -48,6 +48,7 @@ import type { TextLayoutMeasurement } from "./text-layout/text-layout-types";
 import { getTemplateDefinition } from "./templates";
 import type {
   BlockKind,
+  DeckExportContract,
   DraftProvider,
   EditableContentItem,
   EditableField,
@@ -140,6 +141,7 @@ type HtmlReportRequest = {
   generationMode?: WorkbenchGenerationMode;
   moduleUsageMode?: WorkbenchModuleUsageMode;
   htmlOutputMode?: HtmlOutputMode;
+  exportContract?: DeckExportContract;
   agentConfig?: {
     provider: string;
     command: string;
@@ -158,6 +160,7 @@ export type GenerationRequestIntent = {
   requestedPageCount?: number | null;
   moduleUsageMode?: WorkbenchModuleUsageMode;
   htmlOutputMode?: HtmlOutputMode;
+  exportContract?: DeckExportContract | null;
   suppressInferredPageCount?: boolean;
   starterPackId?: string | null;
   starterThemeId?: string | null;
@@ -433,6 +436,7 @@ function summarizeHtmlReportRequest(payload: HtmlReportRequest) {
     generationMode: payload.generationMode ?? "standard",
     moduleUsageMode: payload.moduleUsageMode ?? "disabled",
     htmlOutputMode: payload.htmlOutputMode ?? "static",
+    exportContractPageCount: payload.exportContract?.pages.length ?? null,
     publishedModuleCount: payload.publishedModules?.length ?? 0,
     attachmentCount: payload.attachments?.length ?? 0,
   };
@@ -469,6 +473,7 @@ export function resolveGenerationIntent(
     generationMode,
     moduleUsageMode: intent?.moduleUsageMode ?? "disabled",
     htmlOutputMode: intent?.htmlOutputMode ?? "static",
+    exportContract: intent?.exportContract ?? null,
     requestedPageCount:
       generationMode === "long-form"
         ? requestedPageCount && requestedPageCount >= 10
@@ -517,7 +522,7 @@ function resolveStarterTransportManifests(intent?: GenerationRequestIntent) {
   return manifests;
 }
 
-function createGenerationRequestPayload(
+export function createGenerationRequestPayload(
   briefText: string,
   aiSettings?: WorkbenchAiSettings,
   intent?: GenerationRequestIntent,
@@ -536,6 +541,7 @@ function createGenerationRequestPayload(
     generationMode,
     moduleUsageMode,
     htmlOutputMode,
+    exportContract: intent?.exportContract ?? undefined,
     agentConfig: aiSettings ? resolveAgentConfigFromAiSettings(aiSettings) : undefined,
     publishedModules,
     moduleManifestSignature: createPublishedModuleManifestSignature(publishedModules),

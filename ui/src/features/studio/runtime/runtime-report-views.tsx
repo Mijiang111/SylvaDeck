@@ -94,11 +94,12 @@ function HtmlReportFrame({
   selectedPageNumber?: number | null;
   selectedBlockId?: string | null;
   selectedVisualNodeId?: string | null;
-  onSelectBlock?: (pageNumber: number, blockId: string) => void;
+  onSelectBlock?: (pageNumber: number, blockId: string, objectId?: string | null) => void;
   onSelectVisualNode?: (
     pageNumber: number,
     nodeId: string,
     kind: HtmlVisualNodeKind,
+    objectId?: string | null,
   ) => void;
   onCommitBlockTransform?: (
     pageNumber: number,
@@ -462,11 +463,12 @@ function HtmlReportCanvasFrame({
   selectedPageNumber?: number | null;
   selectedBlockId?: string | null;
   selectedVisualNodeId?: string | null;
-  onSelectBlock?: (pageNumber: number, blockId: string) => void;
+  onSelectBlock?: (pageNumber: number, blockId: string, objectId?: string | null) => void;
   onSelectVisualNode?: (
     pageNumber: number,
     nodeId: string,
     kind: HtmlVisualNodeKind,
+    objectId?: string | null,
   ) => void;
   onCommitBlockTransform?: (
     pageNumber: number,
@@ -945,11 +947,12 @@ function WorkbenchReportView({
   selectedHtmlPageNumber?: number | null;
   selectedHtmlBlockId?: string | null;
   selectedHtmlVisualNodeId?: string | null;
-  onSelectHtmlBlock?: (pageNumber: number, blockId: string) => void;
+  onSelectHtmlBlock?: (pageNumber: number, blockId: string, objectId?: string | null) => void;
   onSelectHtmlVisualNode?: (
     pageNumber: number,
     nodeId: string,
     kind: HtmlVisualNodeKind,
+    objectId?: string | null,
   ) => void;
   onCommitHtmlBlockTransform?: (
     pageNumber: number,

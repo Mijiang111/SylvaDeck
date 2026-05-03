@@ -296,6 +296,22 @@ export const THINKING_MODE_PLUGINS: Record<DeckThinkingMode, ThinkingModePlugin>
 
 function detectAcademicResearch(text: string) {
   const scrubbedText = text.replace(/\bcase study\b/g, "case-narrative");
+  const financeOrBusinessResearchContext =
+    /\b(equity[- ]research|investment[- ]research|sell[- ]side research|market research|broker research|morgan stanley research|china equity strategy|valuation|sotp|dcf|target price|price target|upside|downside|roe|eps|p\/e|p\/b|market cap|business model|business-model|investor deck|investment deck|equity investment|financial model|finance)\b/.test(
+      scrubbedText,
+    ) ||
+    /(?:股票研究|证券研究|投研|估值|目标价|上行空间|下行空间|投资组合|商业模式|金融|财经|券商|摩根士丹利)/.test(
+      text,
+    );
+  const strictAcademicCue =
+    /\b(academic|scientific|paper|experiment|hypothesis|literature review|methodology|methods|poster session|conference paper|journal|dataset|clinical trial|lab result|laboratory)\b/.test(
+      scrubbedText,
+    ) || /(?:学术|科学|论文|实验|假设|文献综述|研究方法|期刊|数据集|临床试验|实验室)/.test(text);
+
+  if (financeOrBusinessResearchContext && !strictAcademicCue) {
+    return false;
+  }
+
   const explicitResearchCue = /\b(academic|research|scientific|paper|study|experiment|hypothesis|literature review|methodology|methods|results|discussion|poster session|conference paper|journal|dataset)\b/.test(
     scrubbedText,
   );

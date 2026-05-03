@@ -16,10 +16,44 @@ const SWIMLANE_PATTERN = /\b(?:swimlane|swim\s+lane)\b|泳道/i;
 const EXPLICIT_GANTT_PATTERN = /\bgantt\b|甘特/i;
 const ROADMAP_PATTERN = /\b(?:roadmap|workstreams?)\b|路线图/i;
 const TIME_BUCKET_PATTERN =
-  /\b(?:Q[1-4](?:\s*(?:FY)?\d{2,4})?|20\d{2}|H[12]|month|monthly|week|weekly|quarter|timeline|time\s+buckets?)\b|季度|月份|周计划|时间轴|时间桶/i;
+  /\b(?:Q[1-4](?:\s*(?:FY)?\d{2,4})?|20\d{2}|H[12]|month|monthly|week|weekly|\d{1,3}\s*[- ]?days?|quarter|timeline|time\s+buckets?)\b|季度|月份|周计划|时间轴|时间桶/i;
 
 const SEGMENT_STOP_PATTERN =
   /\b(?:Page plan|Layout\s*\/|Visual thesis|Tone\s*\+|Anti-patterns|Source constraint)\b/i;
+
+const PAGE_MARKER_PATTERN = /\b(?:Page|Slide)\s*(\d{1,2})\b\s*(?::|-)?/gi;
+
+function findExplicitPageMarkers(text: string) {
+  const markers: Array<{ pageNumber: number; index: number }> = [];
+  for (const match of text.matchAll(PAGE_MARKER_PATTERN)) {
+    const pageNumber = Number.parseInt(match[1] ?? "", 10);
+    if (!Number.isInteger(pageNumber) || pageNumber <= 0) {
+      continue;
+    }
+    markers.push({ pageNumber, index: match.index ?? 0 });
+  }
+  return markers;
+}
+
+function extractPageScopedBrief(text: string, pageNumber: number) {
+  const markers = findExplicitPageMarkers(text);
+  if (markers.length === 0) {
+    return { scopedText: text, hasExplicitPagePlan: false };
+  }
+
+  const current = markers.find((marker) => marker.pageNumber === pageNumber);
+  if (!current) {
+    return { scopedText: "", hasExplicitPagePlan: true };
+  }
+
+  const next = markers.find((marker) => marker.index > current.index);
+  const rawSegment = text.slice(current.index, next?.index ?? text.length);
+  const stop = rawSegment.search(SEGMENT_STOP_PATTERN);
+  return {
+    scopedText: (stop >= 0 ? rawSegment.slice(0, stop) : rawSegment).trim(),
+    hasExplicitPagePlan: true,
+  };
+}
 
 function uniqueStrings(items: string[]) {
   const seen = new Set<string>();
@@ -186,13 +220,25 @@ function extractNumberedItems(text: string) {
   const pattern = /(?:^|[\s,;；。:：-])(\d{1,2})(?:[.)、]|\s+)(.*?)(?=(?:[\s,;；。-]\d{1,2}(?:[.)、]|\s+))|$)/gs;
 
   for (const match of segment.matchAll(pattern)) {
+    const prefix = segment.slice(Math.max(0, match.index - 12), match.index);
+    if (/\b(?:Page|Slide)\s*$/i.test(prefix)) {
+      continue;
+    }
     const number = Number.parseInt(match[1] ?? "", 10);
     const rawLabel = (match[2] ?? "")
+      .replace(/[\r\n][\s\S]*$/g, "")
       .replace(/\((?:diamond|decision)\)/gi, "")
       .replace(/\b(?:Page plan|Layout|Visual thesis)\b.*$/i, "")
+      .replace(/[,，;；]+$/g, "")
       .trim();
     const label = clampLabel(rawLabel, 54);
-    if (!Number.isInteger(number) || number <= 0 || !label || /^\d+$/.test(label)) {
+    if (
+      !Number.isInteger(number) ||
+      number <= 0 ||
+      !label ||
+      /^\d+$/.test(label) ||
+      /^(?:title|story claim|layout\s*\/|primary visual object)\s*[:：]/i.test(label)
+    ) {
       continue;
     }
     items.push({ number, label });
@@ -396,13 +442,14 @@ export function buildStructuredDiagramSpec(args: {
   brief: string;
   page: PageRecipePlanPage;
 }): StructuredDiagramSpec | null {
+  const pageScopedBrief = extractPageScopedBrief(args.brief, args.page.pageNumber);
   const combinedText = [
-    args.brief,
     args.page.pageTitle,
     args.page.objective,
     args.page.insight,
     args.page.compositionHint,
     args.page.moduleHints.join(" "),
+    pageScopedBrief.scopedText,
   ].join("\n");
   const kind = detectStructuredDiagramKind(combinedText);
   if (!kind) {

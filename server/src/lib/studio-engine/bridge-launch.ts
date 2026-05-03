@@ -16,6 +16,7 @@ type StoredStudioBridgeLaunch = {
   moduleUsageMode: CreateStudioBridgeLaunchRequest["moduleUsageMode"];
   htmlOutputMode: CreateStudioBridgeLaunchRequest["htmlOutputMode"];
   requestedPageCount: number | null;
+  exportContract: CreateStudioBridgeLaunchRequest["exportContract"];
   mode: CreateStudioBridgeLaunchRequest["mode"];
   expiresAt: string;
 };
@@ -76,6 +77,7 @@ export function createStudioBridgeLaunch(
     moduleUsageMode: payload.moduleUsageMode ?? "disabled",
     htmlOutputMode: payload.htmlOutputMode ?? "static",
     requestedPageCount: payload.requestedPageCount ?? null,
+    exportContract: payload.exportContract,
     mode: payload.mode ?? "inject-and-generate",
     expiresAt,
   });
@@ -114,6 +116,7 @@ export function consumeStudioBridgeLaunch(
     moduleUsageMode: entry.moduleUsageMode,
     htmlOutputMode: entry.htmlOutputMode,
     requestedPageCount: entry.requestedPageCount,
+    exportContract: entry.exportContract,
     mode: entry.mode,
     expiresAt: entry.expiresAt,
   };

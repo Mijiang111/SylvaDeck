@@ -1028,6 +1028,9 @@ export type HtmlEditableBlock = {
   sourceTag: string;
   sourceIndex: number;
   sourcePath?: string;
+  studioObjectId?: string;
+  exportObjectId?: string;
+  objectId?: string;
 };
 
 export type HtmlEditablePage = {
@@ -1320,6 +1323,14 @@ export type HtmlVisualNode = {
   pageNumber: number;
   sourceTag: string;
   sourceIndex: number;
+  studioObjectId?: string;
+  exportObjectId?: string;
+  exportObjectKind?: string;
+  objectRole?: string;
+  studioSlot?: string;
+  renderTarget?: string;
+  snapshotBoundary?: string;
+  isContractRoot?: boolean;
   moduleId?: ModuleTemplateId;
   moduleLabel?: string;
   moduleKind?: HtmlVisualModuleKind;
@@ -1335,9 +1346,49 @@ export type HtmlVisualNode = {
   style: HtmlVisualNodeStyle;
 };
 
+export type HtmlCanvasObjectFacet = "text" | "shape" | "data" | "export";
+export type HtmlIframeObjectDiagnosticCode =
+  | "iframe-object-anchor-missing"
+  | "iframe-object-ambiguous-root"
+  | "iframe-transparent-scaffold-suppressed"
+  | "iframe-background-object-rejected"
+  | "iframe-object-empty-root"
+  | "iframe-object-unstable-bounds"
+  | "iframe-snapshot-root-missing"
+  | "iframe-snapshot-blank"
+  | "iframe-text-overflow"
+  | "iframe-annotation-ownership-leak"
+  | "iframe-repeated-card-wall"
+  | "primary-visual-text-facet-missing"
+  | "chart-visual-module-missing"
+  | "iframe-hidden-placeholder-anchor";
+
+export type HtmlIframeObjectDiagnostic = {
+  code: HtmlIframeObjectDiagnosticCode;
+  severity: "info" | "warning";
+  pageNumber: number;
+  objectId?: string;
+  message: string;
+};
+
+export type HtmlCanvasObject = {
+  id: string;
+  pageNumber: number;
+  role: "contract" | "detected";
+  rootNodeId: string | null;
+  exportObjectId?: string;
+  studioObjectId?: string;
+  objectKind?: string;
+  renderTarget?: string;
+  textBlockIds: string[];
+  visualNodeIds: string[];
+  editableFacets: HtmlCanvasObjectFacet[];
+};
+
 export type HtmlVisualPage = {
   pageNumber: number;
   nodes: HtmlVisualNode[];
+  objectDiagnostics?: HtmlIframeObjectDiagnostic[];
 };
 
 export type HtmlVisualStructure = {
@@ -1516,6 +1567,250 @@ export type HtmlAnimationStructure = {
   pages: HtmlAnimationPage[];
 };
 
+export type ExportObjectKind =
+  | "chart-visual"
+  | "native-chart"
+  | "matrix"
+  | "native-table"
+  | "comparison-grid"
+  | "metric-grid"
+  | "card-grid"
+  | "diagram"
+  | "text";
+
+export type ExportRenderTarget =
+  | "visual-snapshot"
+  | "native-chart"
+  | "native-table"
+  | "editable-shapes"
+  | "editable-text"
+  | "html-visual";
+
+export type ExportObjectRole = "primary" | "secondary" | "annotation" | "source";
+
+export type ExportOwnershipScope = {
+  rootId: string;
+  ownsText: boolean;
+  ownsShapes: boolean;
+  ownsSvg: boolean;
+  childRoles: string[];
+};
+
+export type ExportDataAxisContract = {
+  label?: string;
+  unit?: string;
+  min?: number;
+  max?: number;
+};
+
+export type ExportDataSeriesContract = {
+  name: string;
+  values: number[];
+  color?: string | null;
+  axis?: "primary" | "secondary";
+  role?: "bar" | "line";
+};
+
+export type ExportChartDataContract =
+  | {
+      type: "chart-bar" | "chart-stacked" | "chart-line";
+      categories: string[];
+      series: ExportDataSeriesContract[];
+      axis?: {
+        x?: ExportDataAxisContract;
+        y?: ExportDataAxisContract;
+      };
+      colors?: string[];
+      style?: Record<string, unknown>;
+      stackMode?: "absolute" | "percent";
+      totals?: number[];
+      lineStyle?: Record<string, unknown>;
+      markers?: boolean;
+    }
+  | {
+      type: "chart-combo";
+      categories: string[];
+      barSeries: ExportDataSeriesContract[];
+      lineSeries: ExportDataSeriesContract[];
+      primaryAxis?: ExportDataAxisContract;
+      secondaryAxis?: ExportDataAxisContract;
+      colors?: string[];
+      style?: Record<string, unknown>;
+    }
+  | {
+      type: "chart-waterfall";
+      steps: Array<{
+        id?: string;
+        label: string;
+        value: number;
+        kind?: "start" | "increase" | "decrease" | "subtotal" | "end";
+        color?: string | null;
+      }>;
+      start?: number;
+      end?: number;
+      subtotalIds?: string[];
+      axis?: {
+        x?: ExportDataAxisContract;
+        y?: ExportDataAxisContract;
+      };
+      colors?: string[];
+      style?: Record<string, unknown>;
+    }
+  | {
+      type: "chart-bubble";
+      points: Array<{
+        x: number;
+        y: number;
+        size: number;
+        label: string;
+        color?: string | null;
+        group?: string | null;
+      }>;
+      xAxis?: ExportDataAxisContract;
+      yAxis?: ExportDataAxisContract;
+      sizeAxis?: ExportDataAxisContract;
+      colors?: string[];
+      style?: Record<string, unknown>;
+    };
+
+export type ExportMatrixDataContract = {
+  type: "matrix";
+  axes: {
+    x: ExportDataAxisContract & { label: string };
+    y: ExportDataAxisContract & { label: string };
+  };
+  quadrants?: Array<{
+    id?: string;
+    label: string;
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    color?: string | null;
+    textColor?: string | null;
+  }>;
+  items: Array<{
+    id?: string;
+    x: number;
+    y: number;
+    label: string;
+    detail?: string;
+    color?: string | null;
+  }>;
+  labels?: string[];
+  callout?: {
+    title: string;
+    body?: string;
+    x?: number;
+    y?: number;
+    w?: number;
+    h?: number;
+  } | null;
+  renderTarget: "editable-shapes";
+};
+
+export type ExportTableDataContract = {
+  type: "table";
+  columns: Array<{
+    id?: string;
+    label: string;
+    type?: "text" | "number" | "date" | "percent" | "currency";
+  }>;
+  rows: string[][];
+  cellRoles?: Record<string, string>;
+  headerPolicy?: "first-row" | "none";
+  nativeTableAllowed: true;
+  sourceNote?: string;
+};
+
+export type ExportMissingDataContract = {
+  type: "missing-data";
+  expected: "native-chart" | "native-table" | "matrix";
+  reason: string;
+  requiredFields: string[];
+};
+
+export type ExportDataContract =
+  | ExportChartDataContract
+  | ExportMatrixDataContract
+  | ExportTableDataContract
+  | ExportMissingDataContract;
+
+export type ExportObjectContract = {
+  objectId: string;
+  pageNumber: number;
+  pageStory: string;
+  primaryVisualObject: string;
+  objectKind: ExportObjectKind;
+  objectRole?: ExportObjectRole;
+  dataContract: ExportDataContract | null;
+  renderTarget: ExportRenderTarget;
+  ownershipScope: ExportOwnershipScope;
+  forbiddenInterpretation: string[];
+};
+
+export type PageLayoutArchetype =
+  | "single-dominant-visual"
+  | "hero-metric"
+  | "chart-with-insight-rail"
+  | "matrix-first"
+  | "bubble-landscape"
+  | "timeline-led"
+  | "process-flow"
+  | "swimlane"
+  | "benchmark-table"
+  | "decision-tree"
+  | "layered-stack"
+  | "market-map"
+  | "portfolio-grid"
+  | "capability-model"
+  | "funnel"
+  | "risk-heatmap"
+  | "thesis-evidence-board"
+  | "before-after"
+  | "flywheel"
+  | "operating-model"
+  | "annotation-stage"
+  | "evidence-wall"
+  | "case-timeline"
+  | "bridge-explanation";
+
+export type PageVisualGrammar =
+  | "consulting"
+  | "equity-research"
+  | "technical-system"
+  | "product-strategy"
+  | "operating-model"
+  | "scientific-figure";
+
+export type PageComposition =
+  | "dominant-left-rail-right"
+  | "dominant-right-rail-left"
+  | "top-title-full-bleed-visual"
+  | "center-canvas-annotation-ring"
+  | "two-column-contrast"
+  | "three-band-narrative"
+  | "grid-with-hierarchy";
+
+export type PageDensity = "sparse" | "executive" | "dense";
+
+export type PageExportContract = {
+  pageNumber: number;
+  pageStory: string;
+  primaryVisualObject: string;
+  primaryObjectId?: string;
+  layoutArchetype?: PageLayoutArchetype;
+  visualGrammar?: PageVisualGrammar;
+  composition?: PageComposition;
+  density?: PageDensity;
+  objects: ExportObjectContract[];
+};
+
+export type DeckExportContract = {
+  version: 1;
+  pages: PageExportContract[];
+};
+
 export type GeneratedHtmlReport = {
   title: string;
   html: string;
@@ -1529,6 +1824,7 @@ export type GeneratedHtmlReport = {
   visualStructure?: HtmlVisualStructure;
   layoutStructure?: HtmlLayoutStructure;
   canvasOverrides?: GeneratedHtmlReportCanvasOverrides;
+  exportContract?: DeckExportContract;
 };
 
 export type GeneratedDraftAsset = {
@@ -1556,6 +1852,7 @@ export type WorkbenchProjectSnapshot = {
   generationMode: WorkbenchGenerationMode;
   moduleUsageMode: WorkbenchModuleUsageMode;
   requestedPageCount: number | null;
+  exportContract?: DeckExportContract;
   longFormClarification: WorkbenchLongFormClarificationState;
   deckOptimization: WorkbenchDeckOptimizationState;
   pages: LayoutPage[];
@@ -1823,6 +2120,7 @@ export type WorkbenchProject = {
   generationMode: WorkbenchGenerationMode;
   moduleUsageMode: WorkbenchModuleUsageMode;
   requestedPageCount: number | null;
+  exportContract?: DeckExportContract;
   longFormClarification: WorkbenchLongFormClarificationState;
   deckOptimization: WorkbenchDeckOptimizationState;
   briefMessages: ConversationMessage[];

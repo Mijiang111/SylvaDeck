@@ -209,18 +209,18 @@ function describeFamily(family: FreeformLayoutFamily, subject: string): Freeform
     case "evidence-wall":
       return {
         layoutFamily: family,
-        visualAnchor: "curated evidence wall with one dominant evidence tile",
-        readingPath: "headline -> dominant evidence tile -> one secondary cue",
+        visualAnchor: "curated evidence field with one dominant proof surface",
+        readingPath: "headline -> dominant proof surface -> one secondary cue",
         regionPlan: [
-          "Use one dominant evidence tile and one or two small supporting tiles.",
+          "Use one dominant evidence field and one or two small supporting labels or insets.",
           "Keep the hierarchy visibly unequal.",
         ],
         copyPlacement: [
-          "Place the main evidence callout in the dominant tile.",
-          "Put support bullets into small labels or chips around it.",
+          "Place the main evidence callout inside or next to the dominant proof surface.",
+          "Put support bullets into small direct labels around it.",
         ],
         avoidPattern: [
-          "Do not create a wall of equal-weight cards.",
+          "Do not create a wall of equal-weight cards or tiles.",
           "Do not exceed two supporting proof items.",
         ],
       };

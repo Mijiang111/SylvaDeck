@@ -1,8 +1,11 @@
 import type { DeckStyleProfile } from "../industry-style.js";
 import type {
   GeneratedReportStyleProfile,
+  DeckExportContract,
+  ExportObjectContract,
   HtmlAnimationPage,
   HtmlOutputMode,
+  PageExportContract,
   PageRecipe,
 } from "./contracts.js";
 import {
@@ -46,23 +49,80 @@ function summarizeUnknownError(error: unknown) {
   return String(error || "unknown render failure");
 }
 
+const deterministicScaffoldLabelPattern =
+  /\b(?:raw brief|ai understanding|visual thinking|active capability cards|user task brief|task rigor brief|renderer brief|proof plan|layout strategy|source material|selected template contract|capability cards|output rules|page argument contract|headline claim|support bullet\s*\d*|support bullets?|evidence callouts?|evidence bullets?|page evidence bundle|brief digest|current page (?:goal|story|intent|objective)|page question|page thesis|page mission|supplied page mission|source basis)\s*:\s*/gi;
+
+const deterministicScaffoldPhrasePattern =
+  /\b(?:page rendered only from supplied(?: brief)?|only from supplied brief|no additional metrics are introduced|illustrative trajectory|source basis:\s*page rendered|using the supplied brief|tied to the supplied brief|based on the supplied brief)\b/gi;
+
+function sanitizeDeterministicDisplayText(value: string, fallback: string) {
+  const sanitized = value
+    .replace(deterministicScaffoldLabelPattern, "")
+    .replace(deterministicScaffoldPhrasePattern, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return sanitized || fallback;
+}
+
+function sanitizeDeterministicRecipe(recipe: PageRecipe): PageRecipe {
+  return {
+    ...recipe,
+    pageTitle: sanitizeDeterministicDisplayText(recipe.pageTitle, `Page ${recipe.pageNumber}`),
+    pageIntent: sanitizeDeterministicDisplayText(recipe.pageIntent, recipe.pageTitle),
+    objective: sanitizeDeterministicDisplayText(recipe.objective, recipe.pageTitle),
+    insight: sanitizeDeterministicDisplayText(recipe.insight, recipe.objective),
+    heroClaim: sanitizeDeterministicDisplayText(recipe.heroClaim, recipe.pageTitle),
+    supportBullets: recipe.supportBullets.map((item) =>
+      sanitizeDeterministicDisplayText(item, recipe.pageTitle),
+    ),
+    evidenceBullets: recipe.evidenceBullets.map((item) =>
+      sanitizeDeterministicDisplayText(item, recipe.pageTitle),
+    ),
+    evidenceBundle: recipe.evidenceBundle.map((item) =>
+      sanitizeDeterministicDisplayText(item, recipe.pageTitle),
+    ),
+    takeaway: sanitizeDeterministicDisplayText(recipe.takeaway, recipe.heroClaim),
+    moduleBinding: recipe.moduleBinding
+      ? {
+          ...recipe.moduleBinding,
+          label: sanitizeDeterministicDisplayText(
+            recipe.moduleBinding.label,
+            "Built-in renderer",
+          ),
+        }
+      : null,
+  };
+}
+
 export function renderDeterministicPageFromRecipe(args: {
   deckTitle: string;
   recipe: PageRecipe;
   styleProfile: DeckStyleProfile;
   reportStyleProfile?: GeneratedReportStyleProfile;
   htmlOutputMode?: HtmlOutputMode;
+  exportObjectContract?: ExportObjectContract | null;
+  exportObjectContracts?: readonly ExportObjectContract[] | null;
+  pageExportContract?: Pick<PageExportContract, "layoutArchetype" | "visualGrammar"> | null;
 }) {
+  const sanitizedRecipe = sanitizeDeterministicRecipe(args.recipe);
   return validateGeneratedPageHtml({
     html: composeSinglePageHtml({
       title: args.deckTitle,
-      sectionHtml: composeDeterministicPageSection(args.recipe, args.styleProfile),
+      sectionHtml: composeDeterministicPageSection(
+        sanitizedRecipe,
+        args.styleProfile,
+        args.exportObjectContract,
+        args.pageExportContract,
+      ),
       styleProfile: args.reportStyleProfile,
       htmlOutputMode: args.htmlOutputMode,
     }),
-    expectedPageNumber: args.recipe.pageNumber,
-    expectedPageTitle: args.recipe.pageTitle,
+    expectedPageNumber: sanitizedRecipe.pageNumber,
+    expectedPageTitle: sanitizedRecipe.pageTitle,
     htmlOutputMode: args.htmlOutputMode,
+    expectedExportObjectContract: args.exportObjectContract,
+    expectedExportObjectContracts: args.exportObjectContracts,
+    expectedPageExportContract: args.pageExportContract,
   });
 }
 
@@ -72,6 +132,9 @@ export function recoverDeterministicPageAfterRenderFailures(args: {
   styleProfile: DeckStyleProfile;
   reportStyleProfile?: GeneratedReportStyleProfile;
   htmlOutputMode?: HtmlOutputMode;
+  exportObjectContract?: ExportObjectContract | null;
+  exportObjectContracts?: readonly ExportObjectContract[] | null;
+  pageExportContract?: Pick<PageExportContract, "layoutArchetype" | "visualGrammar"> | null;
   model: string;
   primaryError?: unknown;
   fallbackError?: unknown;
@@ -82,6 +145,9 @@ export function recoverDeterministicPageAfterRenderFailures(args: {
     styleProfile: args.styleProfile,
     reportStyleProfile: args.reportStyleProfile,
     htmlOutputMode: args.htmlOutputMode,
+    exportObjectContract: args.exportObjectContract,
+    exportObjectContracts: args.exportObjectContracts,
+    pageExportContract: args.pageExportContract,
   });
 
   return {
@@ -135,6 +201,7 @@ export function buildFinalStudioReport(args: {
   styleProfile?: GeneratedReportStyleProfile;
   htmlOutputMode?: HtmlOutputMode;
   animationPages?: readonly HtmlAnimationPage[];
+  exportContract?: DeckExportContract;
 }): StudioFinalReport {
   return buildSanitizedFinalReport({
     html: composeDeckHtml({
@@ -148,5 +215,6 @@ export function buildFinalStudioReport(args: {
     styleProfile: args.styleProfile,
     htmlOutputMode: args.htmlOutputMode,
     animationStructure: { pages: [...(args.animationPages ?? [])] },
+    exportContract: args.exportContract,
   });
 }

@@ -61,7 +61,7 @@ test("long-form page budgets promote the preparation lane to deep", () => {
   assert.match(preparation.complexityProfile.reason, /Long-form page budget/i);
 });
 
-test("page workspace stays raw-brief-first and disableLayoutPlanningBlock suppresses old layout scaffolding", () => {
+test("page workspace stays creative-brief-first and disableLayoutPlanningBlock suppresses old layout scaffolding", () => {
   const preparation = resolveStudioGenerationPreparation({
     brief: VALUATION_PROMPT,
     requestedPageCount: 1,
@@ -114,15 +114,18 @@ test("page workspace stays raw-brief-first and disableLayoutPlanningBlock suppre
     },
   });
 
-  assert.match(basePrompt, /## AI understanding/);
-  assert.match(basePrompt, /## Current page mission/);
-  assert.match(basePrompt, /## Visual thinking/);
+  assert.match(basePrompt, /## Creative brief/);
+  assert.match(basePrompt, /## Page intent/);
+  assert.match(basePrompt, /## Primary visual/);
+  assert.match(basePrompt, /## Evidence and boundaries/);
   assert.match(basePrompt, /## Active capability cards/);
   assert.equal(basePrompt.includes("## Layout strategy"), false);
   assert.equal(basePrompt.includes("## Private layout plan"), false);
+  assert.match(basePrompt, /institutional evidence-page composition/);
+  assert.match(basePrompt, /audience-facing labels rather than meta-copy/);
   assert.doesNotMatch(disabledPrompt, /## Layout strategy/);
   assert.doesNotMatch(disabledPrompt, /## Private layout plan/);
-  assert.match(disabledPrompt, /## AI understanding/);
+  assert.match(disabledPrompt, /## Evidence and boundaries/);
 });
 
 test("brain-to-deck auto-detect forces deep lane, evidence-wall layout, and rejects 3d", () => {

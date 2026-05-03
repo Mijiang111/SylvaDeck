@@ -183,33 +183,35 @@ const INDUSTRY_STYLE_PROFILES: Record<IndustryStyleProfileId, DeckStyleProfile> 
     id: "general-consulting",
     label: "General Consulting",
     industryLabel: "General consulting",
-    summary: "Warm-neutral executive style for ambiguous or mixed-sector briefs.",
-    materialDirection: "Warm paper canvas with quiet institutional surfaces.",
+    summary: "Warm-neutral institutional exhibit style for consulting and design strategy briefs.",
+    materialDirection: "Warm paper canvas, square-corner exhibit fields, thin rules, and quiet institutional surfaces.",
     toneNotes: [
-      "Executive and professional.",
-      "Restrained contrast with quiet supporting chrome.",
-      "One confident accent, never a loud brand treatment.",
+      "Executive, board-ready, and exhibit-first.",
+      "Restrained contrast with thin-rule structure instead of soft dashboard chrome.",
+      "One confident muted accent, never a loud brand treatment.",
     ],
     promptGuidance: [
       "Keep the deck light, restrained, and executive-ready.",
-      "Use a warm-neutral paper background with crisp institutional typography.",
-      "Let the accent appear in only a few places, mostly in chart emphasis and annotation.",
+      "Use a warm-neutral paper background with crisp institutional typography and square-corner panels.",
+      "Prefer thin dividers, editorial exhibit fields, and interpretation rails over rounded card grids.",
+      "Let muted navy, rust, gold, blue-gray, or desaturated teal accents appear only in chart emphasis and annotation.",
     ],
     avoidPatterns: [
       "Do not use dark slabs or heavy dashboard chrome.",
       "Do not saturate the page with many competing accent colors.",
+      "Do not use large rounded rectangles, pill-heavy badges, glassmorphism, glossy gradients, decorative blobs, or soft app-dashboard shadows.",
     ],
     tokens: {
       pageBackground: "#f7f3eb",
       bodyBackground: "#efe7dc",
       surfacePrimary: "#ffffff",
-      surfaceSecondary: "#eef3f6",
+      surfaceSecondary: "#fcfaf6",
       textPrimary: "#17283b",
       textMuted: "#617382",
       accentPrimary: "#173d57",
-      accentSecondary: "#c4973d",
-      borderSubtle: "#d8e3ea",
-      chartPalette: ["#173d57", "#c4973d", "#6a879a", "#8fa39a"],
+      accentSecondary: "#b55638",
+      borderSubtle: "#d8cfbc",
+      chartPalette: ["#173d57", "#b55638", "#c4973d", "#6a879a", "#8fa39a"],
     },
   },
   academic: {
@@ -283,33 +285,35 @@ const INDUSTRY_STYLE_PROFILES: Record<IndustryStyleProfileId, DeckStyleProfile> 
     id: "finance",
     label: "Finance Institutional",
     industryLabel: "Finance / investor / banking",
-    summary: "Institutional investor-grade palette with disciplined navy and muted gold support.",
-    materialDirection: "Ivory paper with structured slate surfaces and limited investor accents.",
+    summary: "Institutional investor-grade exhibit style with disciplined navy and muted gold support.",
+    materialDirection: "Ivory paper, square-corner data exhibits, thin rules, structured slate surfaces, and limited investor accents.",
     toneNotes: [
       "Institutional, disciplined, and low-drama.",
-      "Slightly cooler than paper consulting, but still calm.",
-      "Use gold only as an ordering or emphasis note, never as decoration.",
+      "Slightly cooler than paper consulting, with hard-edged analytical structure.",
+      "Use gold only as an ordering or emphasis note, never as decoration or shine.",
     ],
     promptGuidance: [
       "Make the deck feel institutional and board-disciplined.",
-      "Use ivory or soft parchment backgrounds, deep slate typography, and sparse gold or teal emphasis.",
+      "Use ivory or soft parchment backgrounds, deep slate typography, sparse gold or blue-gray emphasis, and square-corner panels.",
       "Keep charts sharp, clean, and investor-ready.",
+      "Prefer thin table/chart rules and exhibit annotations over rounded cards, pills, or dashboard widgets.",
     ],
     avoidPatterns: [
       "Do not make the deck feel like a luxury brand brochure.",
       "Do not use colorful category palettes unless the data truly needs them.",
+      "Do not use large rounded rectangles, glassmorphism, glossy gradients, decorative blobs, or soft app-dashboard shadows.",
     ],
     tokens: {
       pageBackground: "#f7f5ef",
       bodyBackground: "#ede9e0",
       surfacePrimary: "#ffffff",
-      surfaceSecondary: "#f1f4f6",
+      surfaceSecondary: "#fbfaf6",
       textPrimary: "#162536",
       textMuted: "#607080",
-      accentPrimary: "#1d4f6e",
-      accentSecondary: "#b08b44",
-      borderSubtle: "#dce4ea",
-      chartPalette: ["#1d4f6e", "#6b7f8e", "#b08b44", "#7f9b88"],
+      accentPrimary: "#1f3654",
+      accentSecondary: "#b38a3a",
+      borderSubtle: "#d6d0c4",
+      chartPalette: ["#1f3654", "#6e8298", "#b38a3a", "#7f9b88", "#9a6b5f"],
     },
   },
   healthcare: {
@@ -530,6 +534,9 @@ export function applyIndustryProfileToHtmlTheme(args: {
   theme: HtmlReportThemeDefinition;
   profile: DeckStyleProfile;
 }) {
+  const usesInstitutionalSquareSurfaces =
+    args.profile.id === "general-consulting" || args.profile.id === "finance";
+
   return {
     ...args.theme,
     id: `${args.theme.id}.${args.profile.id}`,
@@ -548,6 +555,8 @@ export function applyIndustryProfileToHtmlTheme(args: {
           : args.profile.tokens.accentPrimary,
       borderSubtle: args.profile.tokens.borderSubtle,
       chartPalette: args.profile.tokens.chartPalette,
+      radiusLarge: usesInstitutionalSquareSurfaces ? 0 : args.theme.tokens.radiusLarge,
+      radiusSmall: usesInstitutionalSquareSurfaces ? 0 : args.theme.tokens.radiusSmall,
     },
     typographyGuidance: [
       ...args.theme.typographyGuidance,

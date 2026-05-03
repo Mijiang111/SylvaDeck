@@ -3,6 +3,7 @@ import { Check, Copy, ExternalLink, Play, RefreshCcw, Sparkles, TerminalSquare }
 import {
   fetchStudioInstallStatus,
   getInstallAgent,
+  isCodexCliSoftWarning,
   isCodexInstallReady,
   streamStudioInstallOnboard,
   INSTALL_SKILL_COMMAND,
@@ -94,6 +95,12 @@ function statusTone(status: string) {
 }
 
 function AgentCard({ agent }: { agent: InstallAgentStatus }) {
+  const canContinueWithoutCommand =
+    agent.id === "codex" &&
+    agent.status === "missing-command" &&
+    !agent.detected &&
+    agent.authReady &&
+    agent.skillInstalled;
   return (
     <div className="border border-[var(--studio-line)] bg-[rgba(8,8,8,0.92)] p-5">
       <div className="flex items-start justify-between gap-4">
@@ -143,6 +150,11 @@ function AgentCard({ agent }: { agent: InstallAgentStatus }) {
           ))}
         </ul>
       ) : null}
+      {canContinueWithoutCommand ? (
+        <div className="mt-4 border border-amber-400/30 bg-amber-400/10 px-3 py-3 text-[12px] leading-6 text-amber-100">
+          Codex CLI not detected, but Studio can continue locally because auth and the Studio skill are ready.
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -187,6 +199,7 @@ export function StudioInstallPage() {
   }, [loadStatus]);
 
   const codexReady = isCodexInstallReady(status);
+  const codexCliSoftWarning = isCodexCliSoftWarning(status);
   const mode = status ? "connected" : statusChecked ? "docs" : "checking";
   const skillGithubUrl = status?.skillGithubUrl ?? FALLBACK_GITHUB_SKILL_URL;
   const agents = status?.agents ?? STATIC_AGENT_CARDS;
@@ -258,6 +271,11 @@ export function StudioInstallPage() {
             <p className="mt-3 max-w-3xl text-[13px] leading-7 text-[var(--studio-muted-strong)]">
               Agent Bridge gives your AI a skill to understand Claw Design and a local bridge to launch Studio in your real browser session. If you prefer, you can still use the local manual path and open Studio yourself.
             </p>
+            {codexCliSoftWarning ? (
+              <div className="mt-4 max-w-3xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-[12px] leading-6 text-amber-100">
+                Codex CLI not detected, but Studio can continue locally. Keep the doctor/onboarding hints for agent launch workflows; they no longer block the editor.
+              </div>
+            ) : null}
           </div>
           <div className="flex items-center gap-2">
             <Link

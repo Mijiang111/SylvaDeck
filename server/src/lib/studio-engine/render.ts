@@ -5,16 +5,21 @@ import {
 import type {
   ChartDensity,
   ChartSpec,
+  DeckExportContract,
+  ExportDataContract,
+  ExportObjectContract,
   GeneratedReportStyleProfile,
   HtmlAnimationPage,
   HtmlAnimationStructure,
   HtmlPageAnimationManifest,
   HtmlOutputMode,
+  PageExportContract,
   PageRecipe,
   StructuredDiagramNode,
   StructuredDiagramSpec,
 } from "./contracts.js";
 import {
+  exportDataContractSchema,
   htmlEntryTrackSchema,
   htmlLoopEffectSchema,
   htmlPageAnimationManifestSchema,
@@ -264,6 +269,10 @@ const promptScaffoldLeakPatterns: Array<[RegExp, string]> = [
   [/\bthis page must answer exactly one\b/i, "page argument instruction"],
   [/\bat most\s+2\s+short\s+(?:bullets|callouts)\b/i, "copy-budget instruction"],
   [/\b(?:using|tied to|based on)\s+the supplied brief\b/i, "supplied brief instruction"],
+  [
+    /\b(?:page thesis|page mission|supplied page mission|page rendered only from supplied|no additional metrics are introduced|illustrative trajectory|source basis:\s*page rendered)\b/i,
+    "generation meta-copy",
+  ],
 ];
 
 function decodeBasicHtmlEntities(text: string) {
@@ -964,6 +973,14 @@ function resolveDeterministicRenderTheme(profile: DeckStyleProfile): Determinist
   };
 }
 
+function surfaceBorderRadius(_theme: DeterministicRenderTheme, _fallbackPx: number) {
+  return "0px";
+}
+
+function svgCornerRadius(_theme: DeterministicRenderTheme, _fallbackPx: number) {
+  return 0;
+}
+
 function decorateSectionWithStyleMetadata(sectionHtml: string, styleProfile: GeneratedReportStyleProfile) {
   return sectionHtml.replace(
     /<section\b([^>]*)>/i,
@@ -1019,12 +1036,761 @@ export function extractSinglePageSection(html: string) {
   return sectionMatch[0].trim();
 }
 
+export type PageExportContractDiagnostic = {
+  code:
+    | "export-metadata-anchor-missing"
+    | "export-metadata-anchor-ambiguous"
+    | "primary-export-object-metadata-missing"
+    | "primary-export-object-kind-mismatch"
+    | "primary-export-object-render-target-missing"
+    | "export-object-metadata-missing"
+    | "export-object-kind-mismatch"
+    | "export-object-render-target-missing"
+    | "export-object-duplicate-root"
+    | "export-contract-ownership-scope-missing"
+    | "export-contract-forbidden-interpretation-missing"
+    | "export-contract-quality-intent-missing"
+    | "export-contract-page-ir-metadata-missing"
+    | "export-data-contract-missing"
+    | "export-data-contract-invalid"
+    | "export-data-contract-incompatible"
+    | "export-data-contract-minimum-data-missing"
+    | "chart-visual-module-missing";
+  severity: "warning";
+  pageNumber: number;
+  objectId: string;
+  message: string;
+};
+
+function readHtmlAttribute(tagHtml: string, name: string) {
+  const match = tagHtml.match(new RegExp(`\\s${name}=(["'])([\\s\\S]*?)\\1`, "i"));
+  return match?.[2] ?? null;
+}
+
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function hasHtmlAttribute(tagHtml: string, name: string) {
+  return new RegExp(`\\s${escapeRegex(name)}(?:\\s*=|\\s|>|/)`, "i").test(tagHtml);
+}
+
+function setHtmlAttribute(tagHtml: string, name: string, value: string) {
+  const encodedValue = escapeHtml(value);
+  if (hasHtmlAttribute(tagHtml, name)) {
+    const quotedAttribute = new RegExp(`(\\s${escapeRegex(name)}\\s*=\\s*)(["'])([\\s\\S]*?)\\2`, "i");
+    if (quotedAttribute.test(tagHtml)) {
+      return tagHtml.replace(
+        quotedAttribute,
+        (_match, prefix: string) => `${prefix}"${encodedValue}"`,
+      );
+    }
+    const unquotedAttribute = new RegExp(`(\\s${escapeRegex(name)}\\s*=\\s*)([^\\s>/]+)`, "i");
+    if (unquotedAttribute.test(tagHtml)) {
+      return tagHtml.replace(
+        unquotedAttribute,
+        (_match, prefix: string) => `${prefix}"${encodedValue}"`,
+      );
+    }
+  }
+
+  const insertion = ` ${name}="${encodedValue}"`;
+  if (tagHtml.endsWith("/>")) {
+    return `${tagHtml.slice(0, -2)}${insertion} />`;
+  }
+  return `${tagHtml.slice(0, -1)}${insertion}>`;
+}
+
+function decodeHtmlAttribute(value: string) {
+  return value
+    .replaceAll("&quot;", '"')
+    .replaceAll("&apos;", "'")
+    .replaceAll("&#39;", "'")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&amp;", "&");
+}
+
+function findElementOpenTagByExportObjectId(sectionHtml: string, objectId: string) {
+  return findElementOpenTagsByExportObjectId(sectionHtml, objectId)[0] ?? null;
+}
+
+type ElementOpenTagMatch = {
+  tag: string;
+  startIndex: number;
+};
+
+function extractElementOpenTagMatches(sectionHtml: string) {
+  const tags: ElementOpenTagMatch[] = [];
+  let searchIndex = 0;
+  while (searchIndex < sectionHtml.length) {
+    const startIndex = sectionHtml.indexOf("<", searchIndex);
+    if (startIndex < 0) {
+      break;
+    }
+    const nextChar = sectionHtml[startIndex + 1] ?? "";
+    if (!/[a-z]/i.test(nextChar)) {
+      searchIndex = startIndex + 1;
+      continue;
+    }
+    const tagEnd = findTagEnd(sectionHtml, startIndex);
+    if (tagEnd < 0) {
+      break;
+    }
+    tags.push({
+      tag: sectionHtml.slice(startIndex, tagEnd + 1),
+      startIndex,
+    });
+    searchIndex = tagEnd + 1;
+  }
+  return tags;
+}
+
+function extractElementOpenTags(sectionHtml: string) {
+  return extractElementOpenTagMatches(sectionHtml).map((match) => match.tag);
+}
+
+function findElementOpenTagMatchesByAttributeValue(
+  sectionHtml: string,
+  attributeName: string,
+  attributeValue: string,
+) {
+  return extractElementOpenTagMatches(sectionHtml).filter((match) => {
+    const raw = readHtmlAttribute(match.tag, attributeName);
+    return raw !== null && decodeHtmlAttribute(raw) === attributeValue;
+  });
+}
+
+function findElementOpenTagsByAttributeValue(
+  sectionHtml: string,
+  attributeName: string,
+  attributeValue: string,
+) {
+  return findElementOpenTagMatchesByAttributeValue(
+    sectionHtml,
+    attributeName,
+    attributeValue,
+  ).map((match) => match.tag);
+}
+
+function uniqueTagMatches(matches: ElementOpenTagMatch[]) {
+  const seen = new Set<number>();
+  return matches.filter((match) => {
+    if (seen.has(match.startIndex)) {
+      return false;
+    }
+    seen.add(match.startIndex);
+    return true;
+  });
+}
+
+function findElementOpenTagsByExportObjectId(sectionHtml: string, objectId: string) {
+  return findElementOpenTagsByAttributeValue(
+    sectionHtml,
+    "data-export-object-id",
+    objectId,
+  );
+}
+
+function ownershipScopeAttribute(contract: ExportObjectContract) {
+  return [
+    contract.ownershipScope.ownsText ? "text" : "",
+    contract.ownershipScope.ownsShapes ? "shape" : "",
+    contract.ownershipScope.ownsSvg ? "svg" : "",
+  ].filter(Boolean).join(",");
+}
+
+function studioSlotForExportObject(contract: ExportObjectContract) {
+  if (contract.objectRole === "primary") {
+    return "primary-visual";
+  }
+  if (contract.objectRole === "source") {
+    return "source-note";
+  }
+  if (contract.objectRole === "annotation") {
+    return "annotation";
+  }
+  if (contract.objectKind === "text" || contract.objectKind === "native-table" || contract.objectKind === "metric-grid") {
+    return "evidence-note";
+  }
+  return "callout";
+}
+
+function snapshotBoundaryForExportObject(contract: ExportObjectContract) {
+  if (
+    contract.objectKind === "chart-visual" ||
+    contract.objectKind === "native-table" ||
+    contract.objectKind === "matrix" ||
+    contract.objectKind === "diagram"
+  ) {
+    return "object-root";
+  }
+  return null;
+}
+
+function compiledExportMetadataAttributes(
+  contract: ExportObjectContract,
+  pageContract?: Pick<PageExportContract, "layoutArchetype" | "visualGrammar"> | null,
+) {
+  const snapshotBoundary = snapshotBoundaryForExportObject(contract);
+  return [
+    ["data-studio-object-id", contract.objectId],
+    ["data-export-object-id", contract.objectId],
+    ["data-semantic-kind", contract.objectKind],
+    ["data-export-object-kind", contract.objectKind],
+    ["data-object-role", contract.objectRole ?? "secondary"],
+    ["data-studio-slot", studioSlotForExportObject(contract)],
+    ["data-render-target", contract.renderTarget],
+    ...(snapshotBoundary ? [["data-snapshot-boundary", snapshotBoundary]] : []),
+    ["data-ownership-scope", ownershipScopeAttribute(contract)],
+    ["data-forbidden-export", contract.forbiddenInterpretation.join(",")],
+    ["data-forbidden-interpretation", contract.forbiddenInterpretation.join(",")],
+    ["data-quality-intent", "contract-first-export"],
+    ...(pageContract?.layoutArchetype
+      ? [["data-layout-archetype", pageContract.layoutArchetype]]
+      : []),
+    ...(pageContract?.visualGrammar
+      ? [["data-visual-grammar", pageContract.visualGrammar]]
+      : []),
+    ["data-export-contract", JSON.stringify(contract)],
+  ] as Array<[string, string]>;
+}
+
+function compileExportMetadataTag(args: {
+  tag: string;
+  contract: ExportObjectContract;
+  pageContract?: Pick<PageExportContract, "layoutArchetype" | "visualGrammar"> | null;
+}) {
+  return compiledExportMetadataAttributes(args.contract, args.pageContract).reduce(
+    (nextTag, [name, value]) => setHtmlAttribute(nextTag, name, value),
+    args.tag,
+  );
+}
+
+function findPrimaryVisualSlotAnchorTagMatches(sectionHtml: string) {
+  const slotTags = findElementOpenTagMatchesByAttributeValue(
+    sectionHtml,
+    "data-studio-slot",
+    "primary-visual",
+  );
+  const classTags = extractElementOpenTagMatches(sectionHtml).filter((match) =>
+    tagHasClassToken(match.tag, "primary-visual"),
+  );
+  return uniqueTagMatches([...slotTags, ...classTags]);
+}
+
+export function compileGeneratedPageExportMetadata(args: {
+  sectionHtml: string;
+  pageNumber: number;
+  contracts?: readonly ExportObjectContract[] | null;
+  pageContract?: Pick<PageExportContract, "layoutArchetype" | "visualGrammar"> | null;
+}) {
+  const contracts = args.contracts ?? [];
+  let sectionHtml = args.sectionHtml;
+  const diagnostics: PageExportContractDiagnostic[] = [];
+  const compiledObjectIds: string[] = [];
+  const missingObjectIds: string[] = [];
+  const ambiguousObjectIds: string[] = [];
+
+  if (contracts.length === 0) {
+    return {
+      sectionHtml,
+      diagnostics,
+      compiledObjectIds,
+      missingObjectIds,
+      ambiguousObjectIds,
+    };
+  }
+
+  const singleObjectContract = contracts.length === 1;
+  for (const contract of contracts) {
+    const exactAnchorTags = uniqueTagMatches([
+      ...findElementOpenTagMatchesByAttributeValue(
+        sectionHtml,
+        "data-export-object-id",
+        contract.objectId,
+      ),
+      ...findElementOpenTagMatchesByAttributeValue(
+        sectionHtml,
+        "data-studio-object-id",
+        contract.objectId,
+      ),
+    ]);
+    const candidateTags =
+      exactAnchorTags.length > 0
+        ? exactAnchorTags
+        : singleObjectContract
+          ? findPrimaryVisualSlotAnchorTagMatches(sectionHtml)
+          : [];
+
+    if (candidateTags.length === 0) {
+      missingObjectIds.push(contract.objectId);
+      diagnostics.push({
+        code: "export-metadata-anchor-missing",
+        severity: "warning",
+        pageNumber: args.pageNumber,
+        objectId: contract.objectId,
+        message:
+          `Export object ${contract.objectId} could not be metadata-compiled because no data-studio-object-id anchor was found.`,
+      });
+      continue;
+    }
+
+    if (candidateTags.length > 1) {
+      ambiguousObjectIds.push(contract.objectId);
+      diagnostics.push({
+        code: "export-metadata-anchor-ambiguous",
+        severity: "warning",
+        pageNumber: args.pageNumber,
+        objectId: contract.objectId,
+        message:
+          `Export object ${contract.objectId} matched ${candidateTags.length} possible roots; Studio compiler will not guess between anchors.`,
+      });
+      continue;
+    }
+
+    const originalTag = candidateTags[0]!.tag;
+    const compiledTag = compileExportMetadataTag({
+      tag: originalTag,
+      contract,
+      pageContract: args.pageContract,
+    });
+    if (compiledTag !== originalTag) {
+      sectionHtml = sectionHtml.replace(originalTag, compiledTag);
+    }
+    compiledObjectIds.push(contract.objectId);
+  }
+
+  return {
+    sectionHtml,
+    diagnostics,
+    compiledObjectIds,
+    missingObjectIds,
+    ambiguousObjectIds,
+  };
+}
+
+function normalizeMetadataList(value: string | null | undefined) {
+  return (value ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function metadataListIncludesExpected(actual: string | null, expected: readonly string[]) {
+  const actualTokens = new Set(normalizeMetadataList(actual));
+  return expected.every((token) => actualTokens.has(token));
+}
+
+function chartContractCompatibleWithNativeChart(type: string | undefined) {
+  return Boolean(type?.startsWith("chart-"));
+}
+
+function expectedDataContractTypeForObject(contract: ExportObjectContract) {
+  if (contract.objectKind === "chart-visual") {
+    return null;
+  }
+  if (contract.objectKind === "native-chart") {
+    return "chart-*";
+  }
+  if (contract.objectKind === "native-table") {
+    return "table";
+  }
+  if (contract.objectKind === "matrix") {
+    return "matrix";
+  }
+  return null;
+}
+
+function dataContractCompatibleWithObject(args: {
+  objectKind: ExportObjectContract["objectKind"];
+  renderTarget: ExportObjectContract["renderTarget"];
+  type: string;
+}) {
+  if (args.type === "missing-data") {
+    return false;
+  }
+  if (args.objectKind === "native-chart") {
+    return args.renderTarget === "native-chart" && chartContractCompatibleWithNativeChart(args.type);
+  }
+  if (args.objectKind === "chart-visual") {
+    return args.renderTarget === "visual-snapshot" && chartContractCompatibleWithNativeChart(args.type);
+  }
+  if (args.objectKind === "native-table") {
+    return args.renderTarget === "native-table" && args.type === "table";
+  }
+  if (args.objectKind === "matrix") {
+    return args.renderTarget === "editable-shapes" && args.type === "matrix";
+  }
+  return !(chartContractCompatibleWithNativeChart(args.type) || args.type === "table" || args.type === "matrix");
+}
+
+function finiteSeriesValuesMatchCategories(
+  categories: readonly string[],
+  series: readonly { values: readonly number[] }[],
+) {
+  return (
+    categories.length > 0 &&
+    series.length > 0 &&
+    series.every((item) =>
+      item.values.length === categories.length &&
+      item.values.every((value) => Number.isFinite(value)))
+  );
+}
+
+function dataContractHasMinimumData(contract: ExportDataContract) {
+  if (contract.type === "chart-bar" || contract.type === "chart-stacked" || contract.type === "chart-line") {
+    return finiteSeriesValuesMatchCategories(contract.categories, contract.series);
+  }
+  if (contract.type === "chart-combo") {
+    return (
+      finiteSeriesValuesMatchCategories(contract.categories, contract.barSeries) &&
+      finiteSeriesValuesMatchCategories(contract.categories, contract.lineSeries)
+    );
+  }
+  if (contract.type === "chart-waterfall") {
+    return contract.steps.length > 0 && contract.steps.every((step) => Number.isFinite(step.value));
+  }
+  if (contract.type === "chart-bubble") {
+    return contract.points.length > 0 &&
+      contract.points.every((point) =>
+        Number.isFinite(point.x) &&
+        Number.isFinite(point.y) &&
+        Number.isFinite(point.size) &&
+        point.size > 0);
+  }
+  if (contract.type === "matrix") {
+    return contract.items.length > 0;
+  }
+  if (contract.type === "table") {
+    return contract.columns.length > 0 && contract.rows.length > 0;
+  }
+  return false;
+}
+
+function exportDataContractFromChartSpec(chartSpec: ChartSpec): ExportDataContract | null {
+  if (
+    chartSpec.categories.length === 0 ||
+    chartSpec.series.length === 0 ||
+    chartSpec.series.some((series) => series.values.length !== chartSpec.categories.length)
+  ) {
+    return null;
+  }
+
+  if (chartSpec.kind === "bar" || chartSpec.kind === "stacked" || chartSpec.kind === "line") {
+    return {
+      type: chartSpec.kind === "bar" ? "chart-bar" : chartSpec.kind === "line" ? "chart-line" : "chart-stacked",
+      categories: chartSpec.categories,
+      series: chartSpec.series.map((series) => ({
+        name: series.name,
+        values: series.values,
+        color: series.color,
+      })),
+      axis: {
+        y: chartSpec.unit ? { label: chartSpec.unit, unit: chartSpec.unit } : undefined,
+      },
+      stackMode: chartSpec.kind === "stacked" ? "absolute" : undefined,
+    };
+  }
+
+  if (chartSpec.kind === "waterfall") {
+    const firstSeries = chartSpec.series[0];
+    if (!firstSeries) {
+      return null;
+    }
+    return {
+      type: "chart-waterfall",
+      steps: chartSpec.categories.map((label, index) => ({
+        label,
+        value: firstSeries.values[index] ?? 0,
+      })),
+      axis: {
+        y: chartSpec.unit ? { label: chartSpec.unit, unit: chartSpec.unit } : undefined,
+      },
+    };
+  }
+
+  return null;
+}
+
+function chartVisualContractHasExecutableData(contract: ExportObjectContract) {
+  return Boolean(
+    contract.dataContract &&
+      chartContractCompatibleWithNativeChart(contract.dataContract.type) &&
+      dataContractHasMinimumData(contract.dataContract),
+  );
+}
+
+function hasChartModuleEvidence(sectionHtml: string, tag: string) {
+  return (
+    /data-html-module-kind=(?:"chart"|'chart')/i.test(tag) ||
+    /data-html-module-kind=(?:"chart"|'chart')/i.test(sectionHtml) ||
+    /data-html-chart-spec=/i.test(tag) ||
+    /data-html-chart-spec=/i.test(sectionHtml) ||
+    /data-export-chart=/i.test(tag) ||
+    /data-export-chart=/i.test(sectionHtml)
+  );
+}
+
+function validateRenderedDataContract(args: {
+  tag: string;
+  expected: ExportObjectContract;
+  pageNumber: number;
+}): PageExportContractDiagnostic[] {
+  const raw = readHtmlAttribute(args.tag, "data-export-contract");
+  if (!raw) {
+    return [
+      {
+        code: "export-data-contract-missing",
+        severity: "warning",
+        pageNumber: args.pageNumber,
+        objectId: args.expected.objectId,
+        message: `Export object ${args.expected.objectId} is missing data-export-contract metadata.`,
+      },
+    ];
+  }
+  const expectedType = expectedDataContractTypeForObject(args.expected);
+  if (!expectedType) {
+    return [];
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(decodeHtmlAttribute(raw));
+  } catch {
+    return [
+      {
+        code: "export-data-contract-invalid",
+        severity: "warning",
+        pageNumber: args.pageNumber,
+        objectId: args.expected.objectId,
+        message: `Export object ${args.expected.objectId} rendered data-export-contract that is not valid JSON.`,
+      },
+    ];
+  }
+  const rendered = parsed as Partial<ExportObjectContract>;
+  const dataContract = rendered.dataContract;
+  const validation = exportDataContractSchema.safeParse(dataContract);
+  if (!validation.success) {
+    return [
+      {
+        code: "export-data-contract-invalid",
+        severity: "warning",
+        pageNumber: args.pageNumber,
+        objectId: args.expected.objectId,
+        message: `Export object ${args.expected.objectId} rendered an invalid dataContract for ${expectedType}.`,
+      },
+    ];
+  }
+  if (validation.data.type === "missing-data") {
+    return [
+      {
+        code: "export-data-contract-minimum-data-missing",
+        severity: "warning",
+        pageNumber: args.pageNumber,
+        objectId: args.expected.objectId,
+        message: `Export object ${args.expected.objectId} still has missing-data instead of executable ${expectedType} data.`,
+      },
+    ];
+  }
+  if (!dataContractHasMinimumData(validation.data)) {
+    return [
+      {
+        code: "export-data-contract-minimum-data-missing",
+        severity: "warning",
+        pageNumber: args.pageNumber,
+        objectId: args.expected.objectId,
+        message: `Export object ${args.expected.objectId} rendered ${validation.data.type} data without the minimum executable fields.`,
+      },
+    ];
+  }
+  if (
+    !dataContractCompatibleWithObject({
+      objectKind: args.expected.objectKind,
+      renderTarget: args.expected.renderTarget,
+      type: validation.data.type,
+    })
+  ) {
+    return [
+      {
+        code: "export-data-contract-incompatible",
+        severity: "warning",
+        pageNumber: args.pageNumber,
+        objectId: args.expected.objectId,
+        message: `Export object ${args.expected.objectId} expected ${expectedType} data but rendered ${validation.data.type}.`,
+      },
+    ];
+  }
+  return [];
+}
+
+function validateChartVisualModule(args: {
+  sectionHtml: string;
+  tag: string;
+  expected: ExportObjectContract;
+  pageNumber: number;
+}): PageExportContractDiagnostic[] {
+  if (args.expected.objectKind !== "chart-visual") {
+    return [];
+  }
+  if (chartVisualContractHasExecutableData(args.expected)) {
+    return [];
+  }
+  if (hasChartModuleEvidence(args.sectionHtml, args.tag)) {
+    return [];
+  }
+  return [
+    {
+      code: "chart-visual-module-missing",
+      severity: "warning",
+      pageNumber: args.pageNumber,
+      objectId: args.expected.objectId,
+      message: `Export object ${args.expected.objectId} is chart-visual but rendered neither an html chart module nor executable chart data.`,
+    },
+  ];
+}
+
+function validateExportObjectMetadata(args: {
+  sectionHtml: string;
+  pageNumber: number;
+  contracts?: readonly ExportObjectContract[] | null;
+  pageContract?: Pick<PageExportContract, "layoutArchetype" | "visualGrammar"> | null;
+}): PageExportContractDiagnostic[] {
+  const contracts = args.contracts ?? [];
+  if (contracts.length === 0) {
+    return [];
+  }
+
+  const diagnostics: PageExportContractDiagnostic[] = [];
+  for (const contract of contracts) {
+    const tags = findElementOpenTagsByExportObjectId(args.sectionHtml, contract.objectId);
+    const tag = tags[0] ?? null;
+    if (!tag) {
+      diagnostics.push({
+        code: "export-object-metadata-missing",
+        severity: "warning",
+        pageNumber: args.pageNumber,
+        objectId: contract.objectId,
+        message: `Export object ${contract.objectId} is promised by contract but no root element carries data-export-object-id.`,
+      });
+      continue;
+    }
+    if (tags.length > 1) {
+      diagnostics.push({
+        code: "export-object-duplicate-root",
+        severity: "warning",
+        pageNumber: args.pageNumber,
+        objectId: contract.objectId,
+        message: `Export object ${contract.objectId} appears on ${tags.length} root elements; each objectId must be unique per page.`,
+      });
+    }
+
+    const semanticKind = readHtmlAttribute(tag, "data-semantic-kind");
+    const exportObjectKind = readHtmlAttribute(tag, "data-export-object-kind");
+    if (semanticKind !== contract.objectKind || exportObjectKind !== contract.objectKind) {
+      diagnostics.push({
+        code: "export-object-kind-mismatch",
+        severity: "warning",
+        pageNumber: args.pageNumber,
+        objectId: contract.objectId,
+        message: `Export object ${contract.objectId} expected data-semantic-kind and data-export-object-kind ${contract.objectKind} but rendered ${semanticKind || "missing"}/${exportObjectKind || "missing"}.`,
+      });
+    }
+
+    const renderTarget = readHtmlAttribute(tag, "data-render-target");
+    if (renderTarget !== contract.renderTarget) {
+      diagnostics.push({
+        code: "export-object-render-target-missing",
+        severity: "warning",
+        pageNumber: args.pageNumber,
+        objectId: contract.objectId,
+        message: `Export object ${contract.objectId} expected data-render-target ${contract.renderTarget} but rendered ${renderTarget || "missing"}.`,
+      });
+    }
+    const ownershipScope = readHtmlAttribute(tag, "data-ownership-scope");
+    if (ownershipScope === null || ownershipScopeAttribute(contract) !== decodeHtmlAttribute(ownershipScope)) {
+      diagnostics.push({
+        code: "export-contract-ownership-scope-missing",
+        severity: "warning",
+        pageNumber: args.pageNumber,
+        objectId: contract.objectId,
+        message: `Export object ${contract.objectId} expected data-ownership-scope="${ownershipScopeAttribute(contract)}" but rendered ${ownershipScope ?? "missing"}.`,
+      });
+    }
+    const forbiddenExport = readHtmlAttribute(tag, "data-forbidden-export");
+    const forbiddenInterpretation = readHtmlAttribute(tag, "data-forbidden-interpretation");
+    if (
+      forbiddenExport === null ||
+      forbiddenInterpretation === null ||
+      !metadataListIncludesExpected(decodeHtmlAttribute(forbiddenExport), contract.forbiddenInterpretation) ||
+      !metadataListIncludesExpected(decodeHtmlAttribute(forbiddenInterpretation), contract.forbiddenInterpretation)
+    ) {
+      diagnostics.push({
+        code: "export-contract-forbidden-interpretation-missing",
+        severity: "warning",
+        pageNumber: args.pageNumber,
+        objectId: contract.objectId,
+        message: `Export object ${contract.objectId} expected forbidden interpretation metadata ${contract.forbiddenInterpretation.join(",") || "empty"} on data-forbidden-export and data-forbidden-interpretation.`,
+      });
+    }
+    const qualityIntent = readHtmlAttribute(tag, "data-quality-intent");
+    if (qualityIntent !== "contract-first-export") {
+      diagnostics.push({
+        code: "export-contract-quality-intent-missing",
+        severity: "warning",
+        pageNumber: args.pageNumber,
+        objectId: contract.objectId,
+        message: `Export object ${contract.objectId} is missing data-quality-intent="contract-first-export".`,
+      });
+    }
+    if (
+      args.pageContract?.layoutArchetype &&
+      readHtmlAttribute(tag, "data-layout-archetype") !== args.pageContract.layoutArchetype
+    ) {
+      diagnostics.push({
+        code: "export-contract-page-ir-metadata-missing",
+        severity: "warning",
+        pageNumber: args.pageNumber,
+        objectId: contract.objectId,
+        message: `Export object ${contract.objectId} is missing data-layout-archetype="${args.pageContract.layoutArchetype}".`,
+      });
+    }
+    if (
+      args.pageContract?.visualGrammar &&
+      readHtmlAttribute(tag, "data-visual-grammar") !== args.pageContract.visualGrammar
+    ) {
+      diagnostics.push({
+        code: "export-contract-page-ir-metadata-missing",
+        severity: "warning",
+        pageNumber: args.pageNumber,
+        objectId: contract.objectId,
+        message: `Export object ${contract.objectId} is missing data-visual-grammar="${args.pageContract.visualGrammar}".`,
+      });
+    }
+    diagnostics.push(...validateRenderedDataContract({
+      tag,
+      expected: contract,
+      pageNumber: args.pageNumber,
+    }));
+    diagnostics.push(...validateChartVisualModule({
+      sectionHtml: args.sectionHtml,
+      tag,
+      expected: contract,
+      pageNumber: args.pageNumber,
+    }));
+  }
+
+  return diagnostics;
+}
+
 export function validateGeneratedPageHtml(args: {
   html: string;
   expectedPageNumber: number;
   expectedPageTitle: string;
   htmlOutputMode?: HtmlOutputMode;
   previousAnimationPage?: HtmlAnimationPage | null;
+  expectedExportObjectContract?: ExportObjectContract | null;
+  expectedExportObjectContracts?: readonly ExportObjectContract[] | null;
+  expectedPageExportContract?: Pick<PageExportContract, "layoutArchetype" | "visualGrammar"> | null;
 }) {
   const cleanedHtml = extractHtmlDocument(args.html);
   if (!cleanedHtml || !/<(?:!DOCTYPE html|html[\s>])/i.test(cleanedHtml)) {
@@ -1059,7 +1825,23 @@ export function validateGeneratedPageHtml(args: {
     pageNumber: args.expectedPageNumber,
     previousAnimationPage: args.previousAnimationPage,
   });
-  const sectionHtml = sanitizedAnimation.sectionHtml;
+  const expectedExportObjectContracts =
+    args.expectedExportObjectContracts ??
+    (args.expectedExportObjectContract ? [args.expectedExportObjectContract] : []);
+  const compiledExportMetadata = compileGeneratedPageExportMetadata({
+    sectionHtml: sanitizedAnimation.sectionHtml,
+    pageNumber: args.expectedPageNumber,
+    contracts: expectedExportObjectContracts,
+    pageContract: args.expectedPageExportContract,
+  });
+  const sectionHtml = compiledExportMetadata.sectionHtml;
+  const exportContractDiagnostics = validateExportObjectMetadata({
+    sectionHtml,
+    pageNumber: args.expectedPageNumber,
+    contracts: expectedExportObjectContracts,
+    pageContract: args.expectedPageExportContract,
+  });
+  exportContractDiagnostics.unshift(...compiledExportMetadata.diagnostics);
   const pageHtml = cleanedHtml.replace(rawSectionHtml, sectionHtml);
   const pageTitleMatches = extractPageTitles(cleanedHtml);
   const pageTitle = pageTitleMatches[0]?.trim();
@@ -1116,6 +1898,7 @@ export function validateGeneratedPageHtml(args: {
     pageHtml,
     sectionHtml,
     animationPage: sanitizedAnimation.animationPage,
+    exportContractDiagnostics,
   };
 }
 
@@ -1190,6 +1973,7 @@ export function buildSanitizedFinalReport(args: {
   styleProfile?: GeneratedReportStyleProfile;
   htmlOutputMode?: HtmlOutputMode;
   animationStructure?: HtmlAnimationStructure;
+  exportContract?: DeckExportContract;
 }) {
   const styledHtml = args.styleProfile
     ? decorateDeckHtmlWithStyleProfile(args.html, args.styleProfile)
@@ -1212,6 +1996,7 @@ export function buildSanitizedFinalReport(args: {
     animationStructure: sanitizeAnimationStructurePages(args.animationStructure?.pages ?? []),
     styleProfileId: args.styleProfile?.id,
     styleProfile: args.styleProfile,
+    exportContract: args.exportContract,
   };
 }
 
@@ -1237,7 +2022,7 @@ function renderMetricStrip(items: string[], theme: DeterministicRenderTheme) {
         `<div data-html-visual-kind="surface" style="border:1px solid ${withHexAlpha(
           theme.borderSubtle,
           0.9,
-        )};border-radius:22px;background:${theme.surfaceSecondary};padding:20px 22px;min-height:108px;"><div style="font-size:13px;letter-spacing:0.18em;text-transform:uppercase;color:${theme.accentSecondary};margin-bottom:12px;">Signal ${index + 1}</div><div style="font-size:22px;line-height:1.35;color:${theme.textPrimary};">${escapeHtml(
+        )};border-radius:${surfaceBorderRadius(theme, 22)};background:${theme.surfaceSecondary};padding:20px 22px;min-height:108px;"><div style="font-size:13px;letter-spacing:0.18em;text-transform:uppercase;color:${theme.accentSecondary};margin-bottom:12px;">Signal ${index + 1}</div><div style="font-size:22px;line-height:1.35;color:${theme.textPrimary};">${escapeHtml(
           item,
         )}</div></div>`,
     )
@@ -1345,7 +2130,7 @@ function renderBarChartSvg(spec: ChartSpec, theme: DeterministicRenderTheme) {
             )}" stroke="${withHexAlpha(theme.textMuted, 0.45)}" stroke-width="1" stroke-dasharray="5 6" />`
           : "";
         return `${connector}<g>
-          <rect x="${x}" y="${y}" width="${barWidth}" height="${h}" rx="4" fill="${color}" />
+          <rect x="${x}" y="${y}" width="${barWidth}" height="${h}" rx="${svgCornerRadius(theme, 4)}" fill="${color}" />
           <text x="${x + barWidth / 2}" y="${Math.max(top + 14, y - 10)}" text-anchor="middle" font-size="13" font-weight="700" fill="${theme.textPrimary}">${escapeHtml(
             formatConsultingChartValue(step.rawValue, spec.unit),
           )}</text>
@@ -1384,7 +2169,7 @@ function renderBarChartSvg(spec: ChartSpec, theme: DeterministicRenderTheme) {
             ? theme.textPrimary
             : theme.chartPalette[seriesIndex % Math.max(theme.chartPalette.length, 1)] ?? theme.accentPrimary);
         return `<g>
-          <rect x="${x}" y="${y}" width="${Math.max(14, barWidth - 8)}" height="${h}" rx="4" fill="${color}" opacity="${isHighlight ? 1 : 0.78}" />
+          <rect x="${x}" y="${y}" width="${Math.max(14, barWidth - 8)}" height="${h}" rx="${svgCornerRadius(theme, 4)}" fill="${color}" opacity="${isHighlight ? 1 : 0.78}" />
           <text x="${x + Math.max(14, barWidth - 8) / 2}" y="${value >= 0 ? Math.max(top + 14, y - 10) : y + h + 18}" text-anchor="middle" font-size="12" font-weight="700" fill="${theme.textPrimary}">${escapeHtml(
             formatConsultingChartValue(value, spec.unit),
           )}</text>
@@ -1459,7 +2244,7 @@ function renderStackedChartSvg(spec: ChartSpec, theme: DeterministicRenderTheme)
         const nextY = yFor(cumulative);
         const segmentHeight = Math.max(4, cursorY - nextY);
         cursorY = nextY;
-        return `<rect x="${x}" y="${nextY}" width="${barWidth}" height="${segmentHeight}" rx="4" fill="${series.color ?? colors[seriesIndex % colors.length]}" opacity="${seriesIndex === 0 ? 0.95 : 0.78}" />`;
+        return `<rect x="${x}" y="${nextY}" width="${barWidth}" height="${segmentHeight}" rx="${svgCornerRadius(theme, 4)}" fill="${series.color ?? colors[seriesIndex % colors.length]}" opacity="${seriesIndex === 0 ? 0.95 : 0.78}" />`;
       }).join("");
       return `<g>${segments}<text x="${x + barWidth / 2}" y="${Math.max(top + 14, cursorY - 10)}" text-anchor="middle" font-size="13" font-weight="700" fill="${theme.textPrimary}">${escapeHtml(
         formatConsultingChartValue(totals[categoryIndex] ?? 0, spec.unit),
@@ -1669,7 +2454,7 @@ function renderChartPanelForSpec(args: {
   )}" style="border:1px solid ${withHexAlpha(
     theme.borderSubtle,
     0.95,
-  )};border-radius:8px;background:${theme.surfacePrimary};padding:${densitySettings.padding};min-height:${densitySettings.minHeight}px;display:flex;flex-direction:column;gap:${densitySettings.gap}px;box-shadow:none;">
+  )};border-radius:${surfaceBorderRadius(theme, 8)};background:${theme.surfacePrimary};padding:${densitySettings.padding};min-height:${densitySettings.minHeight}px;display:flex;flex-direction:column;gap:${densitySettings.gap}px;box-shadow:none;">
     <div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:${densitySettings.headerGap}px;align-items:start;border-bottom:1px solid ${withHexAlpha(theme.borderSubtle, 0.82)};padding-bottom:14px;">
       <div>
         <div style="font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:${theme.accentSecondary};font-weight:800;margin-bottom:8px;">Exhibit</div>
@@ -1925,7 +2710,7 @@ function renderStructuredGanttSvg(spec: StructuredDiagramSpec, theme: Determinis
       const milestone = task.milestone
         ? `<circle cx="${endX}" cy="${y + rowHeight / 2}" r="8" fill="${theme.textPrimary}" data-gantt-milestone="true" />`
         : "";
-      return `<g data-gantt-task-id="${escapeHtml(task.id)}" data-gantt-track-id="${escapeHtml(task.trackId)}"><line x1="${left}" y1="${y + rowHeight}" x2="${chartLeft + chartWidth}" y2="${y + rowHeight}" stroke="${theme.borderSubtle}" stroke-width="1" /><text x="${left}" y="${y + rowHeight / 2}" dominant-baseline="middle" font-size="19" font-weight="650" fill="${theme.textPrimary}">${escapeHtml(task.label)}</text><rect x="${startX}" y="${y + rowHeight / 2 - 13}" width="${width}" height="26" rx="13" fill="${barColor}" opacity="0.9" />${milestone}</g>`;
+      return `<g data-gantt-task-id="${escapeHtml(task.id)}" data-gantt-track-id="${escapeHtml(task.trackId)}"><line x1="${left}" y1="${y + rowHeight}" x2="${chartLeft + chartWidth}" y2="${y + rowHeight}" stroke="${theme.borderSubtle}" stroke-width="1" /><text x="${left}" y="${y + rowHeight / 2}" dominant-baseline="middle" font-size="19" font-weight="650" fill="${theme.textPrimary}">${escapeHtml(task.label)}</text><rect x="${startX}" y="${y + rowHeight / 2 - 13}" width="${width}" height="26" rx="${svgCornerRadius(theme, 13)}" fill="${barColor}" opacity="0.9" />${milestone}</g>`;
     })
     .join("");
 
@@ -1936,7 +2721,12 @@ function renderStructuredGanttSvg(spec: StructuredDiagramSpec, theme: Determinis
   </svg>`;
 }
 
-function renderStructuredDiagramPageSection(recipe: PageRecipe, theme: DeterministicRenderTheme) {
+function renderStructuredDiagramPageSection(
+  recipe: PageRecipe,
+  theme: DeterministicRenderTheme,
+  exportObjectContract?: ExportObjectContract | null,
+  pageExportContract?: Pick<PageExportContract, "layoutArchetype" | "visualGrammar"> | null,
+) {
   const spec = recipe.structuredDiagramSpec;
   if (!spec) {
     return "";
@@ -1962,7 +2752,7 @@ function renderStructuredDiagramPageSection(recipe: PageRecipe, theme: Determini
         spec.kind === "gantt" ? "Gantt / Roadmap" : spec.kind === "swimlane" ? "Swimlane flow" : "Flowchart",
       )}</div>
     </header>
-    ${diagramSvg}
+    <main ${exportContractDataAttributes(exportObjectContract, pageExportContract)} style="position:absolute;inset:0;">${diagramSvg}</main>
   </section>`;
 }
 
@@ -1980,7 +2770,7 @@ function renderHeroProofSection(recipe: PageRecipe, theme: DeterministicRenderTh
       <div data-html-visual-kind="surface" style="border:1px solid ${withHexAlpha(
         theme.borderSubtle,
         0.9,
-      )};border-radius:30px;background:${theme.surfacePrimary};padding:28px 30px;">
+      )};border-radius:${surfaceBorderRadius(theme, 30)};background:${theme.surfacePrimary};padding:28px 30px;">
         <div style="font-size:13px;letter-spacing:0.18em;text-transform:uppercase;color:${theme.accentSecondary};margin-bottom:14px;">Supporting logic</div>
         <ul style="margin:0;padding-left:24px;">${renderListItems(recipe.supportBullets, theme)}</ul>
       </div>
@@ -1994,7 +2784,7 @@ function renderHeroProofSection(recipe: PageRecipe, theme: DeterministicRenderTh
               `<div data-html-visual-kind="${index === 0 ? "highlight" : "surface"}" style="border:1px solid ${withHexAlpha(
                 theme.borderSubtle,
                 0.85,
-              )};border-radius:26px;background:${index === 0 ? theme.surfaceSecondary : theme.surfacePrimary};padding:24px 24px;"><div style="font-size:13px;letter-spacing:0.18em;text-transform:uppercase;color:${theme.accentSecondary};margin-bottom:10px;">Evidence ${index + 1}</div><div style="font-size:24px;line-height:1.45;color:${theme.textPrimary};">${escapeHtml(
+              )};border-radius:${surfaceBorderRadius(theme, 26)};background:${index === 0 ? theme.surfaceSecondary : theme.surfacePrimary};padding:24px 24px;"><div style="font-size:13px;letter-spacing:0.18em;text-transform:uppercase;color:${theme.accentSecondary};margin-bottom:10px;">Evidence ${index + 1}</div><div style="font-size:24px;line-height:1.45;color:${theme.textPrimary};">${escapeHtml(
                 item,
               )}</div></div>`,
           ))
@@ -2068,12 +2858,12 @@ function renderChartInsightSection(recipe: PageRecipe, theme: DeterministicRende
       ${recipe.chartSpec?.composite === "decision-footer" ? `<div data-html-visual-kind="annotation" style="border:1px solid ${withHexAlpha(
         theme.borderSubtle,
         0.9,
-      )};border-radius:24px;background:${theme.surfaceSecondary};padding:22px 24px;font-size:24px;line-height:1.45;color:${theme.textPrimary};">${escapeHtml(
+      )};border-radius:${surfaceBorderRadius(theme, 24)};background:${theme.surfaceSecondary};padding:22px 24px;font-size:24px;line-height:1.45;color:${theme.textPrimary};">${escapeHtml(
         recipe.takeaway,
       )}</div>` : ""}
     </div>
     <aside data-html-layout-key="chart-right" style="display:flex;flex-direction:column;gap:16px;">
-      <div data-html-visual-kind="badge" style="display:inline-flex;align-self:flex-start;padding:10px 16px;border-radius:999px;border:1px solid ${withHexAlpha(
+      <div data-html-visual-kind="badge" style="display:inline-flex;align-self:flex-start;padding:10px 16px;border-radius:${surfaceBorderRadius(theme, 999)};border:1px solid ${withHexAlpha(
         theme.borderSubtle,
         0.9,
       )};background:${theme.surfacePrimary};font-size:13px;letter-spacing:0.18em;text-transform:uppercase;color:${theme.accentSecondary};">Data-driven view</div>
@@ -2082,7 +2872,7 @@ function renderChartInsightSection(recipe: PageRecipe, theme: DeterministicRende
       <div data-html-visual-kind="rail" style="border:1px solid ${withHexAlpha(
         theme.borderSubtle,
         0.9,
-      )};border-radius:24px;background:${theme.surfaceSecondary};padding:20px 22px;"><div style="font-size:13px;letter-spacing:0.18em;text-transform:uppercase;color:${theme.accentSecondary};margin-bottom:10px;">Decision</div><div style="font-size:24px;line-height:1.42;color:${theme.textPrimary};">${escapeHtml(
+      )};border-radius:${surfaceBorderRadius(theme, 24)};background:${theme.surfaceSecondary};padding:20px 22px;"><div style="font-size:13px;letter-spacing:0.18em;text-transform:uppercase;color:${theme.accentSecondary};margin-bottom:10px;">Decision</div><div style="font-size:24px;line-height:1.42;color:${theme.textPrimary};">${escapeHtml(
         recipe.takeaway,
       )}</div></div>
     </aside>
@@ -2110,7 +2900,7 @@ function renderSequenceSection(recipe: PageRecipe, theme: DeterministicRenderThe
             `<div data-html-visual-kind="surface" style="border:1px solid ${withHexAlpha(
               theme.borderSubtle,
               0.9,
-            )};border-radius:28px;background:${theme.surfacePrimary};padding:22px 24px;min-height:180px;"><div style="font-size:13px;letter-spacing:0.18em;text-transform:uppercase;color:${theme.accentSecondary};margin-bottom:18px;">Step ${index + 1}</div><div style="font-size:26px;line-height:1.38;color:${theme.textPrimary};">${escapeHtml(
+            )};border-radius:${surfaceBorderRadius(theme, 28)};background:${theme.surfacePrimary};padding:22px 24px;min-height:180px;"><div style="font-size:13px;letter-spacing:0.18em;text-transform:uppercase;color:${theme.accentSecondary};margin-bottom:18px;">Step ${index + 1}</div><div style="font-size:26px;line-height:1.38;color:${theme.textPrimary};">${escapeHtml(
               item,
             )}</div></div>`,
         )
@@ -2147,7 +2937,7 @@ function renderComparisonSection(recipe: PageRecipe, theme: DeterministicRenderT
             `<div data-html-visual-kind="${index === 0 ? "highlight" : "surface"}" style="border:1px solid ${withHexAlpha(
               theme.borderSubtle,
               0.85,
-            )};border-radius:24px;background:${index === 0 ? theme.surfaceSecondary : theme.surfacePrimary};padding:20px 22px;"><div style="font-size:13px;letter-spacing:0.18em;text-transform:uppercase;color:${theme.accentSecondary};margin-bottom:10px;">Comparison ${index + 1}</div><div style="font-size:23px;line-height:1.42;color:${theme.textPrimary};">${escapeHtml(
+            )};border-radius:${surfaceBorderRadius(theme, 24)};background:${index === 0 ? theme.surfaceSecondary : theme.surfacePrimary};padding:20px 22px;"><div style="font-size:13px;letter-spacing:0.18em;text-transform:uppercase;color:${theme.accentSecondary};margin-bottom:10px;">Comparison ${index + 1}</div><div style="font-size:23px;line-height:1.42;color:${theme.textPrimary};">${escapeHtml(
               item,
             )}</div></div>`,
         )
@@ -2157,6 +2947,289 @@ function renderComparisonSection(recipe: PageRecipe, theme: DeterministicRenderT
       )}</div>
     </aside>
   </div>`;
+}
+
+function exportContractDataAttributes(
+  contract?: ExportObjectContract | null,
+  pageContract?: Pick<PageExportContract, "layoutArchetype" | "visualGrammar"> | null,
+) {
+  if (!contract) {
+    return "";
+  }
+  return compiledExportMetadataAttributes(contract, pageContract)
+    .map(([name, value]) => `${name}="${escapeHtml(value)}"`)
+    .join(" ");
+}
+
+function exportObjectContractForRenderedRecipe(
+  contract: ExportObjectContract | null | undefined,
+  recipe: Pick<PageRecipe, "chartSpec">,
+) {
+  if (!contract || contract.objectKind !== "chart-visual" || contract.dataContract || !recipe.chartSpec) {
+    return contract ?? null;
+  }
+  const dataContract = exportDataContractFromChartSpec(recipe.chartSpec);
+  return dataContract
+    ? {
+        ...contract,
+        dataContract,
+      }
+    : contract;
+}
+
+type MatrixDataContract = Extract<ExportDataContract, { type: "matrix" }>;
+type MatrixVariant = NonNullable<MatrixDataContract["variant"]>;
+type MatrixItemContract = MatrixDataContract["items"][number];
+type MatrixQuadrantContract = NonNullable<MatrixDataContract["quadrants"]>[number];
+
+function compactMatrixText(value: string | null | undefined, maxLength: number) {
+  const cleaned = String(value ?? "").replace(/\s+/g, " ").trim();
+  if (cleaned.length <= maxLength) {
+    return cleaned;
+  }
+  return `${cleaned.slice(0, Math.max(0, maxLength - 3)).trim()}...`;
+}
+
+function clampMatrixCoordinate(value: number | null | undefined, fallback: number) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.max(0.08, Math.min(0.92, value));
+}
+
+function matrixPercent(value: number) {
+  return `${Math.round(value * 1000) / 10}%`;
+}
+
+function defaultMatrixQuadrants(axes: MatrixDataContract["axes"]): MatrixQuadrantContract[] {
+  const xShort = compactMatrixText(axes.x.label.split(/[\/／|]/)[0] ?? axes.x.label, 28);
+  const yShort = compactMatrixText(axes.y.label.split(/[\/／|]/)[0] ?? axes.y.label, 28);
+  return [
+    { id: "high-y-low-x", label: `High ${yShort} / low ${xShort}`, x: 0, y: 0.5, w: 0.5, h: 0.5 },
+    { id: "high-y-high-x", label: `High ${yShort} / high ${xShort}`, x: 0.5, y: 0.5, w: 0.5, h: 0.5 },
+    { id: "low-y-low-x", label: `Low ${yShort} / low ${xShort}`, x: 0, y: 0, w: 0.5, h: 0.5 },
+    { id: "low-y-high-x", label: `Low ${yShort} / high ${xShort}`, x: 0.5, y: 0, w: 0.5, h: 0.5 },
+  ];
+}
+
+function fallbackMatrixItems(recipe: PageRecipe): MatrixItemContract[] {
+  const labels = [
+    ...recipe.evidenceBullets,
+    ...recipe.supportBullets,
+    recipe.takeaway,
+  ]
+    .map((item) => compactMatrixText(item, 130))
+    .filter(Boolean)
+    .slice(0, 6);
+  const safeLabels = labels.length > 0
+    ? labels
+    : [
+        compactMatrixText(recipe.heroClaim, 110) || "Core opportunity",
+        "Scale option",
+        "Watch item",
+        "Support asset",
+      ];
+  const positions = [
+    { x: 0.68, y: 0.72 },
+    { x: 0.32, y: 0.70 },
+    { x: 0.70, y: 0.30 },
+    { x: 0.32, y: 0.28 },
+    { x: 0.50, y: 0.56 },
+    { x: 0.56, y: 0.42 },
+  ];
+  return safeLabels.map((label, index) => ({
+    id: `matrix-item-${index + 1}`,
+    label,
+    x: positions[index % positions.length]!.x,
+    y: positions[index % positions.length]!.y,
+  }));
+}
+
+function matrixDataForRender(
+  contract: ExportObjectContract | null | undefined,
+  recipe: PageRecipe,
+): MatrixDataContract {
+  if (contract?.dataContract?.type === "matrix") {
+    return {
+      ...contract.dataContract,
+      variant: contract.dataContract.variant ?? "point-map",
+      quadrants: contract.dataContract.quadrants?.length
+        ? contract.dataContract.quadrants
+        : defaultMatrixQuadrants(contract.dataContract.axes),
+    };
+  }
+
+  const axes = {
+    x: { label: "Execution visibility" },
+    y: { label: "Upside potential" },
+  };
+  return {
+    type: "matrix",
+    variant: "asset-card-map",
+    axes,
+    quadrants: defaultMatrixQuadrants(axes),
+    items: fallbackMatrixItems(recipe),
+    callout: {
+      title: "Conclusion",
+      body: compactMatrixText(recipe.takeaway || recipe.insight, 260),
+    },
+    renderTarget: "editable-shapes",
+  };
+}
+
+function renderMatrixQuadrants(data: MatrixDataContract, theme: DeterministicRenderTheme) {
+  const quadrants = data.quadrants?.length ? data.quadrants.slice(0, 4) : defaultMatrixQuadrants(data.axes);
+  return quadrants
+    .map((quadrant, index) => {
+      const left = matrixPercent(Math.max(0, Math.min(1, quadrant.x)));
+      const bottom = matrixPercent(Math.max(0, Math.min(1, quadrant.y)));
+      const width = matrixPercent(Math.max(0.12, Math.min(1, quadrant.w)));
+      const height = matrixPercent(Math.max(0.12, Math.min(1, quadrant.h)));
+      const fill = index === 1 || index === 2
+        ? withHexAlpha(theme.surfaceSecondary, 0.72)
+        : withHexAlpha(theme.surfacePrimary, 0.86);
+      return `<div data-html-visual-kind="matrix-quadrant" style="position:absolute;left:${left};bottom:${bottom};width:${width};height:${height};box-sizing:border-box;padding:28px 30px;background:${fill};">
+        <div style="font-size:25px;line-height:1.12;font-weight:800;color:${theme.textPrimary};max-width:330px;">${escapeHtml(
+          compactMatrixText(quadrant.label, 64),
+        )}</div>
+      </div>`;
+    })
+    .join("");
+}
+
+function renderMatrixAssetCards(data: MatrixDataContract, theme: DeterministicRenderTheme) {
+  return data.items
+    .slice(0, 8)
+    .map((item, index) => {
+      const x = clampMatrixCoordinate(item.x, index % 2 === 0 ? 0.68 : 0.32);
+      const y = clampMatrixCoordinate(item.y, index < 2 ? 0.70 : 0.30);
+      const color = item.color ?? theme.chartPalette[index % theme.chartPalette.length] ?? theme.accentPrimary;
+      const prominent = index === 0 || index === 1;
+      return `<div data-html-visual-kind="matrix-asset-card" style="position:absolute;left:${matrixPercent(x)};top:${matrixPercent(
+        1 - y,
+      )};transform:translate(-50%,-50%);width:${prominent ? 280 : 260}px;min-height:${prominent ? 118 : 104}px;box-sizing:border-box;border:1px solid ${withHexAlpha(
+        color,
+        0.72,
+      )};border-radius:${surfaceBorderRadius(theme, 16)};background:${prominent ? color : theme.surfacePrimary};padding:20px 22px;box-shadow:0 16px 38px ${withHexAlpha(
+        theme.textPrimary,
+        0.10,
+      )};">
+        <div style="font-size:${prominent ? 30 : 25}px;line-height:1.06;font-weight:850;color:${prominent ? "#ffffff" : theme.textPrimary};">${escapeHtml(
+          compactMatrixText(item.label, 44),
+        )}</div>
+        ${item.detail
+          ? `<div style="margin-top:10px;font-size:${prominent ? 18 : 17}px;line-height:1.28;color:${prominent ? withHexAlpha("#ffffff", 0.88) : theme.textMuted};">${escapeHtml(
+              compactMatrixText(item.detail, 96),
+            )}</div>`
+          : ""}
+      </div>`;
+    })
+    .join("");
+}
+
+function renderMatrixPoints(data: MatrixDataContract, theme: DeterministicRenderTheme) {
+  return data.items
+    .slice(0, 10)
+    .map((item, index) => {
+      const x = clampMatrixCoordinate(item.x, index % 2 === 0 ? 0.68 : 0.32);
+      const y = clampMatrixCoordinate(item.y, index < 2 ? 0.70 : 0.30);
+      const color = item.color ?? theme.chartPalette[index % theme.chartPalette.length] ?? theme.accentPrimary;
+      return `<div data-html-visual-kind="matrix-point" style="position:absolute;left:${matrixPercent(x)};top:${matrixPercent(
+        1 - y,
+      )};transform:translate(-12px,-12px);display:flex;align-items:flex-start;gap:11px;max-width:310px;">
+        <span style="width:22px;height:22px;border-radius:999px;background:${color};border:4px solid ${withHexAlpha(
+          color,
+          0.25,
+        )};box-shadow:0 0 0 6px ${withHexAlpha(color, 0.12)};flex:0 0 auto;"></span>
+        <span data-html-visual-kind="matrix-point-label" style="font-size:21px;line-height:1.18;font-weight:760;color:${theme.textPrimary};padding-top:1px;">${escapeHtml(
+          compactMatrixText(item.label, 62),
+        )}</span>
+      </div>`;
+    })
+    .join("");
+}
+
+function renderDeterministicMatrixPageSection(
+  recipe: PageRecipe,
+  theme: DeterministicRenderTheme,
+  contract?: ExportObjectContract | null,
+  pageContract?: Pick<PageExportContract, "layoutArchetype" | "visualGrammar"> | null,
+) {
+  const data = matrixDataForRender(contract, recipe);
+  const variant: MatrixVariant = data.variant ?? "point-map";
+  const calloutTitle = data.callout?.title && data.callout.title !== "Conclusion rail"
+    ? data.callout.title
+    : theme.profileId === "finance"
+      ? "Investment conclusion"
+      : "Conclusion";
+  const calloutBody = compactMatrixText(data.callout?.body || recipe.takeaway || recipe.insight, 270);
+  const supportItems = [
+    ...recipe.supportBullets,
+    ...recipe.evidenceBullets,
+  ]
+    .map((item) => compactMatrixText(item, 110))
+    .filter(Boolean)
+    .slice(0, 3);
+
+  return `<section class="page" data-page-number="${recipe.pageNumber}" data-page-title="${escapeHtml(
+    recipe.pageTitle,
+  )}" data-page-bg="${theme.pageBackground}" data-divider-color="${theme.borderSubtle}" data-surface-fill="${theme.surfacePrimary}" data-page-accent="${theme.accentPrimary}" data-style-profile-id="${theme.profileId}" data-export-page-bg="${theme.pageBackground}" data-export-divider-color="${theme.borderSubtle}" data-export-surface-fill="${theme.surfacePrimary}" data-export-accent="${theme.accentPrimary}" style="width:1600px;height:900px;box-sizing:border-box;padding:44px 58px 40px 58px;background:${theme.pageBackground};display:flex;flex-direction:column;gap:22px;font-family:Inter,'PingFang SC','Microsoft YaHei',Arial,sans-serif;overflow:hidden;">
+    <header data-html-layout-key="matrix-header" style="border-bottom:1px solid ${withHexAlpha(
+      theme.borderSubtle,
+      0.95,
+    )};padding-bottom:18px;">
+      <div style="font-size:14px;letter-spacing:0.18em;text-transform:uppercase;color:${theme.accentSecondary};font-weight:760;margin-bottom:12px;">${escapeHtml(
+        recipe.pageTitle,
+      )}</div>
+      <h1 style="margin:0;font-size:43px;line-height:1.08;color:${theme.textPrimary};font-family:Georgia,'Times New Roman',serif;font-weight:850;max-width:1260px;">${escapeHtml(
+        compactMatrixText(recipe.heroClaim || recipe.insight || recipe.pageTitle, 128),
+      )}</h1>
+      <p style="margin:12px 0 0 0;font-size:20px;line-height:1.36;color:${theme.textMuted};max-width:1260px;">${escapeHtml(
+        compactMatrixText(recipe.insight || recipe.objective, 180),
+      )}</p>
+    </header>
+    <main ${exportContractDataAttributes(contract, pageContract)} data-html-visual-kind="matrix-deliverable" data-matrix-variant="${variant}" style="flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:28px;align-items:stretch;">
+      <div data-html-layout-key="matrix-canvas" style="position:relative;min-height:0;">
+        <div data-html-visual-kind="matrix-field" style="position:absolute;left:48px;right:18px;top:18px;bottom:56px;border:2px solid ${withHexAlpha(
+          theme.borderSubtle,
+          0.95,
+        )};background:${withHexAlpha(theme.surfacePrimary, 0.82)};overflow:hidden;">
+          ${renderMatrixQuadrants(data, theme)}
+          <div style="position:absolute;left:50%;top:0;bottom:0;border-left:2px solid ${withHexAlpha(theme.borderSubtle, 0.95)};"></div>
+          <div style="position:absolute;left:0;right:0;top:50%;border-top:2px solid ${withHexAlpha(theme.borderSubtle, 0.95)};"></div>
+          ${variant === "asset-card-map" ? renderMatrixAssetCards(data, theme) : renderMatrixPoints(data, theme)}
+        </div>
+        <div style="position:absolute;left:48px;right:18px;bottom:14px;text-align:center;font-size:24px;font-weight:800;color:${theme.textPrimary};">${escapeHtml(
+          compactMatrixText(data.axes.x.label, 90),
+        )}</div>
+        <div style="position:absolute;left:0;top:18px;bottom:56px;width:34px;display:flex;align-items:center;justify-content:center;">
+          <div style="transform:rotate(-90deg);white-space:nowrap;font-size:24px;font-weight:800;color:${theme.textPrimary};">${escapeHtml(
+            compactMatrixText(data.axes.y.label, 90),
+          )}</div>
+        </div>
+        <div style="position:absolute;left:50px;bottom:58px;font-size:16px;color:${theme.textMuted};">Low</div>
+        <div style="position:absolute;right:22px;bottom:58px;font-size:16px;color:${theme.textMuted};">High</div>
+        <div style="position:absolute;left:50px;top:20px;font-size:16px;color:${theme.textMuted};">High</div>
+        <div style="position:absolute;left:50px;bottom:88px;font-size:16px;color:${theme.textMuted};">Low</div>
+      </div>
+      <aside data-html-visual-kind="matrix-conclusion-rail" style="border-left:1px solid ${withHexAlpha(
+        theme.borderSubtle,
+        0.95,
+      )};padding-left:28px;display:flex;flex-direction:column;justify-content:space-between;gap:22px;">
+        <div>
+          <div style="font-size:14px;letter-spacing:0.16em;text-transform:uppercase;color:${theme.accentSecondary};font-weight:780;margin-bottom:22px;">${escapeHtml(
+            calloutTitle,
+          )}</div>
+          <div style="font-size:31px;line-height:1.22;color:${theme.textPrimary};font-weight:830;">${escapeHtml(
+            calloutBody,
+          )}</div>
+        </div>
+        ${supportItems.length > 0
+          ? `<div style="border-top:1px solid ${withHexAlpha(theme.borderSubtle, 0.9)};padding-top:18px;display:flex;flex-direction:column;gap:12px;">${supportItems.map((item) => `<div style="font-size:17px;line-height:1.34;color:${theme.textMuted};">${escapeHtml(item)}</div>`).join("")}</div>`
+          : ""}
+      </aside>
+    </main>
+  </section>`;
 }
 
 function renderResearchFigureSection(recipe: PageRecipe, theme: DeterministicRenderTheme) {
@@ -2180,10 +3253,25 @@ function renderResearchFigureSection(recipe: PageRecipe, theme: DeterministicRen
   </div>`;
 }
 
-export function composeDeterministicPageSection(recipe: PageRecipe, styleProfile: DeckStyleProfile) {
+export function composeDeterministicPageSection(
+  recipe: PageRecipe,
+  styleProfile: DeckStyleProfile,
+  exportObjectContract?: ExportObjectContract | null,
+  pageExportContract?: Pick<PageExportContract, "layoutArchetype" | "visualGrammar"> | null,
+) {
   const theme = resolveDeterministicRenderTheme(styleProfile);
+  const renderedExportObjectContract = exportObjectContractForRenderedRecipe(
+    exportObjectContract,
+    recipe,
+  );
+  if (
+    pageExportContract?.layoutArchetype === "matrix-first" ||
+    renderedExportObjectContract?.objectKind === "matrix"
+  ) {
+    return renderDeterministicMatrixPageSection(recipe, theme, renderedExportObjectContract, pageExportContract);
+  }
   if (recipe.structuredDiagramSpec) {
-    return renderStructuredDiagramPageSection(recipe, theme);
+    return renderStructuredDiagramPageSection(recipe, theme, renderedExportObjectContract, pageExportContract);
   }
 
   const moduleLabel = recipe.diagramSpec ? "Scientific diagram" : recipe.moduleBinding?.label ?? "Built-in renderer";
@@ -2210,14 +3298,14 @@ export function composeDeterministicPageSection(recipe: PageRecipe, styleProfile
           recipe.insight,
         )}</div>
       </div>
-      <div data-html-visual-kind="badge" style="display:inline-flex;align-items:center;padding:10px 14px;border-radius:999px;border:1px solid ${withHexAlpha(
+      <div data-html-visual-kind="badge" style="display:inline-flex;align-items:center;padding:10px 14px;border-radius:${surfaceBorderRadius(theme, 999)};border:1px solid ${withHexAlpha(
         theme.borderSubtle,
         0.9,
       )};background:${theme.surfacePrimary};font-size:12px;letter-spacing:0.18em;text-transform:uppercase;color:${theme.accentSecondary};">${escapeHtml(
         moduleLabel,
       )}</div>
     </header>
-    <main style="flex:1;display:block;">${body}</main>
+    <main ${exportContractDataAttributes(renderedExportObjectContract, pageExportContract)} style="flex:1;display:block;">${body}</main>
   </section>`;
 }
 

@@ -1593,6 +1593,26 @@ function collectWaterfallValueLabels(plotRoot: HTMLElement) {
     .sort((left, right) => left.left - right.left);
 }
 
+function collectBarCategoryLabels(plotRoot: HTMLElement) {
+  const plotHeight = readNumericStyle(plotRoot, "height") || plotRoot.getBoundingClientRect().height || 1;
+  return collectAbsoluteTextNodes(plotRoot)
+    .filter((node) => node.top >= plotHeight - 72 || node.element.style.bottom.startsWith("-"))
+    .sort((left, right) => left.left - right.left)
+    .map((node) => node.text);
+}
+
+function collectBarValueLabels(plotRoot: HTMLElement) {
+  const plotHeight = readNumericStyle(plotRoot, "height") || plotRoot.getBoundingClientRect().height || 1;
+  return collectAbsoluteTextNodes(plotRoot)
+    .filter((node) => node.top < plotHeight - 72)
+    .map((node) => ({
+      ...node,
+      value: parsePercentOrNumberToken(node.text),
+    }))
+    .filter((node): node is PositionedTextNode & { value: number } => node.value !== null)
+    .sort((left, right) => left.left - right.left);
+}
+
 function detectDivWaterfallChartSpec(root: HTMLElement): HtmlChartSpec | null {
   if (isPageScaleElement(root)) {
     return null;
@@ -1647,6 +1667,77 @@ function detectDivWaterfallChartSpec(root: HTMLElement): HtmlChartSpec | null {
           label: "Value",
           values,
           color: normalizeText(bars.at(-1)?.background) || DEFAULT_BAR_COLORS[0],
+          role: "bar",
+          axis: "primary",
+        },
+      ],
+    };
+  }
+
+  return null;
+}
+
+function detectDivBarChartSpec(root: HTMLElement): HtmlChartSpec | null {
+  if (isPageScaleElement(root)) {
+    return null;
+  }
+
+  const roots = collectLocalPlotRoots(root);
+  for (const plotRoot of roots) {
+    const bars = collectWaterfallBarCandidates(plotRoot);
+    if (bars.length < 3 || bars.length > 12) {
+      continue;
+    }
+
+    const medianWidth = [...bars].sort((left, right) => left.width - right.width)[Math.floor(bars.length / 2)]?.width ?? 0;
+    const similarlySizedBars = bars.filter((bar) => Math.abs(bar.width - medianWidth) <= Math.max(14, medianWidth * 0.45));
+    if (similarlySizedBars.length < Math.max(3, Math.floor(bars.length * 0.72))) {
+      continue;
+    }
+
+    const text = normalizeText(root.textContent);
+    const categoryLabels = collectBarCategoryLabels(plotRoot);
+    const valueLabels = collectBarValueLabels(plotRoot);
+    const looksLikeWaterfall =
+      /waterfall|bridge/i.test(text) ||
+      categoryLabels.some((label) => /^start$/i.test(label)) ||
+      categoryLabels.some((label) => /^end$/i.test(label)) ||
+      valueLabels.some((label) => label.text.trim().startsWith("+") || label.text.trim().startsWith("-"));
+    if (looksLikeWaterfall) {
+      continue;
+    }
+
+    const looksChartLike =
+      /bar|column|chart|plot|revenue|growth|volume|throughput|share|mix|cagr|%/i.test(text) ||
+      valueLabels.length >= Math.min(2, bars.length) ||
+      categoryLabels.length >= Math.min(2, bars.length);
+    if (!looksChartLike) {
+      continue;
+    }
+
+    const categories =
+      categoryLabels.length >= bars.length
+        ? categoryLabels.slice(0, bars.length)
+        : bars.map((_, index) => `Category ${index + 1}`);
+    const values =
+      valueLabels.length >= bars.length
+        ? valueLabels.slice(0, bars.length).map((label) => label.value)
+        : bars.map((bar) => Math.round(bar.height));
+    const headings = readNearestElementHeadings(root);
+
+    return {
+      kind: "bar",
+      title: headings.title || "Bar chart",
+      subtitle: headings.subtitle,
+      insight: "",
+      unit: "",
+      categories,
+      series: [
+        {
+          id: "bar-values",
+          label: "Value",
+          values,
+          color: normalizeText(bars[0]?.background) || DEFAULT_BAR_COLORS[0],
           role: "bar",
           axis: "primary",
         },
@@ -1805,12 +1896,14 @@ function detectBubbleChartSpec(root: HTMLElement): HtmlChartSpec | null {
     (sideAxisLabels.length >= 2
       ? `${sideAxisLabels.at(-1)!.text} / ${sideAxisLabels[0]!.text}`
       : sideAxisLabels[0]?.text ?? "Y axis");
+  const calloutText =
+    textNodes.find((node) => /=/.test(node.text) && node.width >= Math.max(80, plotWidth * 0.16))?.text ?? "";
 
   return {
     kind: "bubble",
     title,
     subtitle,
-    insight: "",
+    insight: calloutText,
     unit: "",
     xLabel,
     yLabel,
@@ -2022,7 +2115,24 @@ function detectMatrixChartSpec(root: HTMLElement): HtmlChartSpec | null {
   };
 }
 
+function hasExplicitPseudoTableIntent(root: HTMLElement) {
+  const intentText = normalizeText(
+    [
+      root.getAttribute("data-export-role"),
+      root.getAttribute("data-html-visual-kind"),
+      root.getAttribute("data-html-module-label"),
+      root.getAttribute("aria-label"),
+      root.getAttribute("role"),
+      root.className,
+    ].join(" "),
+  );
+  return /\b(table|data-table|comparison-table)\b/i.test(intentText) || /\bgrid\b/i.test(root.getAttribute("role") ?? "");
+}
+
 function detectPseudoTableModule(root: HTMLElement) {
+  if (!hasExplicitPseudoTableIntent(root)) {
+    return null;
+  }
   const tableSpec = buildPseudoTableSpec(root);
   if (!tableSpec) {
     return null;
@@ -2106,6 +2216,17 @@ export function canonicalizeDataBackedModulesOnPage(page: Element): void {
           moduleLabel: "Waterfall chart",
           visualKind: "chart-frame",
           chartSpec: waterfallSpec,
+        });
+        return;
+      }
+      const barSpec = detectDivBarChartSpec(element);
+      if (barSpec) {
+        setModuleMetadata({
+          element,
+          moduleKind: CHART_MODULE_KIND,
+          moduleLabel: "Bar chart",
+          visualKind: "chart-frame",
+          chartSpec: barSpec,
         });
         return;
       }
@@ -2765,7 +2886,7 @@ export function renderHtmlChartModule(args: {
   const padding = density?.padding ?? "24px 24px 20px";
   const marginTop = density?.chartMarginTop ?? 18;
   const footerSize = density?.footerSize ?? 11;
-  return `<div class="html-chart-module" data-html-module-kind="${CHART_MODULE_KIND}" data-html-module-label="Chart" data-html-visual-kind="chart-frame" data-html-fit-role="content"${presentation ? ` data-chart-presentation-version="2" data-chart-exhibit-preset="${escapeHtml(presentation.exhibitPreset ?? "auto")}" data-chart-density="${escapeHtml(presentation.density ?? "hero")}"` : ""} ${HTML_CHART_SPEC_ATTRIBUTE}="${serializeJson(spec)}" ${exportPayload ? `data-export-chart="${serializeJson(exportPayload)}"` : ""} style="position:relative;background:${escapeHtml(background)};border:1px solid ${escapeHtml(border)};border-radius:8px;padding:${padding};box-shadow:none;--ppt-accent:${escapeHtml(accent)};">
+  return `<div class="html-chart-module" data-html-module-kind="${CHART_MODULE_KIND}" data-html-module-label="Chart" data-html-visual-kind="chart-frame" data-html-fit-role="content"${presentation ? ` data-chart-presentation-version="2" data-chart-exhibit-preset="${escapeHtml(presentation.exhibitPreset ?? "auto")}" data-chart-density="${escapeHtml(presentation.density ?? "hero")}"` : ""} ${HTML_CHART_SPEC_ATTRIBUTE}="${serializeJson(spec)}" ${exportPayload ? `data-export-chart="${serializeJson(exportPayload)}"` : ""} style="position:relative;background:${escapeHtml(background)};border:1px solid ${escapeHtml(border)};border-radius:0px;padding:${padding};box-shadow:none;--ppt-accent:${escapeHtml(accent)};">
     <div style="display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:24px;border-bottom:1px solid ${escapeHtml(border)};padding-bottom:14px;">
       <div>
         <div style="font-size:11px;font-weight:800;letter-spacing:0.16em;text-transform:uppercase;color:#8a6b2f;margin-bottom:8px;">Exhibit</div>
@@ -2793,7 +2914,7 @@ export function renderHtmlTableModule(args: {
   })
     .map(() => "minmax(120px,1fr)")
     .join(" ")}`.trim();
-  return `<div class="html-table-module" data-html-module-kind="${TABLE_MODULE_KIND}" data-html-module-label="Table" data-html-visual-kind="surface" data-html-fit-role="content" ${HTML_TABLE_SPEC_ATTRIBUTE}="${serializeJson(args.tableSpec)}" style="position:relative;background:${escapeHtml(background)};border:1px solid ${escapeHtml(border)};border-radius:24px;padding:18px 18px 12px;box-shadow:0 18px 42px rgba(93,119,142,0.08);--ppt-accent:${escapeHtml(accent)};">
+  return `<div class="html-table-module" data-html-module-kind="${TABLE_MODULE_KIND}" data-html-module-label="Table" data-html-visual-kind="surface" data-html-fit-role="content" ${HTML_TABLE_SPEC_ATTRIBUTE}="${serializeJson(args.tableSpec)}" style="position:relative;background:${escapeHtml(background)};border:1px solid ${escapeHtml(border)};border-radius:0px;padding:18px 18px 12px;box-shadow:none;--ppt-accent:${escapeHtml(accent)};">
     <div style="display:grid;grid-template-columns:${columnTemplate};align-items:center;padding:12px 10px 14px;border-bottom:1px solid ${escapeHtml(border)};font-size:12px;letter-spacing:0.12em;text-transform:uppercase;color:#6d8294;font-weight:700;">
       ${args.tableSpec.columns.map((column) => `<div>${escapeHtml(column.label)}</div>`).join("")}
     </div>

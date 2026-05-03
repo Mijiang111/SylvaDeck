@@ -19,7 +19,18 @@ import type {
   HtmlPageAnimationManifest,
   ModuleUsageMode,
   HtmlOutputMode,
+  DeckExportContract,
+  ExportDataContract,
+  ExportObjectContract,
+  ExportObjectKind,
+  ExportOwnershipScope,
+  ExportRenderTarget,
+  PageComposition,
+  PageExportContract,
+  PageDensity,
+  PageLayoutArchetype,
   StudioBridgeLaunchMode,
+  PageVisualGrammar,
   PageOverflowCause,
   PageCompositionFingerprint,
 } from "./schemas.js";
@@ -42,12 +53,36 @@ export type {
   HtmlPageAnimationManifest,
   ModuleUsageMode,
   HtmlOutputMode,
+  DeckExportContract,
+  ExportDataContract,
+  ExportObjectContract,
+  ExportObjectKind,
+  ExportOwnershipScope,
+  ExportRenderTarget,
+  PageComposition,
+  PageExportContract,
+  PageDensity,
+  PageLayoutArchetype,
   StudioBridgeLaunchMode,
+  PageVisualGrammar,
   PageOverflowCause,
   PageCompositionFingerprint,
 } from "./schemas.js";
 
 export type GeneratedReportStyleProfile = ReturnType<typeof toGeneratedReportStyleProfile>;
+
+export type GeneratedHtmlReport = {
+  title: string;
+  html: string;
+  pageCount: number;
+  pageTitles: string[];
+  htmlOutputMode?: HtmlOutputMode;
+  animationStructure?: HtmlAnimationStructure;
+  styleProfileId?: string;
+  styleProfile?: GeneratedReportStyleProfile;
+  exportContract?: DeckExportContract;
+};
+
 export type Studio3dHeroReferenceName =
   | "object-grammar-chip-platform"
   | "composition-families"
@@ -97,8 +132,10 @@ export type StudioStageTraceEntry = {
 export type StudioAiWorkspaceStage = "planning" | "page" | "repair";
 
 export type StudioAiWorkspaceBlockId =
+  | "creative-brief"
   | "raw-brief"
   | "ai-understanding"
+  | "semantic-objects"
   | "visual-thinking"
   | "user-task"
   | "working-hypothesis"
@@ -183,6 +220,9 @@ export type StudioAiWorkspacePromptMeta = {
   preflightCoreTask?: string | null;
   preflightEvidenceTier?: StudioEvidenceTier | null;
   preflightIncludes3dActivation?: boolean;
+  preflightRouteKind?: StudioTaskRoutePrimaryKind | null;
+  preflightRouteConfidence?: StudioTaskRouteConfidence | null;
+  preflightWorkspaceMode?: StudioTaskRoute["workspaceMode"] | null;
 };
 export type StudioGenerateStage =
   | "preflight"
@@ -195,6 +235,9 @@ export type StudioGenerateStage =
   | `page-${number}`
   | `page-recipe-${number}`
   | `page-render-${number}`
+  | `page-contract-repair-${number}`
+  | `page-render-contract-repair-${number}`
+  | `repair-page-contract-repair-${number}`
   | `repair-page-${number}`;
 
 export type StudioGenerateStreamEvent =
@@ -234,16 +277,7 @@ export type StudioGenerateStreamEvent =
       type: "final_report";
       runId: string;
       model: string | null;
-      report: {
-        title: string;
-        html: string;
-        pageCount: number;
-        pageTitles: string[];
-        htmlOutputMode?: HtmlOutputMode;
-        animationStructure?: HtmlAnimationStructure;
-        styleProfileId?: string;
-        styleProfile?: GeneratedReportStyleProfile;
-      };
+      report: GeneratedHtmlReport;
     }
   | {
       type: "error";
@@ -764,8 +798,60 @@ export type StudioPageMission = {
   structureCue: "matrix" | "quadrant" | "chart" | null;
 };
 
+export type StudioTaskRoutePrimaryKind =
+  | "explicit-page-blueprint"
+  | "source-backed-analysis"
+  | "chart-matrix-figure"
+  | "process-flow"
+  | "visual-hero-3d"
+  | "ambiguous-brief"
+  | "generic-presentation";
+
+export type StudioTaskRouteConfidence = "high" | "medium" | "low";
+
+export type StudioTaskRouteCapabilities = {
+  chart: boolean;
+  matrix: boolean;
+  flow: boolean;
+  threeD: boolean;
+  sourceBacked: boolean;
+  freeformLayout: boolean;
+};
+
+export type StudioTaskRoutePageBlueprint = {
+  pageNumber: number;
+  title: string;
+  storyClaim: string;
+  evidenceNotes: string[];
+  layoutCue: StudioPageMission["structureCue"] | "flow" | "3d" | "comparison-grid" | null;
+  primaryVisual: string | null;
+  rawText: string;
+};
+
+export type StudioTaskRoute = {
+  primaryKind: StudioTaskRoutePrimaryKind;
+  confidence: StudioTaskRouteConfidence;
+  reasonCodes: string[];
+  capabilities: StudioTaskRouteCapabilities;
+  pageBlueprint: StudioTaskRoutePageBlueprint[];
+  workspaceMode: "page-scoped" | "full-brief";
+};
+
+export type StudioSemanticWarningCode =
+  | "business-ai-scientific-visual-drift"
+  | "comparison-grid-mislabeled-as-matrix"
+  | "required-labels-over-budget";
+
+export type StudioSemanticWarning = {
+  code: StudioSemanticWarningCode;
+  severity: "soft-warning";
+  pageNumber: number | null;
+  message: string;
+};
+
 export type StudioPreflightPlan = {
   rawBrief: string;
+  route: StudioTaskRoute;
   subject: string;
   deliverable: string;
   pageCount: number | null;
@@ -780,6 +866,8 @@ export type StudioPreflightPlan = {
   visualThinking: StudioVisualThinking;
   capabilityActivations: StudioCapabilityActivation[];
   assumptionPolicy: string[];
+  exportContract: DeckExportContract;
+  semanticWarnings: StudioSemanticWarning[];
 };
 
 export type SemanticCorrectionResult = {

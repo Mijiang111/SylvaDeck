@@ -33,7 +33,12 @@ import type {
   BlockKind,
   BlockTone,
   ConversationMessage,
+  DeckExportContract,
   DraftProvider,
+  ExportDataContract,
+  ExportObjectContract,
+  ExportObjectKind,
+  ExportRenderTarget,
   GenerationHistoryEntry,
   GeneratedHtmlReport,
   GeneratedDraftAsset,
@@ -42,6 +47,10 @@ import type {
   LayoutPage,
   MetricFact,
   NarrativeItem,
+  PageComposition,
+  PageDensity,
+  PageLayoutArchetype,
+  PageVisualGrammar,
   PublishSnapshot,
   PublishSnapshotFormat,
   SerializableWorkbenchDraft,
@@ -253,9 +262,34 @@ function cloneConversationMessages(messages: ConversationMessage[]) {
   }));
 }
 
+function cloneDeckExportContract(contract?: DeckExportContract | null): DeckExportContract | undefined {
+  if (!contract) {
+    return undefined;
+  }
+  return {
+    version: 1,
+    pages: contract.pages.map((page) => ({
+      ...page,
+      objects: page.objects.map((object) => ({
+        ...object,
+        dataContract:
+          object.dataContract === null
+            ? null
+            : JSON.parse(JSON.stringify(object.dataContract)) as ExportDataContract,
+        ownershipScope: {
+          ...object.ownershipScope,
+          childRoles: [...object.ownershipScope.childRoles],
+        },
+        forbiddenInterpretation: [...object.forbiddenInterpretation],
+      })),
+    })),
+  };
+}
+
 function cloneProjectSnapshot(snapshot: WorkbenchProjectSnapshot): WorkbenchProjectSnapshot {
   return {
     ...snapshot,
+    exportContract: cloneDeckExportContract(snapshot.exportContract),
     longFormClarification: { ...snapshot.longFormClarification },
     deckOptimization: { ...snapshot.deckOptimization },
     starterBindings: { ...snapshot.starterBindings },
@@ -285,6 +319,7 @@ function clonePublishSnapshots(entries: PublishSnapshot[]) {
 function cloneProject(project: WorkbenchProject): WorkbenchProject {
   return {
     ...project,
+    exportContract: cloneDeckExportContract(project.exportContract),
     longFormClarification: { ...project.longFormClarification },
     deckOptimization: { ...project.deckOptimization },
     starterBindings: { ...project.starterBindings },
@@ -406,6 +441,7 @@ function createProjectSnapshot(args: {
   generationMode: WorkbenchGenerationMode;
   moduleUsageMode: WorkbenchProject["moduleUsageMode"];
   requestedPageCount: number | null;
+  exportContract?: DeckExportContract | null;
   longFormClarification: WorkbenchLongFormClarificationState;
   deckOptimization: WorkbenchDeckOptimizationState;
   pages: LayoutPage[];
@@ -432,6 +468,7 @@ function createProjectSnapshot(args: {
     generationMode: args.generationMode,
     moduleUsageMode: args.moduleUsageMode,
     requestedPageCount: args.requestedPageCount,
+    exportContract: cloneDeckExportContract(args.exportContract),
     longFormClarification: { ...args.longFormClarification },
     deckOptimization: { ...args.deckOptimization },
     pages: args.pages.map((page) => ({
@@ -497,6 +534,7 @@ function createStoredProjectRecord(args: {
   generationMode?: WorkbenchGenerationMode;
   moduleUsageMode?: WorkbenchProject["moduleUsageMode"];
   requestedPageCount?: number | null;
+  exportContract?: DeckExportContract | null;
   longFormClarification?: WorkbenchLongFormClarificationState;
   deckOptimization?: WorkbenchDeckOptimizationState;
   briefMessages?: ConversationMessage[];
@@ -542,6 +580,7 @@ function createStoredProjectRecord(args: {
       Number.isInteger(args.requestedPageCount) && (args.requestedPageCount ?? 0) >= 1
         ? args.requestedPageCount ?? null
         : null,
+    exportContract: cloneDeckExportContract(args.exportContract),
     longFormClarification: normalizeLongFormClarificationState(args.longFormClarification),
     deckOptimization: normalizeDeckOptimizationState(args.deckOptimization),
     briefMessages: cloneConversationMessages(args.briefMessages ?? []),
@@ -1048,7 +1087,339 @@ function normalizeGeneratedHtmlReport(value: unknown): GeneratedHtmlReport {
       structure,
       visualStructure,
     }),
+    exportContract: normalizeDeckExportContract(candidate.exportContract, candidate.pageCount as number),
   };
+}
+
+function isExportObjectKind(value: unknown): value is ExportObjectKind {
+  return (
+    value === "chart-visual" ||
+    value === "native-chart" ||
+    value === "matrix" ||
+    value === "native-table" ||
+    value === "comparison-grid" ||
+    value === "metric-grid" ||
+    value === "card-grid" ||
+    value === "diagram" ||
+    value === "text"
+  );
+}
+
+function isExportRenderTarget(value: unknown): value is ExportRenderTarget {
+  return (
+    value === "visual-snapshot" ||
+    value === "native-chart" ||
+    value === "native-table" ||
+    value === "editable-shapes" ||
+    value === "editable-text" ||
+    value === "html-visual"
+  );
+}
+
+function isPageLayoutArchetype(value: unknown): value is PageLayoutArchetype {
+  return (
+    value === "single-dominant-visual" ||
+    value === "hero-metric" ||
+    value === "chart-with-insight-rail" ||
+    value === "matrix-first" ||
+    value === "bubble-landscape" ||
+    value === "timeline-led" ||
+    value === "process-flow" ||
+    value === "swimlane" ||
+    value === "benchmark-table" ||
+    value === "decision-tree" ||
+    value === "layered-stack" ||
+    value === "market-map" ||
+    value === "portfolio-grid" ||
+    value === "capability-model" ||
+    value === "funnel" ||
+    value === "risk-heatmap" ||
+    value === "thesis-evidence-board" ||
+    value === "before-after" ||
+    value === "flywheel" ||
+    value === "operating-model" ||
+    value === "annotation-stage" ||
+    value === "evidence-wall" ||
+    value === "case-timeline" ||
+    value === "bridge-explanation"
+  );
+}
+
+function isPageVisualGrammar(value: unknown): value is PageVisualGrammar {
+  return (
+    value === "consulting" ||
+    value === "equity-research" ||
+    value === "technical-system" ||
+    value === "product-strategy" ||
+    value === "operating-model" ||
+    value === "scientific-figure"
+  );
+}
+
+function isPageComposition(value: unknown): value is PageComposition {
+  return (
+    value === "dominant-left-rail-right" ||
+    value === "dominant-right-rail-left" ||
+    value === "top-title-full-bleed-visual" ||
+    value === "center-canvas-annotation-ring" ||
+    value === "two-column-contrast" ||
+    value === "three-band-narrative" ||
+    value === "grid-with-hierarchy"
+  );
+}
+
+function isPageDensity(value: unknown): value is PageDensity {
+  return value === "sparse" || value === "executive" || value === "dense";
+}
+
+function isExportObjectRole(value: unknown): value is ExportObjectContract["objectRole"] {
+  return value === "primary" || value === "secondary" || value === "annotation" || value === "source";
+}
+
+function normalizeExportObjectContract(value: unknown, pageNumber: number): ExportObjectContract | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const candidate = value as Partial<ExportObjectContract>;
+  if (
+    typeof candidate.objectId !== "string" ||
+    !candidate.objectId.trim() ||
+    !isExportObjectKind(candidate.objectKind) ||
+    !isExportRenderTarget(candidate.renderTarget)
+  ) {
+    return null;
+  }
+  const objectKind = candidate.objectKind === "native-chart" ? "chart-visual" : candidate.objectKind;
+  const renderTarget =
+    candidate.renderTarget === "native-chart" && objectKind === "chart-visual"
+      ? "visual-snapshot"
+      : candidate.renderTarget;
+  const ownershipScope =
+    candidate.ownershipScope && typeof candidate.ownershipScope === "object"
+      ? candidate.ownershipScope
+      : null;
+  return {
+    objectId: candidate.objectId.trim(),
+    pageNumber,
+    pageStory: typeof candidate.pageStory === "string" ? candidate.pageStory.trim() : "",
+    primaryVisualObject:
+      typeof candidate.primaryVisualObject === "string"
+        ? candidate.primaryVisualObject.trim()
+        : objectKind,
+    objectKind,
+    objectRole: isExportObjectRole(candidate.objectRole) ? candidate.objectRole : undefined,
+    dataContract:
+      candidate.dataContract && typeof candidate.dataContract === "object" && !Array.isArray(candidate.dataContract)
+        ? candidate.dataContract as ExportDataContract
+        : null,
+    renderTarget,
+    ownershipScope: {
+      rootId:
+        typeof ownershipScope?.rootId === "string" && ownershipScope.rootId.trim()
+          ? ownershipScope.rootId.trim()
+          : candidate.objectId.trim(),
+      ownsText: Boolean(ownershipScope?.ownsText),
+      ownsShapes: Boolean(ownershipScope?.ownsShapes),
+      ownsSvg: Boolean(ownershipScope?.ownsSvg),
+      childRoles: Array.isArray(ownershipScope?.childRoles)
+        ? ownershipScope.childRoles
+            .filter((role): role is string => typeof role === "string")
+            .map((role) => role.trim())
+            .filter(Boolean)
+            .slice(0, 24)
+        : [],
+    },
+    forbiddenInterpretation: Array.isArray(candidate.forbiddenInterpretation)
+      ? candidate.forbiddenInterpretation
+          .filter((item): item is string => typeof item === "string")
+          .map((item) => item.trim())
+          .filter(Boolean)
+          .slice(0, 16)
+      : [],
+  };
+}
+
+function compositionForPageLayoutArchetype(layoutArchetype: PageLayoutArchetype): PageComposition {
+  switch (layoutArchetype) {
+    case "chart-with-insight-rail":
+      return "dominant-left-rail-right";
+    case "bubble-landscape":
+    case "matrix-first":
+    case "market-map":
+    case "risk-heatmap":
+    case "flywheel":
+    case "annotation-stage":
+      return "center-canvas-annotation-ring";
+    case "timeline-led":
+    case "process-flow":
+    case "swimlane":
+    case "decision-tree":
+    case "layered-stack":
+    case "funnel":
+    case "operating-model":
+    case "case-timeline":
+    case "bridge-explanation":
+      return "three-band-narrative";
+    case "before-after":
+      return "two-column-contrast";
+    case "single-dominant-visual":
+    case "hero-metric":
+      return "top-title-full-bleed-visual";
+    case "benchmark-table":
+    case "portfolio-grid":
+    case "capability-model":
+    case "thesis-evidence-board":
+    case "evidence-wall":
+    default:
+      return "grid-with-hierarchy";
+  }
+}
+
+function inferDefaultPageLayoutArchetype(
+  pageCandidate: Partial<DeckExportContract["pages"][number]>,
+  objects: ExportObjectContract[],
+): PageLayoutArchetype {
+  const primaryObjectId =
+    typeof pageCandidate.primaryObjectId === "string" && pageCandidate.primaryObjectId.trim()
+      ? pageCandidate.primaryObjectId.trim()
+      : null;
+  const primaryObject =
+    objects.find((object) => object.objectId === primaryObjectId) ??
+    objects.find((object) => object.objectRole === "primary") ??
+    objects[0] ??
+    null;
+  const text = [
+    pageCandidate.pageStory,
+    pageCandidate.primaryVisualObject,
+    primaryObject?.objectKind,
+    primaryObject?.primaryVisualObject,
+    primaryObject?.dataContract?.type,
+  ]
+    .filter((item): item is string => typeof item === "string")
+    .join(" ")
+    .toLowerCase();
+
+  if (primaryObject?.dataContract?.type === "chart-bubble" || /\bbubble\b|气泡图|氣泡圖/.test(text)) {
+    return "bubble-landscape";
+  }
+  if (/\b(?:waterfall|valuation\s+bridge|economics\s+bridge|upside\s+waterfall|value\s+bridge)\b|瀑布图|瀑布圖|桥接|橋接/.test(text)) {
+    return "bridge-explanation";
+  }
+  if (/\b(?:before[-\s/]+after|before\s+and\s+after)\b|前后对比|前後對比/.test(text)) {
+    return "before-after";
+  }
+  if (/\b(?:flywheel|virtuous\s+cycle|reinforcing\s+loop)\b|飞轮|飛輪|正循环|正循環/.test(text)) {
+    return "flywheel";
+  }
+  if (primaryObject?.objectKind === "matrix" || /\b(?:matrix|quadrant|2x2|bcg)\b|矩阵|矩陣|四象限/.test(text)) {
+    return "matrix-first";
+  }
+  if (primaryObject?.objectKind === "native-table" || /\b(?:table|benchmark)\b|表格/.test(text)) {
+    return "benchmark-table";
+  }
+  if (primaryObject?.objectKind === "chart-visual") {
+    return "chart-with-insight-rail";
+  }
+  if (/\b(?:swimlane|lane)\b|泳道/.test(text)) {
+    return "swimlane";
+  }
+  if (/\b(?:operating\s+model|governance\s+model|roles?\s+and\s+cadence)\b|运营模式|營運模式|治理模式/.test(text)) {
+    return "operating-model";
+  }
+  if (/\b(?:annotation\s+stage|annotated\s+figure|figure\s+stage|callout\s+ring|moat|ecosystem)\b|标注|標注|生态|生態/.test(text)) {
+    return "annotation-stage";
+  }
+  if (/\b(?:evidence\s+wall|proof\s+wall|fact\s+base|evidence\s+hierarchy)\b|证据墙|證據牆|事实墙|事實牆/.test(text)) {
+    return "evidence-wall";
+  }
+  if (primaryObject?.objectKind === "diagram" || /\b(?:process|flow|workflow|timeline)\b|流程|时间线|時間線/.test(text)) {
+    if (/\b(?:case|rollout|implementation|lesson|turning\s+point)\b|案例|复盘|復盤/.test(text)) {
+      return "case-timeline";
+    }
+    return /\b(?:timeline)\b|时间线|時間線/.test(text) ? "timeline-led" : "process-flow";
+  }
+  if (primaryObject?.objectKind === "metric-grid" || /\b(?:metric|kpi|big number)\b|指标|指標/.test(text)) {
+    return "hero-metric";
+  }
+  return "thesis-evidence-board";
+}
+
+function normalizeDeckExportContract(value: unknown, pageCount: number): DeckExportContract | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const candidate = value as Partial<DeckExportContract>;
+  if (candidate.version !== 1 || !Array.isArray(candidate.pages)) {
+    return undefined;
+  }
+  const pages = candidate.pages
+    .map((page) => {
+      if (!page || typeof page !== "object") {
+        return null;
+      }
+      const pageCandidate = page as Partial<DeckExportContract["pages"][number]>;
+      const pageNumber =
+        typeof pageCandidate.pageNumber === "number" && Number.isInteger(pageCandidate.pageNumber)
+          ? pageCandidate.pageNumber
+          : null;
+      if (!pageNumber || pageNumber < 1 || pageNumber > pageCount) {
+        return null;
+      }
+      const objects = Array.isArray(pageCandidate.objects)
+        ? pageCandidate.objects
+            .map((object) => normalizeExportObjectContract(object, pageNumber))
+            .filter((object): object is ExportObjectContract => Boolean(object))
+        : [];
+      if (!objects.length) {
+        return null;
+      }
+      const primaryObjectId =
+        typeof pageCandidate.primaryObjectId === "string" && pageCandidate.primaryObjectId.trim()
+          ? pageCandidate.primaryObjectId.trim()
+          : objects.find((object) => object.objectRole === "primary")?.objectId ??
+            (objects.length === 1 ? objects[0]?.objectId : undefined);
+      const defaultLayoutArchetype = inferDefaultPageLayoutArchetype(pageCandidate, objects);
+      const layoutArchetype = isPageLayoutArchetype(pageCandidate.layoutArchetype)
+        ? pageCandidate.layoutArchetype
+        : defaultLayoutArchetype;
+      const normalizedPage: DeckExportContract["pages"][number] = {
+        pageNumber,
+        pageStory: typeof pageCandidate.pageStory === "string" ? pageCandidate.pageStory.trim() : "",
+        primaryVisualObject:
+          typeof pageCandidate.primaryVisualObject === "string"
+            ? pageCandidate.primaryVisualObject.trim()
+            : objects[0]?.primaryVisualObject ?? "",
+        layoutArchetype,
+        visualGrammar: isPageVisualGrammar(pageCandidate.visualGrammar)
+          ? pageCandidate.visualGrammar
+          : "consulting",
+        composition: isPageComposition(pageCandidate.composition)
+          ? pageCandidate.composition
+          : compositionForPageLayoutArchetype(layoutArchetype),
+        density: isPageDensity(pageCandidate.density) ? pageCandidate.density : "executive",
+        objects: objects.map((object) => ({
+          ...object,
+          objectRole:
+            object.objectId === primaryObjectId
+              ? "primary"
+              : object.objectRole ?? "secondary",
+        })),
+      };
+      if (primaryObjectId) {
+        normalizedPage.primaryObjectId = primaryObjectId;
+      }
+      return normalizedPage;
+    })
+    .filter((page): page is DeckExportContract["pages"][number] => Boolean(page));
+  return pages.length ? { version: 1, pages } : undefined;
+}
+
+function resolveDeckExportContractPageLimit(value: unknown, fallbackPageCount: number) {
+  if (!value || typeof value !== "object") {
+    return fallbackPageCount;
+  }
+  const pages = (value as Partial<DeckExportContract>).pages;
+  return Array.isArray(pages) ? Math.max(fallbackPageCount, pages.length) : fallbackPageCount;
 }
 
 function normalizeProjectSnapshot(
@@ -1102,6 +1473,10 @@ function normalizeProjectSnapshot(
       Number.isInteger(candidate.requestedPageCount) && (candidate.requestedPageCount ?? 0) >= 1
         ? candidate.requestedPageCount ?? null
         : null,
+    exportContract: normalizeDeckExportContract(
+      candidate.exportContract,
+      resolveDeckExportContractPageLimit(candidate.exportContract, normalizedPages.length),
+    ),
     longFormClarification: normalizeLongFormClarificationState(candidate.longFormClarification),
     deckOptimization: normalizeDeckOptimizationState(candidate.deckOptimization),
     pages: normalizedPages,
@@ -1281,6 +1656,10 @@ function normalizeStoredProject(
       Number.isInteger(candidate.requestedPageCount) && (candidate.requestedPageCount ?? 0) >= 1
         ? candidate.requestedPageCount ?? null
         : null,
+    exportContract: normalizeDeckExportContract(
+      candidate.exportContract,
+      resolveDeckExportContractPageLimit(candidate.exportContract, normalizedPages.length),
+    ),
     longFormClarification: normalizeLongFormClarificationState(candidate.longFormClarification),
     deckOptimization: normalizeDeckOptimizationState(candidate.deckOptimization),
     briefMessages,
@@ -2371,6 +2750,7 @@ export function createProjectBundle(args: {
   moduleUsageMode?: WorkbenchProject["moduleUsageMode"];
   htmlOutputMode?: WorkbenchProject["htmlOutputMode"];
   requestedPageCount?: number | null;
+  exportContract?: DeckExportContract | null;
   longFormClarification?: WorkbenchLongFormClarificationState;
   deckOptimization?: WorkbenchDeckOptimizationState;
   briefMessages?: ConversationMessage[];
@@ -2400,6 +2780,7 @@ export function createProjectBundle(args: {
     generationMode: args.generationMode,
     moduleUsageMode: args.moduleUsageMode,
     requestedPageCount: args.requestedPageCount,
+    exportContract: args.exportContract,
     longFormClarification: args.longFormClarification,
     deckOptimization: args.deckOptimization,
     briefMessages: args.briefMessages,
@@ -2421,6 +2802,7 @@ export function serializeProjectBundle(args: {
   moduleUsageMode?: WorkbenchProject["moduleUsageMode"];
   htmlOutputMode?: WorkbenchProject["htmlOutputMode"];
   requestedPageCount?: number | null;
+  exportContract?: DeckExportContract | null;
   longFormClarification?: WorkbenchLongFormClarificationState;
   deckOptimization?: WorkbenchDeckOptimizationState;
   briefMessages?: ConversationMessage[];
@@ -2532,6 +2914,7 @@ export function recordProjectGeneration(args: {
         generationMode: project.generationMode,
         moduleUsageMode: project.moduleUsageMode,
         requestedPageCount: project.requestedPageCount,
+        exportContract: project.exportContract,
         longFormClarification: project.longFormClarification,
         deckOptimization: project.deckOptimization,
         pages: args.pages,
@@ -2566,6 +2949,7 @@ export function recordProjectGeneration(args: {
         generationMode: project.generationMode,
         moduleUsageMode: project.moduleUsageMode,
         requestedPageCount: project.requestedPageCount,
+        exportContract: project.exportContract,
         longFormClarification: project.longFormClarification,
         deckOptimization: { autoOptimizedReportKey: null, autoOptimizedVersion: null },
         pages: args.pages,
@@ -2650,6 +3034,7 @@ export function importProjectBundle(bundle: WorkbenchProject, workspaceId?: stri
     generationMode: bundle.generationMode,
     moduleUsageMode: bundle.moduleUsageMode,
     requestedPageCount: bundle.requestedPageCount,
+    exportContract: bundle.exportContract,
     longFormClarification: bundle.longFormClarification,
     deckOptimization: bundle.deckOptimization,
     briefMessages: bundle.briefMessages,

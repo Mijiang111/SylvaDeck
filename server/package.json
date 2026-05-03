@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@playwright/test": "1.59.1",
     "express": "^5.1.0",
     "pino": "^9.6.0",
     "pino-http": "^10.4.0",

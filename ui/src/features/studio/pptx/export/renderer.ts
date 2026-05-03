@@ -10,6 +10,24 @@ import {
   type PptxExportTextNode,
 } from "./types";
 
+const MIN_PPT_EXTENT_IN = 0.001;
+const MIN_PPT_LINE_WIDTH_PT = 0.01;
+
+function safeExtent(value: number) {
+  if (Math.abs(value) >= MIN_PPT_EXTENT_IN) {
+    return value;
+  }
+  return value < 0 ? -MIN_PPT_EXTENT_IN : MIN_PPT_EXTENT_IN;
+}
+
+function safePositiveExtent(value: number) {
+  return Math.max(MIN_PPT_EXTENT_IN, value);
+}
+
+function transparentLineOptions() {
+  return { color: "FFFFFF", transparency: 100, width: MIN_PPT_LINE_WIDTH_PT };
+}
+
 function renderSlideBackground(slide: any, slideModel: PptxExportSlide) {
   slide.background = { color: slideModel.theme.backgroundColor };
   if (slideModel.theme.backgroundImageData) {
@@ -64,16 +82,16 @@ function renderVisualNode(pptx: any, slide: any, shapeNode: PptxExportShapeNode)
       objectName: shapeNode.id,
       x: useExactLineVector ? shapeNode.x : isVertical ? shapeNode.x + shapeNode.w / 2 : shapeNode.x,
       y: useExactLineVector ? shapeNode.y : isVertical ? shapeNode.y : shapeNode.y + shapeNode.h / 2,
-      w: useExactLineVector ? shapeNode.w : isVertical ? 0 : shapeNode.w,
-      h: useExactLineVector ? shapeNode.h : isVertical ? shapeNode.h : 0,
+      w: useExactLineVector ? safeExtent(shapeNode.w) : isVertical ? MIN_PPT_EXTENT_IN : safeExtent(shapeNode.w),
+      h: useExactLineVector ? safeExtent(shapeNode.h) : isVertical ? safeExtent(shapeNode.h) : MIN_PPT_EXTENT_IN,
       line: shapeNode.lineColor
         ? {
             color: shapeNode.lineColor,
             transparency: shapeNode.lineTransparency,
-            width: shapeNode.lineWidthPt ?? 0.75,
+            width: Math.max(MIN_PPT_LINE_WIDTH_PT, shapeNode.lineWidthPt ?? 0.75),
             dashType: shapeNode.lineDash === "dash" ? "dash" : shapeNode.lineDash === "sysDot" ? "sysDot" : undefined,
           }
-        : { color: "FFFFFF", transparency: 100, width: 0 },
+        : transparentLineOptions(),
       shadow: shadowFromShapeNode(shapeNode),
     });
     return;
@@ -90,18 +108,18 @@ function renderVisualNode(pptx: any, slide: any, shapeNode: PptxExportShapeNode)
     objectName: shapeNode.id,
     x: shapeNode.x,
     y: shapeNode.y,
-    w: shapeNode.w,
-    h: shapeNode.h,
+    w: safePositiveExtent(shapeNode.w),
+    h: safePositiveExtent(shapeNode.h),
     fill: solidFillFromPaint(shapeNode.paint),
     line: shapeNode.lineColor
       ? {
           color: shapeNode.lineColor,
           transparency: shapeNode.lineTransparency,
-          width: shapeNode.lineWidthPt ?? 0.75,
+          width: Math.max(MIN_PPT_LINE_WIDTH_PT, shapeNode.lineWidthPt ?? 0.75),
           dashType:
             shapeNode.lineDash === "dash" ? "dash" : shapeNode.lineDash === "sysDot" ? "sysDot" : undefined,
         }
-      : { color: "FFFFFF", transparency: 100, width: 0 },
+    : transparentLineOptions(),
     shadow: shadowFromShapeNode(shapeNode),
   });
 }
@@ -226,9 +244,27 @@ function addChartText(
     margin: 0,
     breakLine: false,
     fit: "shrink",
-    line: { color: "FFFFFF", transparency: 100, width: 0 },
+    line: transparentLineOptions(),
     fill: { color: "FFFFFF", transparency: 100, type: "none" },
   });
+}
+
+function renderChartImageNode(slide: any, chartNode: PptxExportChartNode) {
+  if (chartNode.renderMode !== "image") {
+    return false;
+  }
+  const asset = chartNode.fallbackAsset;
+  if (!asset?.data) {
+    return false;
+  }
+  slide.addImage({
+    data: asset.data,
+    x: chartNode.x,
+    y: chartNode.y,
+    w: safePositiveExtent(chartNode.w),
+    h: safePositiveExtent(chartNode.h),
+  });
+  return true;
 }
 
 function renderSemanticChartHeading(slide: any, chartNode: PptxExportChartNode) {
@@ -279,7 +315,7 @@ function renderSemanticAxes(pptx: any, slide: any, chartNode: PptxExportChartNod
       x: plot.x,
       y,
       w: plot.w,
-      h: 0,
+      h: MIN_PPT_EXTENT_IN,
       line: { color: chartNode.themeTokens.dividerColor, transparency: index === 0 ? 0 : 25, width: index === 0 ? 1 : 0.6 },
     });
     addChartText(slide, formatChartValue(value), {
@@ -295,7 +331,7 @@ function renderSemanticAxes(pptx: any, slide: any, chartNode: PptxExportChartNod
   slide.addShape(pptx.ShapeType.line, {
     x: plot.x,
     y: plot.y,
-    w: 0,
+    w: MIN_PPT_EXTENT_IN,
     h: plot.h,
     line: { color: chartNode.themeTokens.dividerColor, width: 0.9 },
   });
@@ -370,7 +406,7 @@ function renderSemanticLineChart(pptx: any, slide: any, chartNode: PptxExportCha
         x: frame.x + frame.w - 1.45,
         y: y + 0.06,
         w: 0.18,
-        h: 0,
+        h: MIN_PPT_EXTENT_IN,
         line: { color, width: 1.4, dash: index > 1 ? "dash" : undefined },
       });
       addChartText(slide, series.name, {
@@ -431,7 +467,7 @@ function renderSemanticWaterfallChart(pptx: any, slide: any, chartNode: PptxExpo
         x: plot.x + (index - 1) * step + step / 2,
         y: connectorY,
         w: step,
-        h: 0,
+        h: MIN_PPT_EXTENT_IN,
         line: { color: chartNode.themeTokens.dividerColor, width: 0.7, dash: "dash" },
       });
     }
@@ -476,7 +512,7 @@ function renderSemanticBubbleChart(pptx: any, slide: any, chartNode: PptxExportC
     slide.addShape(pptx.ShapeType.line, {
       x,
       y: plot.y,
-      w: 0,
+      w: MIN_PPT_EXTENT_IN,
       h: plot.h,
       line: { color: chartNode.themeTokens.dividerColor, transparency: 55, width: 0.5 },
     });
@@ -594,13 +630,13 @@ function renderSemanticMatrixChart(pptx: any, slide: any, chartNode: PptxExportC
       w: rect.w,
       h: rect.h,
       fill: { color: quadrant.color ?? chartNode.themeTokens.surfaceSecondary, transparency: 35 },
-      line: { color: "FFFFFF", transparency: 100, width: 0 },
+        line: transparentLineOptions(),
     });
   });
   slide.addShape(pptx.ShapeType.line, {
     x: plot.x + plot.w / 2,
     y: plot.y,
-    w: 0,
+    w: MIN_PPT_EXTENT_IN,
     h: plot.h,
     line: { color: chartNode.themeTokens.dividerColor, transparency: 12, width: 1 },
   });
@@ -608,7 +644,7 @@ function renderSemanticMatrixChart(pptx: any, slide: any, chartNode: PptxExportC
     x: plot.x,
     y: plot.y + plot.h / 2,
     w: plot.w,
-    h: 0,
+    h: MIN_PPT_EXTENT_IN,
     line: { color: chartNode.themeTokens.dividerColor, transparency: 12, width: 1 },
   });
   spec.items.forEach((item, index) => {
@@ -996,8 +1032,46 @@ function renderNativeBubbleChart(pptx: any, slide: any, chartNode: PptxExportCha
     legendPos: "b",
     dataLabelPosition: "r",
   });
+  renderNativeBubbleChartText(slide, chartNode);
 
   return true;
+}
+
+function renderNativeBubbleChartText(slide: any, chartNode: PptxExportChartNode) {
+  const frame = chartFrameBounds(chartNode);
+  if (chartNode.xAxisTitle) {
+    addChartText(slide, chartNode.xAxisTitle, {
+      x: frame.x + Math.min(0.42, frame.w * 0.08),
+      y: frame.y + frame.h - 0.28,
+      w: Math.max(0.8, frame.w - 0.84),
+      h: 0.16,
+      fontSize: 6.8,
+      align: "center",
+      color: chartNode.themeTokens.textMuted,
+    });
+  }
+  if (chartNode.yAxisTitle) {
+    addChartText(slide, chartNode.yAxisTitle, {
+      x: Math.max(0, frame.x - 0.18),
+      y: frame.y + frame.h * 0.46,
+      w: 0.58,
+      h: 0.16,
+      fontSize: 6.8,
+      align: "center",
+      rotate: 270,
+      color: chartNode.themeTokens.textMuted,
+    });
+  }
+  if (chartNode.insight) {
+    addChartText(slide, chartNode.insight, {
+      x: frame.x + frame.w - Math.min(1.2, frame.w * 0.32),
+      y: frame.y + 0.18,
+      w: Math.min(1.2, frame.w * 0.32),
+      h: Math.min(0.42, frame.h * 0.34),
+      fontSize: 6,
+      color: chartNode.themeTokens.textMuted,
+    });
+  }
 }
 
 function renderNativeComboChart(pptx: any, slide: any, chartNode: PptxExportChartNode) {
@@ -1216,7 +1290,7 @@ function renderTextNode(slide: any, textNode: PptxExportTextNode) {
     fill: textNode.fillColor
       ? { color: textNode.fillColor, transparency: 0, type: "solid" }
       : { color: "FFFFFF", transparency: 100, type: "none" },
-    line: { color: "FFFFFF", transparency: 100, width: 0 },
+    line: transparentLineOptions(),
   };
 
   if (textNode.items?.length) {
@@ -1250,6 +1324,9 @@ function renderTextNode(slide: any, textNode: PptxExportTextNode) {
 function renderOrderedNode(pptx: any, slide: any, node: PptxExportNode) {
   switch (node.nodeType) {
     case "chart":
+      if (renderChartImageNode(slide, node)) {
+        break;
+      }
       renderSemanticChartNode(pptx, slide, node);
       renderNativeChartNode(pptx, slide, node);
       break;

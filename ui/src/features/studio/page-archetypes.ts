@@ -4,6 +4,34 @@ import type {
   GenerationDesignPlan,
   GenerationPageArchetypeDefinition,
 } from "./generation-contract";
+import type { PageLayoutArchetype } from "./types";
+
+export const CANONICAL_LAYOUT_ARCHETYPE_TO_GENERATION_ARCHETYPE = {
+  "single-dominant-visual": "hero-rail",
+  "hero-metric": "hero-rail",
+  "chart-with-insight-rail": "chart-insight",
+  "matrix-first": "verdict-comparison",
+  "bubble-landscape": "chart-insight",
+  "timeline-led": "priority-rail",
+  "process-flow": "priority-rail",
+  swimlane: "priority-rail",
+  "benchmark-table": "verdict-comparison",
+  "decision-tree": "priority-rail",
+  "layered-stack": "research-figure-stage",
+  "market-map": "verdict-comparison",
+  "portfolio-grid": "priority-rail",
+  "capability-model": "priority-rail",
+  funnel: "priority-rail",
+  "risk-heatmap": "verdict-comparison",
+  "thesis-evidence-board": "hero-rail",
+  "before-after": "verdict-comparison",
+  flywheel: "priority-rail",
+  "operating-model": "priority-rail",
+  "annotation-stage": "research-figure-stage",
+  "evidence-wall": "hero-rail",
+  "case-timeline": "priority-rail",
+  "bridge-explanation": "chart-insight",
+} satisfies Record<PageLayoutArchetype, GenerationPageArchetypeDefinition["id"]>;
 
 const PAGE_ARCHETYPE_REGISTRY: GenerationPageArchetypeDefinition[] = [
   {

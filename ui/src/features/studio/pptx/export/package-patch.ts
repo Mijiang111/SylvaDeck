@@ -28,7 +28,7 @@ function escapeRegExp(value: string) {
 
 function pointsToEmu(value: number | undefined, fallback: number) {
   const next = Number.isFinite(value) ? value! : fallback;
-  return Math.round(Math.max(0, next) * 12700);
+  return Math.round(Math.max(0.01, next) * 12700);
 }
 
 function chartDashToPreset(value: "solid" | "dash" | "dot" | "none" | undefined) {
@@ -156,6 +156,53 @@ function replaceShapeGeometryXml(shapeXml: string, geometryXml: string) {
   }
 
   return shapeXml;
+}
+
+function patchZeroSizeExtentAttribute(attrs: string, name: "cx" | "cy") {
+  const pattern = new RegExp(`\\b${name}="(-?\\d+)"`);
+  const match = attrs.match(pattern);
+  const value = Number.parseInt(match?.[1] ?? "1", 10);
+  if (Number.isFinite(value) && value > 0) {
+    return attrs;
+  }
+  if (match) {
+    return attrs.replace(pattern, `${name}="1"`);
+  }
+  return `${attrs}${/\s$/.test(attrs) || attrs.length === 0 ? "" : " "}${name}="1"`;
+}
+
+function patchZeroSizeExtents(xml: string) {
+  return xml.replace(/<a:ext\b([^>]*)\/>/g, (match, rawAttributes: string) => {
+    const cx = Number.parseInt(rawAttributes.match(/\bcx="(-?\d+)"/)?.[1] ?? "1", 10);
+    const cy = Number.parseInt(rawAttributes.match(/\bcy="(-?\d+)"/)?.[1] ?? "1", 10);
+    if (cx > 0 && cy > 0) {
+      return match;
+    }
+    const patchedAttributes = patchZeroSizeExtentAttribute(
+      patchZeroSizeExtentAttribute(rawAttributes, "cx"),
+      "cy",
+    );
+    return `<a:ext${patchedAttributes}/>`;
+  });
+}
+
+async function patchPackageZeroSizeExtents(zip: JSZip) {
+  const xmlEntries = Object.keys(zip.files).filter(
+    (name) => !zip.files[name]?.dir && /\.xml$/i.test(name),
+  );
+  await Promise.all(
+    xmlEntries.map(async (fileName) => {
+      const file = zip.file(fileName);
+      const xml = await file?.async("string");
+      if (xml === undefined) {
+        return;
+      }
+      const patchedXml = patchZeroSizeExtents(xml);
+      if (patchedXml !== xml) {
+        zip.file(fileName, patchedXml);
+      }
+    }),
+  );
 }
 
 function patchSlideNativeShapes(xml: string, shapes: PptxExportShapeNode[]) {
@@ -396,15 +443,31 @@ function patchBubbleSeriesXml(serXml: string, chartNode: PptxExportChartNode) {
   return withoutExistingDataPoints.replace(/<\/c:tx>/, `</c:tx>${pointXml}`);
 }
 
+function patchBubbleChartSeriesXml(bubbleChartXml: string, chartNode: PptxExportChartNode) {
+  const seriesBlocks = Array.from(bubbleChartXml.matchAll(tagBlockPattern("c:ser"))).map((match) => match[0] ?? "");
+  if (!seriesBlocks.length) {
+    return bubbleChartXml;
+  }
+
+  const preferredSeriesIndex = Math.max(
+    0,
+    seriesBlocks.findIndex((serXml) => /<c:bubbleSize\b/i.test(serXml)),
+  );
+  let seriesIndex = 0;
+  return bubbleChartXml.replace(tagBlockPattern("c:ser"), (serXml) => {
+    const shouldKeep = seriesIndex === preferredSeriesIndex;
+    seriesIndex += 1;
+    return shouldKeep ? patchBubbleSeriesXml(serXml, chartNode) : "";
+  });
+}
+
 function patchBubbleChartXml(xml: string, chartNode: PptxExportChartNode) {
   if (chartNode.chartKind !== "bubble") {
     return xml;
   }
   const bubbleScale = Math.round(clamp(chartNode.style?.bubbleScale ?? 70, 1, 300));
   return patchChartTypeBlock(xml, "bubbleChart", (bubbleChartXml) => {
-    let nextBubbleChartXml = patchFirstTagBlock(bubbleChartXml, "c:ser", (serXml) =>
-      patchBubbleSeriesXml(serXml, chartNode),
-    );
+    let nextBubbleChartXml = patchBubbleChartSeriesXml(bubbleChartXml, chartNode);
     nextBubbleChartXml = nextBubbleChartXml.replace(/<c:dLbls\b[\s\S]*?<\/c:dLbls>/g, "");
     nextBubbleChartXml = nextBubbleChartXml.replace(
       /(<\/c:ser>)/,
@@ -574,13 +637,8 @@ export async function patchPptxPackageXml(args: {
     }))
     .filter((entry) => entry.shapes.length > 0 || entry.charts.length > 0 || entry.hiddenChartCount > 0);
 
-  if (!patchEntries.length) {
-    return new Blob([args.arrayBuffer], {
-      type: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    });
-  }
-
   const zip = await JSZip.loadAsync(args.arrayBuffer);
+  await patchPackageZeroSizeExtents(zip);
   await Promise.all(
     patchEntries.map(async ({ slide, shapes, charts, hiddenChartCount }) => {
       const slidePath = `ppt/slides/slide${slide.pageNumber}.xml`;
@@ -713,6 +771,32 @@ export async function validatePptxPackageBlob(blob: Blob): Promise<PptExportDiag
         diagnostics.push(parsed.diagnostic);
         return;
       }
+      if (/^ppt\/charts\/chart\d+\.xml$/i.test(fileName)) {
+        diagnostics.push({
+          code: "powerpoint-repair-risk-xml",
+          severity: "fatal",
+          countsAgainstQuality: true,
+          sourceKind: "deck",
+          sourceId: fileName,
+          message: `PPTX package contains native chart XML part ${fileName}; default chart export must use visual snapshots.`,
+        });
+      }
+      const zeroExt = Array.from(xml.matchAll(/<a:ext\b([^>]*)\/>/g)).find((match) => {
+        const attrs = match[1] ?? "";
+        const cx = Number.parseInt(attrs.match(/\bcx="(-?\d+)"/)?.[1] ?? "1", 10);
+        const cy = Number.parseInt(attrs.match(/\bcy="(-?\d+)"/)?.[1] ?? "1", 10);
+        return cx <= 0 || cy <= 0;
+      });
+      if (zeroExt) {
+        diagnostics.push({
+          code: "zero-size-ext",
+          severity: "fatal",
+          countsAgainstQuality: true,
+          sourceKind: "deck",
+          sourceId: fileName,
+          message: `PPTX package XML part ${fileName} contains a zero-size shape extent.`,
+        });
+      }
       if (!parsed.document || !/\.rels$/i.test(fileName)) {
         return;
       }
@@ -734,6 +818,25 @@ export async function validatePptxPackageBlob(blob: Blob): Promise<PptExportDiag
           sourceKind: "deck",
           sourceId: fileName,
           message: `PPTX relationship ${relationship.getAttribute("Id") ?? "(unknown)"} in ${fileName} points to missing part ${resolvedTarget}.`,
+        });
+      }
+    }),
+  );
+
+  const svgMediaEntries = Object.keys(zip.files)
+    .filter((name) => !zip.files[name]?.dir && /^ppt\/media\/.+\.svg$/i.test(name))
+    .sort((left, right) => left.localeCompare(right, undefined, { numeric: true }));
+  await Promise.all(
+    svgMediaEntries.map(async (fileName) => {
+      const svg = await zip.file(fileName)?.async("string");
+      if (svg && /<foreignObject\b/i.test(svg)) {
+        diagnostics.push({
+          code: "powerpoint-repair-risk-xml",
+          severity: "fatal",
+          countsAgainstQuality: true,
+          sourceKind: "deck",
+          sourceId: fileName,
+          message: `PPTX package contains foreignObject SVG snapshot asset ${fileName}; visual snapshots must be rasterized to PNG before packaging.`,
         });
       }
     }),

@@ -1,0 +1,196 @@
+{
+  "valid": [
+    {
+      "name": "bar chart",
+      "objectId": "p1-fixture-bar",
+      "objectKind": "chart-visual",
+      "renderTarget": "visual-snapshot",
+      "dataContract": {
+        "type": "chart-bar",
+        "categories": ["Ads", "Games"],
+        "series": [{ "name": "Revenue", "values": [42, 58], "color": "#305C63" }],
+        "axis": { "y": { "label": "RMB bn" } },
+        "colors": ["#305C63"]
+      }
+    },
+    {
+      "name": "stacked chart",
+      "objectId": "p1-fixture-stacked",
+      "objectKind": "chart-visual",
+      "renderTarget": "visual-snapshot",
+      "dataContract": {
+        "type": "chart-stacked",
+        "categories": ["2025", "2026"],
+        "series": [
+          { "name": "Core", "values": [35, 42], "color": "#305C63" },
+          { "name": "Growth", "values": [12, 18], "color": "#C88A4A" }
+        ],
+        "stackMode": "absolute"
+      }
+    },
+    {
+      "name": "line chart",
+      "objectId": "p1-fixture-line",
+      "objectKind": "chart-visual",
+      "renderTarget": "visual-snapshot",
+      "dataContract": {
+        "type": "chart-line",
+        "categories": ["Q1", "Q2", "Q3"],
+        "series": [{ "name": "Margin", "values": [18, 21, 24], "color": "#4D7891" }],
+        "axis": { "y": { "label": "Margin %" } },
+        "markers": true
+      }
+    },
+    {
+      "name": "combo chart",
+      "objectId": "p1-fixture-combo",
+      "objectKind": "chart-visual",
+      "renderTarget": "visual-snapshot",
+      "dataContract": {
+        "type": "chart-combo",
+        "categories": ["2024", "2025"],
+        "barSeries": [{ "name": "Revenue", "values": [100, 118], "color": "#305C63" }],
+        "lineSeries": [{ "name": "Margin", "values": [22, 26], "color": "#C88A4A" }],
+        "primaryAxis": { "label": "Revenue" },
+        "secondaryAxis": { "label": "Margin" }
+      }
+    },
+    {
+      "name": "waterfall chart",
+      "objectId": "p1-fixture-waterfall",
+      "objectKind": "chart-visual",
+      "renderTarget": "visual-snapshot",
+      "dataContract": {
+        "type": "chart-waterfall",
+        "steps": [
+          { "label": "Start", "value": 100, "kind": "start" },
+          { "label": "Growth", "value": 18, "kind": "increase", "color": "#305C63" },
+          { "label": "Cost", "value": -9, "kind": "decrease", "color": "#C88A4A" },
+          { "label": "End", "value": 109, "kind": "end" }
+        ],
+        "axis": { "y": { "label": "Index" } }
+      }
+    },
+    {
+      "name": "bubble chart",
+      "objectId": "p1-fixture-bubble",
+      "objectKind": "chart-visual",
+      "renderTarget": "visual-snapshot",
+      "dataContract": {
+        "type": "chart-bubble",
+        "points": [
+          { "label": "Ads", "x": 0.72, "y": 0.62, "size": 34, "color": "#305C63" },
+          { "label": "Cloud", "x": 0.48, "y": 0.42, "size": 18, "color": "#C88A4A" }
+        ],
+        "xAxis": { "label": "Growth" },
+        "yAxis": { "label": "Margin" },
+        "sizeAxis": { "label": "Revenue" }
+      }
+    },
+    {
+      "name": "matrix",
+      "objectId": "p1-fixture-matrix",
+      "objectKind": "matrix",
+      "renderTarget": "editable-shapes",
+      "forbiddenInterpretation": ["native-table"],
+      "dataContract": {
+        "type": "matrix",
+        "axes": {
+          "x": { "label": "Impact" },
+          "y": { "label": "Readiness" }
+        },
+        "items": [{ "label": "Core", "x": 0.7, "y": 0.6 }],
+        "renderTarget": "editable-shapes"
+      }
+    },
+    {
+      "name": "native table",
+      "objectId": "p1-fixture-table",
+      "objectKind": "native-table",
+      "renderTarget": "native-table",
+      "dataContract": {
+        "type": "table",
+        "columns": [{ "label": "Metric" }, { "label": "Value" }],
+        "rows": [["Revenue", "42"]],
+        "headerPolicy": "first-row",
+        "nativeTableAllowed": true
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "chart missing series",
+      "objectId": "p1-invalid-missing-series",
+      "objectKind": "chart-visual",
+      "renderTarget": "visual-snapshot",
+      "expectedDiagnosticCode": "export-data-contract-invalid",
+      "dataContract": {
+        "type": "chart-bar",
+        "categories": ["A"]
+      }
+    },
+    {
+      "name": "chart series length mismatch",
+      "objectId": "p1-invalid-short-series",
+      "objectKind": "chart-visual",
+      "renderTarget": "visual-snapshot",
+      "expectedDiagnosticCode": "export-data-contract-minimum-data-missing",
+      "dataContract": {
+        "type": "chart-line",
+        "categories": ["Q1", "Q2"],
+        "series": [{ "name": "Margin", "values": [18] }]
+      }
+    },
+    {
+      "name": "bubble nonpositive size",
+      "objectId": "p1-invalid-bubble-size",
+      "objectKind": "chart-visual",
+      "renderTarget": "visual-snapshot",
+      "expectedDiagnosticCode": "export-data-contract-minimum-data-missing",
+      "dataContract": {
+        "type": "chart-bubble",
+        "points": [{ "label": "Ads", "x": 0.72, "y": 0.62, "size": 0 }]
+      }
+    },
+    {
+      "name": "table missing rows",
+      "objectId": "p1-invalid-table-rows",
+      "objectKind": "native-table",
+      "renderTarget": "native-table",
+      "expectedDiagnosticCode": "export-data-contract-invalid",
+      "dataContract": {
+        "type": "table",
+        "columns": [{ "label": "Metric" }],
+        "nativeTableAllowed": true
+      }
+    },
+    {
+      "name": "matrix missing items",
+      "objectId": "p1-invalid-matrix-items",
+      "objectKind": "matrix",
+      "renderTarget": "editable-shapes",
+      "forbiddenInterpretation": ["native-table"],
+      "expectedDiagnosticCode": "export-data-contract-invalid",
+      "dataContract": {
+        "type": "matrix",
+        "axes": {
+          "x": { "label": "Impact" },
+          "y": { "label": "Readiness" }
+        },
+        "renderTarget": "editable-shapes"
+      }
+    },
+    {
+      "name": "native table with chart data",
+      "objectId": "p1-invalid-incompatible-table",
+      "objectKind": "native-table",
+      "renderTarget": "native-table",
+      "expectedDiagnosticCode": "export-data-contract-incompatible",
+      "dataContract": {
+        "type": "chart-bar",
+        "categories": ["A"],
+        "series": [{ "name": "Series", "values": [1] }]
+      }
+    }
+  ]
+}

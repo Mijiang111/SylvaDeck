@@ -26,6 +26,8 @@ const GENERIC_OBJECT_PATTERN =
 const INVALID_OBJECT_EDGE_PATTERN = /^(?:of|for|to)\b|\b(?:of|for|to)$/i;
 const TASK_SHELL_PATTERN =
   /\b(?:\d+\s*pages?|page\s+\d+|page\s+ppt|ppt|slides?|deck|presentation|report|brief|memo)\b/gi;
+const EXPORT_METADATA_TOKEN_PATTERN =
+  /\b(?:data-export-[\w-]*|data-render-target|data-quality-intent|data-forbidden-interpretation|data-export-contract|semantic metadata)\b/i;
 
 type ParsedObjectCandidate = {
   value: string;
@@ -110,6 +112,10 @@ function cleanAudienceBar(text: string) {
 
 function cleanObjectCandidate(text: string) {
   return normalizeCandidate(text)
+    .replace(
+      /\b(?:subject|topic|focus|object|source constraint|observed facts?|page plan|page\s*\d+|slide\s*\d+|主题|主題|对象|對象)\s*[:：][\s\S]*$/i,
+      " ",
+    )
     .replace(/^\d+\s*pages?\b/gi, " ")
     .replace(/^\d+\s*page\b/gi, " ")
     .replace(/^["'`([{]+|["'`)\]}]+$/g, "")
@@ -125,9 +131,30 @@ function cleanObjectCandidate(text: string) {
     .replace(/\b(?:about|on|for)\b$/gi, " ")
     .replace(/\b(?:what|why|how)\b.*$/i, "")
     .replace(QUALITY_BAR_PATTERN, " ")
-    .replace(/[.?!,;:]+$/g, "")
+    .replace(/[.?!,;:。！？；：]+$/g, "")
     .replace(/\s+/g, " ")
-    .trim();
+    .trim()
+    .replace(/([)\]}])\.$/, "$1");
+}
+
+function extractExplicitObjectCue(text: string) {
+  for (const line of splitBriefLines(text)) {
+    const match = line.match(/^\s*(?:subject|topic|focus|object|company|主题|主題|对象|對象|公司)\s*[:：]\s*(.+)$/i);
+    const candidate = cleanObjectCandidate(match?.[1] ?? "");
+    if (candidate && isPlausibleObject(candidate)) {
+      return candidate;
+    }
+  }
+
+  const inlineMatch = normalizeStudioText(text).match(
+    /\b(?:subject|topic|focus|company|主题|主題|对象|對象|公司)\s*[:：]\s*([\s\S]*?)(?=\s+(?:source constraint|observed facts?|page plan|page\s*\d+|slide\s*\d+|layout|tone|anti-patterns|visual thesis|主题|主題|证据|證據)\s*[:：]|$)/i,
+  );
+  const inlineCandidate = cleanObjectCandidate(inlineMatch?.[1] ?? "");
+  if (inlineCandidate && isPlausibleObject(inlineCandidate)) {
+    return inlineCandidate;
+  }
+
+  return null;
 }
 
 function isPlausibleObject(text: string) {
@@ -143,7 +170,26 @@ function isPlausibleObject(text: string) {
   if (new RegExp(QUALITY_BAR_PATTERN.source, "i").test(text)) {
     return false;
   }
+  if (EXPORT_METADATA_TOKEN_PATTERN.test(text)) {
+    return false;
+  }
+  if (/^undefined$/i.test(text)) {
+    return false;
+  }
   return text.length >= 2;
+}
+
+function strongerSlotConfidence(
+  left: WorkingMemorySlotConfidence,
+  right: WorkingMemorySlotConfidence,
+): WorkingMemorySlotConfidence {
+  const rank: Record<WorkingMemorySlotConfidence, number> = {
+    unknown: 0,
+    low: 1,
+    medium: 2,
+    high: 3,
+  };
+  return rank[right] > rank[left] ? right : left;
 }
 
 function extractRequestedPageCount(taskText: string, requestedPageCount?: number | null) {
@@ -211,7 +257,19 @@ function extractPrimaryObject(args: {
   const audienceStrippedTask = args.audienceBar
     ? normalizeStudioText(normalizedTask.replace(args.audienceBar, " "))
     : normalizedTask;
+  const explicitObjectCue = extractExplicitObjectCue(
+    [args.taskText, args.globalHintsText, args.sourceMaterialText].filter(Boolean).join("\n"),
+  );
+  if (explicitObjectCue) {
+    return {
+      value: explicitObjectCue,
+      confidence: "high",
+    };
+  }
+
   const specializedPatterns: Array<{ pattern: RegExp; confidence: WorkingMemorySlotConfidence }> = [
+    { pattern: /\b(?:deck|presentation|slides?|ppt|report)\s+titled\s+["“]([^"”]+)["”]/i, confidence: "medium" },
+    { pattern: /\b(?:deck|presentation|slides?|ppt|report)\s+titled\s+([^.;\n]+)/i, confidence: "medium" },
     { pattern: /\b(?:product\s+)?valuation\s+of\s+(.+)$/i, confidence: "high" },
     { pattern: /\b(?:technical\s+)?architecture\s+review\s+of\s+(.+)$/i, confidence: "high" },
     { pattern: /\bresearch\s+readout\s+(?:on|of|about)\s+(.+)$/i, confidence: "high" },
@@ -655,12 +713,15 @@ function applySemanticCorrection(args: {
     isPlausibleObject(fallbackObject.value) && fallbackObject.value !== args.memory.primaryObject
       ? fallbackObject.value
       : args.memory.primaryObject;
+  const correctedObjectConfidence =
+    isPlausibleObject(fallbackObject.value) && fallbackObject.value === args.memory.primaryObject
+      ? strongerSlotConfidence(args.memory.slotConfidence.primaryObject, fallbackObject.confidence)
+      : correctedPrimaryObject !== args.memory.primaryObject
+        ? fallbackObject.confidence
+        : args.memory.slotConfidence.primaryObject;
   const slotConfidence = {
     ...args.memory.slotConfidence,
-    primaryObject:
-      correctedPrimaryObject !== args.memory.primaryObject
-        ? fallbackObject.confidence
-        : args.memory.slotConfidence.primaryObject,
+    primaryObject: correctedObjectConfidence,
   };
   const correctedUnknowns = buildUnknowns({
     primaryObject: correctedPrimaryObject,

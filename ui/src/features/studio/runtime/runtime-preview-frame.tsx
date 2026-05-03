@@ -104,6 +104,8 @@ type PreviewSelectionMeasurementPayload = {
   blockKind?: HtmlEditableBlockKind;
   visualNodeId?: string;
   visualKind?: HtmlVisualNodeKind;
+  objectId?: string;
+  exportObjectId?: string;
   rect?: PreviewRectPayload;
   fontSize?: number;
   fontFamily?: string;
@@ -228,11 +230,12 @@ function HtmlReportPreviewFrame({
   pageCount?: number | null;
   previewScale: number;
   interactive?: boolean;
-  onSelectBlock?: (pageNumber: number, blockId: string) => void;
+  onSelectBlock?: (pageNumber: number, blockId: string, objectId?: string | null) => void;
   onSelectVisualNode?: (
     pageNumber: number,
     nodeId: string,
     kind: HtmlVisualNodeKind,
+    objectId?: string | null,
   ) => void;
   onCommitBlockTransform?: (
     pageNumber: number,
@@ -623,7 +626,12 @@ function HtmlReportPreviewFrame({
       if (payload.visualNodeId && payload.visualKind) {
         selectedBlockIdRef.current = null;
         selectedVisualNodeIdRef.current = payload.visualNodeId;
-        onSelectVisualNode?.(payload.pageNumber, payload.visualNodeId, payload.visualKind);
+        onSelectVisualNode?.(
+          payload.pageNumber,
+          payload.visualNodeId,
+          payload.visualKind,
+          payload.objectId,
+        );
         queueTransformCancel("selected");
         setInteractionMode("selected");
         applySelectionMeasurement({ ...payload, target: "visual" });
@@ -637,7 +645,7 @@ function HtmlReportPreviewFrame({
       if (payload.action === "select") {
         selectedBlockIdRef.current = payload.blockId;
         selectedVisualNodeIdRef.current = null;
-        onSelectBlock?.(payload.pageNumber, payload.blockId);
+        onSelectBlock?.(payload.pageNumber, payload.blockId, payload.objectId);
         queueTransformCancel("selected");
         setInteractionMode("selected");
         applySelectionMeasurement({ ...payload, target: "block" });

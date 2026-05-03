@@ -17,6 +17,7 @@ export type StudioMode = "library" | "brief" | "editor" | "author";
 export type StudioHomeSection = "library" | "ai" | "author";
 export type StudioEditView = "split" | "canvas";
 export type StudioInspectorTab = "page" | "text" | "visual" | "history" | "export";
+export type StudioSelectionFacet = "text" | "shape" | "data" | "export";
 export type StudioCanvasDrawer =
   | "pages"
   | "page"
@@ -84,6 +85,7 @@ export type StudioPatchPayload = Partial<
     | "generationMode"
     | "moduleUsageMode"
     | "requestedPageCount"
+    | "exportContract"
     | "briefMessages"
     | "pages"
     | "generatedDraft"
@@ -137,6 +139,8 @@ export type StudioShellState = {
 
 export type StudioSelectionState = {
   activePageId: string;
+  selectedObjectId: string | null;
+  activeFacet: StudioSelectionFacet | null;
   selectedHtmlBlockId: string | null;
   selectedVisualNodeId: string | null;
   htmlPageOverflows: Record<number, boolean>;
@@ -173,6 +177,7 @@ export type StudioGenerationCommit = {
   moduleUsageMode: WorkbenchProject["moduleUsageMode"];
   htmlOutputMode: HtmlOutputMode;
   requestedPageCount: WorkbenchProject["requestedPageCount"];
+  exportContract?: WorkbenchProject["exportContract"] | null;
   pages: LayoutPage[];
   generatedDraft: GeneratedDraftAsset;
   workflowStage: WorkflowStage;

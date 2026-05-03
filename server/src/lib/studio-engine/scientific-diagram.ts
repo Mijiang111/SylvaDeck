@@ -77,6 +77,26 @@ function normalizeText(value: string) {
   return value.replace(/\s+/g, " ").trim();
 }
 
+function stripNegativeScientificCueText(value: string) {
+  return value
+    .split(/\n+/)
+    .filter((line) => {
+      const normalized = line.trim();
+      return !/^(?:must not become|do not|don't|avoid|not a|not an|should not|forbidden|anti-patterns?|must not|不要|不得|避免|不能|禁止)/i.test(
+        normalized,
+      );
+    })
+    .join("\n")
+    .replace(
+      /\b(?:must not become|do not|don't|avoid|not a|not an|should not|forbidden|must not)\b[^.!?\n]*(?:scientific[- ]visual|scientific diagram|scientific figure|research[- ]paper|nature figure|mechanism diagram|neural network|cloud architecture|technical system)[^.!?\n]*/gi,
+      " ",
+    )
+    .replace(
+      /(?:不要|不得|避免|不能|禁止)[^。！？\n]*(?:科研图|科学图|论文图|科学机制图|神经网络|技术架构|系统架构)[^。！？\n]*/g,
+      " ",
+    );
+}
+
 function toSentenceLabel(value: string, fallback: string) {
   const normalized = normalizeText(value);
   if (!normalized) {
@@ -96,15 +116,16 @@ function formatConnectivityLabel(connectivity: NeuralNetworkDiagramConnectivity)
 }
 
 export function hasScientificDiagramCue(text: string) {
+  const cueText = stripNegativeScientificCueText(text);
   return (
-    SCIENTIFIC_DIAGRAM_CUE_PATTERN.test(text) ||
-    SCIENTIFIC_VISUAL_DECK_PATTERN.test(text) ||
-    SCIENTIFIC_GENERAL_CUE_PATTERN.test(text)
+    SCIENTIFIC_DIAGRAM_CUE_PATTERN.test(cueText) ||
+    SCIENTIFIC_VISUAL_DECK_PATTERN.test(cueText) ||
+    SCIENTIFIC_GENERAL_CUE_PATTERN.test(cueText)
   );
 }
 
 function hasScientificVisualDeckCue(text: string) {
-  return SCIENTIFIC_VISUAL_DECK_PATTERN.test(text);
+  return SCIENTIFIC_VISUAL_DECK_PATTERN.test(stripNegativeScientificCueText(text));
 }
 
 export function resolveScientificDiagramConnectivity(text: string): NeuralNetworkDiagramConnectivity {
