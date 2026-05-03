@@ -2468,6 +2468,16 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
     [shell.canvasDrawer, shell.inspectorTab],
   );
   const preferredHtmlSelectionType = useMemo(() => {
+    if (activeSidebarTab === "page") {
+      return "page" as const;
+    }
+    if (activeSidebarTab === "text") {
+      return "text" as const;
+    }
+    if (activeSidebarTab === "visual") {
+      return "visual" as const;
+    }
+
     if (activeHtmlCanvasObject?.activeFacet === "text") {
       return "text" as const;
     }
@@ -2476,12 +2486,6 @@ export function StudioProjectEditPage({ projectId }: { projectId: string }) {
       activeHtmlCanvasObject?.activeFacet === "data" ||
       activeHtmlCanvasObject?.activeFacet === "export"
     ) {
-      return "visual" as const;
-    }
-    if (activeSidebarTab === "text") {
-      return "text" as const;
-    }
-    if (activeSidebarTab === "visual") {
       return "visual" as const;
     }
     return "page" as const;
